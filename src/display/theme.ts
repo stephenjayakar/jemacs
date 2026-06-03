@@ -27,6 +27,7 @@ export const defaultTheme: Theme = {
     number: { fg: "#b5cea8" },
     constant: { fg: "#9cdcfe" },
     directory: { fg: "#4fc1ff", bold: true },
+    region: { bg: "#3f4756" },
     modeLine: { fg: "#ffffff", bg: "#264f78", bold: true },
     minibuffer: { fg: "#ffffff", bg: "#3a3a3a" },
     error: { fg: "#f44747", bold: true },
@@ -38,18 +39,25 @@ export function applyTheme(text: string, spans: TextSpan[], theme: Theme): Style
   const ordered = spans
     .filter(span => span.end > span.start && span.start < text.length)
     .map(span => ({ ...span, start: Math.max(0, span.start), end: Math.min(text.length, span.end) }))
-    .sort((a, b) => a.start - b.start || b.end - a.end)
-
+  const boundaries = [...new Set([0, text.length, ...ordered.flatMap(span => [span.start, span.end])])]
+    .sort((a, b) => a - b)
   const chunks: TextChunk[] = []
-  let offset = 0
-  for (const span of ordered) {
-    if (span.start < offset) continue
-    if (span.start > offset) chunks.push(plainChunk(text.slice(offset, span.start)))
-    chunks.push(styledChunk(text.slice(span.start, span.end), theme.faces[span.face]))
-    offset = span.end
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const start = boundaries[i]!
+    const end = boundaries[i + 1]!
+    if (start === end) continue
+    const style = ordered.reduce<FaceStyle | undefined>((merged, span) => {
+      if (span.start > start || span.end < end) return merged
+      return mergeStyle(merged, theme.faces[span.face])
+    }, undefined)
+    chunks.push(styledChunk(text.slice(start, end), style))
   }
-  if (offset < text.length) chunks.push(plainChunk(text.slice(offset)))
   return new StyledText(chunks)
+}
+
+function mergeStyle(base: FaceStyle | undefined, overlay: FaceStyle | undefined): FaceStyle | undefined {
+  if (!overlay) return base
+  return { ...base, ...overlay }
 }
 
 function plainChunk(text: string): TextChunk {

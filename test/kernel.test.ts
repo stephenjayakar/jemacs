@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { mkdir } from "node:fs/promises"
 import { BufferModel } from "../src/kernel/buffer"
 import { isPrintable, keyToken, Keymap } from "../src/kernel/keymap"
 import { Editor } from "../src/kernel/editor"
@@ -285,6 +286,20 @@ test("dired opens directories, follows entries, refreshes, and exposes dired key
   await editor.run("dired", ["/tmp"])
   await editor.run("dired-revert")
   expect(editor.currentBuffer.text).toContain("jemacs-dired-file.txt")
+
+  const cwd = process.cwd()
+  await mkdir("/tmp/jemacs-dired-dot-test", { recursive: true })
+  await Bun.write("/tmp/jemacs-dired-dot-test/inside.txt", "dot")
+  try {
+    process.chdir("/tmp/jemacs-dired-dot-test")
+    await editor.openFile(".")
+    expect(editor.currentBuffer.kind).toBe("directory")
+    expect(editor.currentBuffer.mode).toBe("dired")
+    expect(editor.currentBuffer.readOnly).toBe(true)
+    expect(editor.currentBuffer.text).toContain("inside.txt")
+  } finally {
+    process.chdir(cwd)
+  }
 })
 
 test("theme support renders font-lock spans as styled TUI chunks", async () => {
@@ -292,7 +307,7 @@ test("theme support renders font-lock spans as styled TUI chunks", async () => {
   installDefaultModes()
   const editor = new Editor()
   const buffer = editor.scratch("theme.py", "def f():\n    return 1\n", "python")
-  const rendered = visibleStyledText(buffer.text, buffer.text.length, editor.fontLock(buffer), editor.theme)
+  const rendered = visibleStyledText(buffer.text, buffer.text.length, { spans: editor.fontLock(buffer), theme: editor.theme })
   expect(rendered.chunks.length).toBeGreaterThan(1)
   expect(rendered.chunks.some(chunk => chunk.text === "def" && chunk.attributes)).toBe(true)
   expect(rendered.chunks.map(chunk => chunk.text).join("")).not.toContain("\x1b[")
@@ -305,7 +320,15 @@ test("styled TUI chunks keep font-lock aligned when point covers highlighted tex
   const buffer = editor.scratch("cursor.py", "print('hello world')\n", "python")
   buffer.point = 0
 
-  const rendered = visibleStyledText(buffer.text, buffer.point, editor.fontLock(buffer), editor.theme)
+  const rendered = visibleStyledText(buffer.text, buffer.point, { spans: editor.fontLock(buffer), theme: editor.theme })
   expect(rendered.chunks.some(chunk => chunk.text === "█rint" && chunk.fg)).toBe(true)
   expect(rendered.chunks.some(chunk => chunk.text === "'hello world'" && chunk.fg)).toBe(true)
+})
+
+test("styled TUI chunks show the active region between mark and point", () => {
+  const editor = new Editor()
+  const rendered = visibleStyledText("hello world", 5, { mark: 0, theme: editor.theme })
+
+  expect(rendered.chunks.some(chunk => chunk.text === "hello" && chunk.bg)).toBe(true)
+  expect(rendered.chunks.map(chunk => chunk.text).join("")).toBe("hello█world")
 })

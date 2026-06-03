@@ -1,7 +1,7 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
 
-export type FaceName = "default" | "keyword" | "string" | "comment" | "builtin" | "function" | "type" | "number" | "constant" | "directory" | "modeLine" | "minibuffer" | "error"
+export type FaceName = "default" | "keyword" | "string" | "comment" | "builtin" | "function" | "type" | "number" | "constant" | "directory" | "region" | "modeLine" | "minibuffer" | "error"
 
 export type TextSpan = {
   start: number

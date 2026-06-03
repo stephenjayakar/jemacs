@@ -114,7 +114,11 @@ class EditorUi {
     const dirty = buffer.dirty ? "*" : ""
 
     this.title.content = ` Jemacs OpenTUI — ${buffer.name}${dirty}`
-    this.body.content = visibleStyledText(buffer.text, buffer.point, this.editor.fontLock(buffer), this.editor.theme)
+    this.body.content = visibleStyledText(buffer.text, buffer.point, {
+      mark: buffer.mark,
+      spans: this.editor.fontLock(buffer),
+      theme: this.editor.theme,
+    })
     this.modeline.content = ` ${buffer.mode}  ${buffer.name}${dirty}  line ${line}, col ${col}  point ${buffer.point}${mark}${pending ? `  [${pending}]` : ""}`
     this.minibuffer.content = this.editor.minibuffer
       ? ` ${this.editor.minibuffer.prompt}${this.editor.activeBuffer.text}█`
@@ -127,13 +131,18 @@ export function visibleText(text: string, point: number): string {
   return visibleTextRegion(text, point).visible
 }
 
-export function visibleStyledText(text: string, point: number, spans: TextSpan[] = [], theme: Theme): StyledText {
+export function visibleStyledText(text: string, point: number, options: { mark?: number | null, spans?: TextSpan[], theme: Theme }): StyledText {
   const region = visibleTextRegion(text, point)
   const visibleEnd = region.visibleStart + region.visible.length
-  const visibleSpans = spans
+  const spans = options.spans ?? []
+  const mark = options.mark ?? null
+  const allSpans: TextSpan[] = mark == null || mark === point
+    ? spans
+    : [...spans, { start: Math.min(mark, point), end: Math.max(mark, point), face: "region" }]
+  const visibleSpans = allSpans
     .filter(span => span.end > region.visibleStart && span.start < visibleEnd)
     .map(span => ({ ...span, start: Math.max(0, span.start - region.visibleStart), end: Math.min(region.visible.length, span.end - region.visibleStart) }))
-  return applyTheme(region.visible, visibleSpans, theme)
+  return applyTheme(region.visible, visibleSpans, options.theme)
 }
 
 function visibleTextRegion(text: string, point: number): { visible: string, visibleStart: number } {
