@@ -7,6 +7,7 @@ import {
   type StyledText,
 } from "@opentui/core"
 import type { Editor } from "../kernel/editor"
+import { isearchMatchSpan, isearchPrompt } from "../kernel/isearch"
 import { applyTheme, type Theme } from "../display/theme"
 import type { TextSpan } from "../modes/mode"
 
@@ -114,15 +115,22 @@ class EditorUi {
     const dirty = buffer.dirty ? "*" : ""
 
     this.title.content = ` Jemacs OpenTUI — ${buffer.name}${dirty}`
+    const spans = [...this.editor.fontLock(buffer)]
+    if (this.editor.isearch) {
+      const match = isearchMatchSpan(buffer, this.editor.isearch)
+      if (match) spans.push(match)
+    }
     this.body.content = visibleStyledText(buffer.text, buffer.point, {
-      mark: buffer.mark,
-      spans: this.editor.fontLock(buffer),
+      mark: buffer.markActive ? buffer.mark : null,
+      spans,
       theme: this.editor.theme,
     })
     this.modeline.content = ` ${buffer.mode}  ${buffer.name}${dirty}  line ${line}, col ${col}  point ${buffer.point}${mark}${pending ? `  [${pending}]` : ""}`
     this.minibuffer.content = this.editor.minibuffer
       ? ` ${this.editor.minibuffer.prompt}${this.editor.activeBuffer.text}█`
-      : " "
+      : this.editor.isearch
+        ? ` ${isearchPrompt(this.editor.isearch)}█`
+        : " "
     this.echo.content = ` ${this.lastMessage}`
   }
 }
@@ -131,11 +139,11 @@ export function visibleText(text: string, point: number): string {
   return visibleTextRegion(text, point).visible
 }
 
-export function visibleStyledText(text: string, point: number, options: { mark?: number | null, spans?: TextSpan[], theme: Theme }): StyledText {
+export function visibleStyledText(text: string, point: number, options: { mark?: number | null, markActive?: boolean, spans?: TextSpan[], theme: Theme }): StyledText {
   const region = visibleTextRegion(text, point)
   const visibleEnd = region.visibleStart + region.visible.length
   const spans = options.spans ?? []
-  const mark = options.mark ?? null
+  const mark = options.markActive === false ? null : (options.mark ?? null)
   const allSpans: TextSpan[] = mark == null || mark === point
     ? spans
     : [...spans, { start: Math.min(mark, point), end: Math.max(mark, point), face: "region" }]

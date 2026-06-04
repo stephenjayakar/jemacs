@@ -196,6 +196,53 @@ test("minibuffer keeps global bindings active and supports C-g cancellation", as
   expect(editor.minibuffer).toBeNull()
 })
 
+test("C-s is bound to isearch-forward", () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  expect(editor.keymap.get("C-s")).toBe("isearch-forward")
+})
+
+test("incremental search moves point as the query grows", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("foo bar foo", false)
+  editor.currentBuffer.point = 0
+
+  await editor.run("isearch-forward")
+  expect(editor.isearch?.direction).toBe(1)
+
+  await editor.handleKey({ name: "f", sequence: "f" })
+  expect(editor.currentBuffer.point).toBe(0)
+  const afterF = visibleStyledText(editor.currentBuffer.text, editor.currentBuffer.point, {
+    spans: [{ start: 0, end: 1, face: "isearch" }],
+    theme: editor.theme,
+  })
+  expect(afterF.chunks.some(chunk => chunk.bg != null)).toBe(true)
+
+  await editor.handleKey({ name: "o", sequence: "o" })
+  expect(editor.currentBuffer.point).toBe(0)
+
+  await editor.run("isearch-forward")
+  expect(editor.currentBuffer.point).toBe(8)
+
+  await editor.run("keyboard-quit")
+  expect(editor.isearch).toBeNull()
+  expect(editor.currentBuffer.point).toBe(0)
+})
+
+test("find-file prompt defaults to cwd when buffer has no directory", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const prompt = editor.completingRead("Find file: ", {
+    collection: [],
+    history: "file",
+    initialValue: editor.currentBuffer.directory() ?? process.cwd(),
+  })
+  expect(editor.activeBuffer.text).toBe(process.cwd())
+  editor.minibufferCancel()
+  await prompt
+})
+
 test("describe-key reports the winning keymap and command", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
@@ -327,10 +374,71 @@ test("styled TUI chunks keep font-lock aligned when point covers highlighted tex
 
 test("styled TUI chunks show the active region between mark and point", () => {
   const editor = new Editor()
-  const rendered = visibleStyledText("hello world", 5, { mark: 0, theme: editor.theme })
+  const rendered = visibleStyledText("hello world", 5, { mark: 0, markActive: true, theme: editor.theme })
 
   expect(rendered.chunks.some(chunk => chunk.text === "hello" && chunk.bg)).toBe(true)
   expect(rendered.chunks.map(chunk => chunk.text).join("")).toBe("hello█world")
+})
+
+test("C-x C-x exchanges point and mark like Emacs", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef", false)
+  buffer.mark = 0
+  buffer.point = 5
+  buffer.markActive = true
+
+  expect(editor.keymap.feed({ name: "x", ctrl: true }).status).toBe("pending")
+  expect(editor.keymap.feed({ name: "x", ctrl: true })).toEqual({ status: "matched", command: "exchange-point-and-mark" })
+
+  await editor.run("exchange-point-and-mark")
+  expect(buffer.point).toBe(0)
+  expect(buffer.mark).toBe(5)
+  expect(buffer.markActive).toBe(true)
+})
+
+test("exchange-point-and-mark reactivates an inactive mark after movement", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef", false)
+  buffer.mark = 0
+  buffer.point = 3
+  buffer.markActive = true
+
+  await editor.run("forward-char")
+  expect(buffer.point).toBe(4)
+  expect(buffer.markActive).toBe(false)
+
+  await editor.run("exchange-point-and-mark")
+  expect(buffer.point).toBe(0)
+  expect(buffer.mark).toBe(4)
+  expect(buffer.markActive).toBe(true)
+})
+
+test("exchange-point-and-mark requires a mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.clearMark()
+  await editor.run("exchange-point-and-mark")
+  expect([...editor.buffers.values()].find(b => b.name === "*messages*")?.text).toContain("No mark set")
+})
+
+test("exchange-point-and-mark with prefix jumps without activating the region", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef", false)
+  buffer.mark = 0
+  buffer.point = 5
+  buffer.markActive = false
+
+  editor.prefixArgument = 1
+  await editor.run("exchange-point-and-mark")
+  expect(buffer.point).toBe(0)
+  expect(buffer.mark).toBe(5)
+  expect(buffer.markActive).toBe(false)
 })
 
 test("Stephen config feature slice installs modes, keybindings, windows, tabs, registers, and MCP helpers", async () => {

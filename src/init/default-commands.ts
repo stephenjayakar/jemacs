@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { access, appendFile, mkdir } from "node:fs/promises"
+import type { CommandContext } from "../kernel/command"
 import type { Editor } from "../kernel/editor"
 import { diredEntryAtPoint, refreshDiredBuffer } from "../modes/dired"
 import { pythonBeginningOfDefun, pythonEndOfDefun } from "../modes/python"
@@ -16,12 +17,19 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.message(`Saved ${buffer.path}`)
   }, "Save the current buffer to disk.")
 
-  editor.command("open-file", async ({ editor, args }) => {
-    const path = args[0] ?? await editor.completingRead("Find file: ", { collection: [], history: "file" })
+  const findFile = async ({ editor, args }: CommandContext) => {
+    const path = args[0] ?? await editor.completingRead("Find file: ", {
+      collection: [],
+      history: "file",
+      initialValue: editor.currentBuffer.directory() ?? process.cwd(),
+    })
     if (!path) return
     await editor.openFile(path)
     editor.message(`Opened ${path}`)
-  }, "Open a file into a buffer.")
+  }
+
+  editor.command("open-file", findFile, "Open a file into a buffer.")
+  editor.command("find-file", findFile, "Open a file into a buffer (Emacs name).")
 
   editor.command("next-buffer", ({ editor }) => {
     const b = editor.nextBuffer()
@@ -56,6 +64,13 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.message(`Mark set at ${buffer.point}`)
   }, "Set mark at point.")
 
+  editor.command("exchange-point-and-mark", ({ buffer, editor, prefixArgument }) => {
+    if (!buffer.exchangePointAndMark(prefixArgument == null)) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+  }, "Exchange point and mark, activating the region.")
+
   editor.command("clear-mark", ({ buffer, editor }) => {
     buffer.clearMark()
     editor.message("Mark cleared")
@@ -65,10 +80,21 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.keymap.clearPending()
     editor.keymaps.clearPending()
     editor.prefixArgument = null
+    if (editor.isearch) editor.cancelIsearch()
     if (editor.minibuffer) editor.minibufferCancel()
-    buffer.clearMark()
+    buffer.deactivateMark()
     editor.message("Quit")
-  }, "Cancel the active key sequence, minibuffer, or mark.")
+  }, "Cancel the active key sequence, minibuffer, isearch, or mark.")
+
+  editor.command("isearch-forward", ({ editor }) => {
+    if (editor.isearch?.direction === 1) editor.isearchRepeat()
+    else editor.startIsearch(1)
+  }, "Incremental search forward.")
+
+  editor.command("isearch-backward", ({ editor }) => {
+    if (editor.isearch?.direction === -1) editor.isearchRepeat()
+    else editor.startIsearch(-1)
+  }, "Incremental search backward.")
 
   editor.command("universal-argument", ({ editor }) => editor.universalArgument(), "Begin or multiply the numeric prefix argument.")
   editor.command("forward-char", ({ buffer, prefixArgument }) => buffer.move(prefixArgument ?? 1), "Move point forward one character.")
@@ -369,6 +395,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.quit()
   }, "Quit the editor.")
 
+  editor.key("C-x C-x", "exchange-point-and-mark")
   editor.key("C-x C-s", "save-buffer")
   editor.key("C-x C-f", "open-file")
   editor.key("C-x b", "switch-to-buffer")
@@ -384,6 +411,8 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   editor.key("C-space", "set-mark")
   editor.key("C-u", "universal-argument")
   editor.key("C-g", "keyboard-quit")
+  editor.key("C-s", "isearch-forward")
+  editor.key("C-r", "isearch-backward")
   editor.key("C-f", "forward-char")
   editor.key("C-b", "backward-char")
   editor.key("C-n", "next-line")

@@ -10,6 +10,7 @@ export class BufferModel {
   text: string
   point = 0
   mark: number | null = null
+  markActive = false
   dirty = false
   readOnly = false
   mode = "text"
@@ -47,10 +48,12 @@ export class BufferModel {
     this.text = text
     this.point = Math.min(this.point, this.text.length)
     this.dirty ||= markDirty
+    this.deactivateMark()
   }
 
   insert(s: string): void {
     if (!s) return
+    this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
     this.text = this.text.slice(0, this.point) + s + this.text.slice(this.point)
@@ -60,6 +63,7 @@ export class BufferModel {
 
   deleteBackward(): void {
     if (this.point <= 0) return
+    this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
     this.text = this.text.slice(0, this.point - 1) + this.text.slice(this.point)
@@ -69,6 +73,7 @@ export class BufferModel {
 
   deleteForward(): void {
     if (this.point >= this.text.length) return
+    this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
     this.text = this.text.slice(0, this.point) + this.text.slice(this.point + 1)
@@ -79,6 +84,7 @@ export class BufferModel {
     const from = clamp(Math.min(start, end), 0, this.text.length)
     const to = clamp(Math.max(start, end), 0, this.text.length)
     if (from === to) return ""
+    this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
     const removed = this.text.slice(from, to)
@@ -89,10 +95,12 @@ export class BufferModel {
   }
 
   move(delta: number): void {
+    this.deactivateMark()
     this.point = clamp(this.point + delta, 0, this.text.length)
   }
 
   moveLine(delta: number): void {
+    this.deactivateMark()
     const lines = this.text.split("\n")
     const { line, col } = this.lineCol()
     const nextLine = clamp(line - 1 + delta, 0, lines.length - 1)
@@ -102,16 +110,19 @@ export class BufferModel {
   }
 
   moveToLineStart(): void {
+    this.deactivateMark()
     const previousNewline = this.point <= 0 ? -1 : this.text.lastIndexOf("\n", this.point - 1)
     this.point = previousNewline + 1
   }
 
   moveToLineEnd(): void {
+    this.deactivateMark()
     const nextNewline = this.text.indexOf("\n", this.point)
     this.point = nextNewline === -1 ? this.text.length : nextNewline
   }
 
   moveWord(delta: number): void {
+    this.deactivateMark()
     if (delta > 0) {
       const match = /\W*\w+/.exec(this.text.slice(this.point))
       this.point = match ? this.point + match.index + match[0].length : this.text.length
@@ -126,10 +137,25 @@ export class BufferModel {
 
   setMark(): void {
     this.mark = this.point
+    this.markActive = true
+  }
+
+  deactivateMark(): void {
+    this.markActive = false
   }
 
   clearMark(): void {
     this.mark = null
+    this.markActive = false
+  }
+
+  exchangePointAndMark(reactivate = true): boolean {
+    if (this.mark == null) return false
+    const previousMark = this.mark
+    this.mark = this.point
+    this.point = previousMark
+    this.markActive = reactivate
+    return true
   }
 
   selectedText(): string {
@@ -169,6 +195,7 @@ export class BufferModel {
   replaceRange(start: number, end: number, replacement: string): void {
     const from = clamp(Math.min(start, end), 0, this.text.length)
     const to = clamp(Math.max(start, end), 0, this.text.length)
+    this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
     this.text = this.text.slice(0, from) + replacement + this.text.slice(to)

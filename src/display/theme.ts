@@ -28,6 +28,7 @@ export const defaultTheme: Theme = {
     constant: { fg: "#9cdcfe" },
     directory: { fg: "#4fc1ff", bold: true },
     region: { bg: "#3f4756" },
+    isearch: { bg: "#6a5f00", fg: "#ffffff" },
     modeLine: { fg: "#ffffff", bg: "#264f78", bold: true },
     minibuffer: { fg: "#ffffff", bg: "#3a3a3a" },
     error: { fg: "#f44747", bold: true },

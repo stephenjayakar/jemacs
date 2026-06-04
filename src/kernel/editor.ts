@@ -7,6 +7,7 @@ import { isPrintable, Keymap, KeymapStack, keyToken, type KeyEventLike } from ".
 import { enterMode, getMode, modeFeature, modeLineage, type TextSpan } from "../modes/mode"
 import { makeDiredBuffer } from "../modes/dired"
 import { defaultTheme, type Theme } from "../display/theme"
+import { findBackward, findForward, isearchPrompt, type IsearchState } from "./isearch"
 
 export type EditorEvents = {
   changed: { reason: string }
@@ -52,6 +53,7 @@ export class Editor {
   tilingLayout = "tiling-master-left"
   currentBufferId: string
   minibuffer: MinibufferRequest | null = null
+  isearch: IsearchState | null = null
   running = true
   overridingTerminalLocalMap: Keymap | null = null
   overridingMap: Keymap | null = null
@@ -198,6 +200,11 @@ export class Editor {
   }
 
   async handleKey(key: KeyEventLike): Promise<KeyDispatchResult> {
+    if (this.isearch) {
+      const isearchResult = await this.handleIsearchKey(key)
+      if (isearchResult) return isearchResult
+    }
+
     const fed = this.keymaps.feed(key)
     if (fed.status === "matched") {
       await this.run(fed.command)
@@ -374,6 +381,91 @@ export class Editor {
     const value = this.prefixArgument
     this.prefixArgument = null
     return value
+  }
+
+  startIsearch(direction: 1 | -1): void {
+    const buffer = this.currentBuffer
+    this.isearch = { bufferId: buffer.id, string: "", direction, startPoint: buffer.point }
+    this.message(direction === 1 ? "Isearch forward" : "Isearch backward")
+    void this.changed("isearch-start")
+  }
+
+  isearchRepeat(): void {
+    const state = this.isearch
+    if (!state?.string) return
+    const buffer = this.buffers.get(state.bufferId)
+    if (!buffer) return
+    const from = state.direction === 1 ? buffer.point + 1 : buffer.point - 1
+    const match = state.direction === 1
+      ? findForward(buffer.text, state.string, from)
+      : findBackward(buffer.text, state.string, from)
+    if (match == null) {
+      this.message(`Search failed: ${state.string}`)
+      return
+    }
+    buffer.point = match
+    this.message(isearchPrompt(state))
+    void this.changed("isearch-repeat")
+  }
+
+  cancelIsearch(): void {
+    if (!this.isearch) return
+    const buffer = this.buffers.get(this.isearch.bufferId)
+    if (buffer) buffer.point = this.isearch.startPoint
+    this.isearch = null
+    void this.changed("isearch-cancel")
+  }
+
+  endIsearch(): void {
+    if (!this.isearch) return
+    this.isearch = null
+    void this.changed("isearch-end")
+  }
+
+  private setIsearchString(string: string): void {
+    const state = this.isearch
+    if (!state) return
+    const buffer = this.buffers.get(state.bufferId)
+    if (!buffer) return
+    state.string = string
+    if (!string) {
+      buffer.point = state.startPoint
+      this.message(isearchPrompt(state))
+      void this.changed("isearch-input")
+      return
+    }
+    const from = state.direction === 1 ? state.startPoint : state.startPoint
+    const match = state.direction === 1
+      ? findForward(buffer.text, string, from)
+      : findBackward(buffer.text, string, from)
+    if (match == null) {
+      this.message(`Failing I-search: ${string}`)
+      void this.changed("isearch-fail")
+      return
+    }
+    buffer.point = match
+    this.message(isearchPrompt(state))
+    void this.changed("isearch-input")
+  }
+
+  private async handleIsearchKey(key: KeyEventLike): Promise<KeyDispatchResult | null> {
+    switch (key.name) {
+      case "backspace":
+        if (this.isearch) this.setIsearchString(this.isearch.string.slice(0, -1))
+        return { status: "inserted" }
+      case "return":
+        this.endIsearch()
+        return { status: "inserted" }
+      case "delete":
+        return { status: "inserted" }
+      default:
+        if (isPrintable(key)) {
+          const text = (key.sequence ?? "").repeat(this.consumePrefixArgument() ?? 1)
+          if (this.isearch) this.setIsearchString(this.isearch.string + text)
+          return { status: "inserted" }
+        }
+    }
+    return null
   }
 
   minibufferInsert(s: string): void {
