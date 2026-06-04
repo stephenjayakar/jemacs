@@ -7,6 +7,7 @@ import { isPrintable, Keymap, KeymapStack, keyToken, type KeyEventLike } from ".
 import { enterMode, getMode, modeFeature, modeLineage, type TextSpan } from "../modes/mode"
 import { makeDiredBuffer } from "../modes/dired"
 import { defaultTheme, type Theme } from "../display/theme"
+import { fileCompletionCandidates } from "./completion"
 import { findBackward, findForward, isearchPrompt, type IsearchState } from "./isearch"
 
 export type EditorEvents = {
@@ -21,11 +22,13 @@ type MinibufferRequest = {
   historyName?: string
   historyIndex: number | null
   collection?: string[]
+  completion?: "file"
   resolve: (value: string | null) => void
 }
 
 export type CompletingReadOptions = {
-  collection: string[]
+  collection?: string[]
+  completion?: "file"
   history?: string
   initialValue?: string
 }
@@ -77,6 +80,10 @@ export class Editor {
   get activeBuffer(): BufferModel {
     if (!this.minibuffer) return this.currentBuffer
     return this.buffers.get(this.minibuffer.bufferId) ?? this.currentBuffer
+  }
+
+  get minibufferDepthLevel(): number {
+    return this.minibufferDepth
   }
 
   addBuffer(buffer: BufferModel): BufferModel {
@@ -264,26 +271,43 @@ export class Editor {
     return { status: "unmatched" }
   }
 
-  async prompt(prompt: string, initialValue = "", historyName?: string, collection?: string[]): Promise<string | null> {
+  async prompt(
+    prompt: string,
+    initialValue = "",
+    historyName?: string,
+    options: { collection?: string[]; completion?: "file" } = {},
+  ): Promise<string | null> {
     const previous = this.minibuffer
     this.minibufferDepth++
     return await new Promise(resolve => {
       const buffer = new BufferModel({ name: ` *Minibuffer-${this.minibufferDepth}*`, text: initialValue, kind: "minibuffer", mode: "minibuffer" })
       buffer.point = buffer.text.length
       this.addBuffer(buffer)
-      this.minibuffer = { prompt, bufferId: buffer.id, historyName, historyIndex: null, collection, resolve: value => {
-        this.buffers.delete(buffer.id)
-        this.minibuffer = previous
-        this.minibufferDepth--
-        resolve(value)
-      } }
+      this.enterMode(buffer, "minibuffer")
+      this.minibuffer = {
+        prompt,
+        bufferId: buffer.id,
+        historyName,
+        historyIndex: null,
+        collection: options.collection,
+        completion: options.completion,
+        resolve: value => {
+          this.buffers.delete(buffer.id)
+          this.minibuffer = previous
+          this.minibufferDepth--
+          resolve(value)
+        },
+      }
       void this.events.emit("minibuffer", { prompt })
       void this.changed("minibuffer-open")
     })
   }
 
   completingRead(prompt: string, options: CompletingReadOptions): Promise<string | null> {
-    return this.prompt(prompt, options.initialValue ?? "", options.history, options.collection)
+    return this.prompt(prompt, options.initialValue ?? "", options.history, {
+      collection: options.collection,
+      completion: options.completion,
+    })
   }
 
   indentLine(buffer = this.activeBuffer): void {
@@ -384,7 +408,7 @@ export class Editor {
   }
 
   startIsearch(direction: 1 | -1): void {
-    const buffer = this.currentBuffer
+    const buffer = this.activeBuffer
     this.isearch = { bufferId: buffer.id, string: "", direction, startPoint: buffer.point }
     this.message(direction === 1 ? "Isearch forward" : "Isearch backward")
     void this.changed("isearch-start")
@@ -500,26 +524,42 @@ export class Editor {
     void this.changed("minibuffer-cancel")
   }
 
-  minibufferComplete(): void {
+  async minibufferComplete(): Promise<void> {
     const request = this.minibuffer
-    if (!request?.collection?.length) return
+    if (!request) return
     const buffer = this.activeBuffer
-    const matches = request.collection.filter(item => item.startsWith(buffer.text))
+    const collection = request.completion === "file"
+      ? await fileCompletionCandidates(buffer.text)
+      : request.collection ?? []
+    if (!collection.length) return
+
+    const matches = collection.filter(item => item.startsWith(buffer.text))
     if (matches.length === 1) {
-      buffer.setText(matches[0]!, true)
-      buffer.point = buffer.text.length
+      this.setMinibufferText(matches[0]!, matches[0]!.length)
       return
     }
     if (matches.length > 1) {
       const common = commonPrefix(matches)
       if (common.length > buffer.text.length) {
-        buffer.setText(common, true)
-        buffer.point = buffer.text.length
+        this.setMinibufferText(common, common.length)
       }
-      const existing = [...this.buffers.values()].find(b => b.name === "*Completions*")
-      if (existing) existing.setText(matches.join("\n"), false)
-      else this.addBuffer(new BufferModel({ name: "*Completions*", text: matches.join("\n"), kind: "scratch", mode: "text" }))
+      this.showCompletions(matches)
     }
+  }
+
+  private setMinibufferText(text: string, point: number): void {
+    const buffer = this.activeBuffer
+    buffer.setText(text, true)
+    buffer.point = point
+    void this.changed("minibuffer-input")
+  }
+
+  private showCompletions(matches: string[]): void {
+    const existing = [...this.buffers.values()].find(b => b.name === "*Completions*")
+    const body = matches.join("\n")
+    if (existing) existing.setText(body, false)
+    else this.addBuffer(new BufferModel({ name: "*Completions*", text: body, kind: "scratch", mode: "text" }))
+    void this.changed("minibuffer-complete")
   }
 
   async minibufferPreviousHistory(): Promise<void> {
@@ -573,7 +613,11 @@ export class Editor {
     const maps: Array<{ name: string; keymap: Keymap }> = []
     if (this.overridingTerminalLocalMap) maps.push({ name: "overriding-terminal-local-map", keymap: this.overridingTerminalLocalMap })
     if (this.overridingMap) maps.push({ name: "overriding-map", keymap: this.overridingMap })
-    if (this.minibuffer) maps.push({ name: "minibuffer-local-map", keymap: this.minibufferKeymap })
+    if (this.minibuffer) {
+      maps.push({ name: "minibuffer-local-map", keymap: this.minibufferKeymap })
+      maps.push({ name: "global-map", keymap: this.keymap })
+      return maps
+    }
     for (const mode of modeLineage(this.currentBuffer.mode)) {
       if (mode.keymap) maps.push({ name: `${mode.name}-map`, keymap: mode.keymap })
     }

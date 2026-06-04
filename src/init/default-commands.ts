@@ -20,9 +20,11 @@ import {
   diredUnmarkEntry,
   refreshDiredBuffer,
 } from "../modes/dired"
+import { getMode } from "../modes/mode"
 import { pythonBeginningOfDefun, pythonEndOfDefun } from "../modes/python"
 import { Evaluator } from "../runtime/evaluator"
 import { inspectValue } from "../runtime/inspect"
+import { pageScrollLines } from "../ui/opentui"
 
 export function installDefaultCommands(editor: Editor): Evaluator {
   const evaluator = new Evaluator(editor)
@@ -35,7 +37,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
 
   const findFile = async ({ editor, args }: CommandContext) => {
     const path = args[0] ?? await editor.completingRead("Find file: ", {
-      collection: [],
+      completion: "file",
       history: "file",
       initialValue: editor.currentBuffer.directory() ?? process.cwd(),
     })
@@ -44,8 +46,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.message(`Opened ${path}`)
   }
 
-  editor.command("open-file", findFile, "Open a file into a buffer.")
-  editor.command("find-file", findFile, "Open a file into a buffer (Emacs name).")
+  editor.command("find-file", findFile, "Open a file into a buffer.")
 
   editor.command("next-buffer", ({ editor }) => {
     const b = editor.nextBuffer()
@@ -75,7 +76,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.scratch("*Buffer List*", lines.join("\n"), "text")
   }, "Display the buffer list.")
 
-  editor.command("set-mark", ({ buffer, editor }) => {
+  editor.command("set-mark-command", ({ buffer, editor }) => {
     buffer.setMark()
     editor.message(`Mark set at ${buffer.point}`)
   }, "Set mark at point.")
@@ -92,13 +93,13 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.message("Mark cleared")
   }, "Clear mark.")
 
-  editor.command("keyboard-quit", ({ buffer, editor }) => {
+  editor.command("keyboard-quit", ({ editor }) => {
     editor.keymap.clearPending()
     editor.keymaps.clearPending()
     editor.prefixArgument = null
     if (editor.isearch) editor.cancelIsearch()
     if (editor.minibuffer) editor.minibufferCancel()
-    buffer.deactivateMark()
+    editor.currentBuffer.deactivateMark()
     editor.message("Quit")
   }, "Cancel the active key sequence, minibuffer, isearch, or mark.")
 
@@ -117,8 +118,10 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   editor.command("backward-char", ({ buffer, prefixArgument }) => buffer.move(-(prefixArgument ?? 1)), "Move point backward one character.")
   editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")
   editor.command("previous-line", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1)), "Move point up one line.")
-  editor.command("beginning-of-line", ({ buffer }) => buffer.moveToLineStart(), "Move point to the beginning of the line.")
-  editor.command("end-of-line", ({ buffer }) => buffer.moveToLineEnd(), "Move point to the end of the line.")
+  editor.command("scroll-up-command", ({ buffer, prefixArgument }) => buffer.moveLine((prefixArgument ?? 1) * pageScrollLines()), "Scroll forward one screenful.")
+  editor.command("scroll-down-command", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1) * pageScrollLines()), "Scroll backward one screenful.")
+  editor.command("move-beginning-of-line", ({ buffer }) => buffer.moveToLineStart(), "Move point to the beginning of the line.")
+  editor.command("move-end-of-line", ({ buffer }) => buffer.moveToLineEnd(), "Move point to the end of the line.")
   editor.command("forward-word", ({ buffer, prefixArgument }) => repeat(prefixArgument, () => buffer.moveWord(1)), "Move point forward one word.")
   editor.command("backward-word", ({ buffer, prefixArgument }) => repeat(prefixArgument, () => buffer.moveWord(-1)), "Move point backward one word.")
   editor.command("newline", ({ buffer }) => buffer.insert("\n"), "Insert a newline at point.")
@@ -133,6 +136,15 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     })
     killRing = killed
   }, "Kill the word before point.")
+  editor.command("kill-word", ({ buffer, prefixArgument }) => {
+    let killed = ""
+    repeat(prefixArgument, () => {
+      const start = buffer.point
+      buffer.moveWord(1)
+      killed += buffer.deleteRange(start, buffer.point)
+    })
+    killRing = killed
+  }, "Kill the word after point.")
   editor.command("kill-line", ({ buffer }) => {
     const lineEnd = buffer.text.indexOf("\n", buffer.point)
     const end = lineEnd === -1 ? buffer.text.length : lineEnd + (lineEnd === buffer.point ? 1 : 0)
@@ -148,7 +160,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     killRing = buffer.deleteRange(buffer.mark, buffer.point)
     buffer.clearMark()
   }, "Kill the active region, or the current line when no region is active.")
-  editor.command("copy-region", ({ buffer, editor }) => {
+  editor.command("kill-ring-save", ({ buffer, editor }) => {
     const selected = buffer.selectedText() || buffer.lineBoundsAt().text + (buffer.lineBoundsAt().end < buffer.text.length ? "\n" : "")
     killRing = selected
     editor.message(buffer.selectedText() ? "Copied region" : "Copied line")
@@ -205,7 +217,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
 
-  editor.command("eval-selection", async ({ buffer, editor }) => {
+  editor.command("eval-region", async ({ buffer, editor }) => {
     const code = buffer.selectedOrAll()
     const result = await evaluator.eval(code, buffer.path ?? buffer.name)
     editor.message(`Eval => ${summarize(result)}`)
@@ -219,26 +231,38 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.scratch("*eval-result*", inspectValue(result), "text")
   }, "Evaluate a JavaScript expression and display its result.")
 
-  editor.command("run-command", async ({ editor, args }) => {
+  editor.command("execute-extended-command", async ({ editor, args }) => {
     const name = args[0] ?? await editor.completingRead("M-x ", { collection: editor.commands.names(), history: "command" })
     if (!name) return
     const rest = args.length > 1 ? args.slice(1) : []
     await editor.run(name, rest)
   }, "Prompt for and run a command.")
 
-  editor.command("inspect-editor", ({ editor }) => {
-    editor.scratch("*editor-inspector*", inspectValue(editor, 4), "text")
-  }, "Inspect the live editor object.")
+  editor.command("view-echo-area-messages", ({ editor }) => {
+    editor.switchToBuffer("*messages*")
+  }, "Display the messages buffer.")
 
-  editor.command("inspect-commands", ({ editor }) => {
-    const lines = editor.commands.entries().map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)
-    editor.scratch("*commands*", lines.join("\n"), "text")
-  }, "List registered commands.")
+  editor.command("describe-key-briefly", async ({ editor, args }) => {
+    const sequence = args.join(" ") || await editor.prompt("Describe key briefly: ", "", "describe-key-briefly")
+    if (!sequence) return
+    editor.message(editor.describeKey(sequence))
+  }, "Type a key sequence; print its full command name in the echo area.")
 
-  editor.command("inspect-keymap", ({ editor }) => {
+  editor.command("describe-mode", ({ buffer, editor }) => {
+    const def = getMode(buffer.mode)
+    const lines = [
+      `Major mode: ${buffer.mode}`,
+      def?.parent ? `Parent: ${def.parent}` : "",
+      `Buffer: ${buffer.name}`,
+      buffer.path ? `File: ${buffer.path}` : "",
+    ].filter(Boolean)
+    editor.scratch("*Help*", lines.join("\n"), "text")
+  }, "Describe major mode of the current buffer.")
+
+  editor.command("describe-bindings", ({ editor }) => {
     const lines = editor.keymap.all().map(([k, v]) => `${k.padEnd(16)} ${v}`)
-    editor.scratch("*keymap*", lines.join("\n"), "text")
-  }, "List keybindings.")
+    editor.scratch("*Help*", lines.join("\n"), "text")
+  }, "Describe key bindings of the current keymap.")
 
   editor.command("describe-key", async ({ editor, args }) => {
     const sequence = args.join(" ") || await editor.prompt("Describe key: ", "", "describe-key")
@@ -246,10 +270,9 @@ export function installDefaultCommands(editor: Editor): Evaluator {
     editor.scratch("*Help*", editor.describeKey(sequence), "text")
   }, "Describe the command bound to a key sequence.")
 
-  editor.command("minibuffer-complete", ({ editor }) => editor.minibufferComplete(), "Complete the current minibuffer input.")
-  editor.command("minibuffer-submit", ({ editor }) => editor.minibufferSubmit(), "Submit the minibuffer.")
-  editor.command("minibuffer-cancel", ({ editor }) => editor.minibufferCancel(), "Cancel the minibuffer.")
-  editor.command("minibuffer-backspace", ({ editor }) => editor.minibufferBackspace(), "Delete one character in the minibuffer.")
+  editor.command("minibuffer-complete", async ({ editor }) => editor.minibufferComplete(), "Complete the current minibuffer input.")
+  editor.command("exit-minibuffer", ({ editor }) => editor.minibufferSubmit(), "Submit the minibuffer.")
+  editor.command("abort-minibuffer", ({ editor }) => editor.minibufferCancel(), "Cancel the minibuffer.")
 
   editor.command("indent-for-tab-command", ({ editor, buffer }) => {
     if (!editor.completeAtPoint(buffer)) editor.indentLine(buffer)
@@ -286,7 +309,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   }, "Renumber selected protobuf fields in ascending order.")
 
   editor.command("dired", async ({ editor, args }) => {
-    const path = args[0] ?? await editor.completingRead("Dired: ", { collection: [], history: "file", initialValue: editor.currentBuffer.directory() ?? process.cwd() })
+    const path = args[0] ?? await editor.completingRead("Dired: ", { completion: "file", history: "file", initialValue: editor.currentBuffer.directory() ?? process.cwd() })
     if (!path) return
     await editor.openDirectory(path)
   }, "Open a directory in Dired.")
@@ -360,6 +383,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
 
   editor.command("split-window", ({ editor }) => editor.splitWindow(), "Split the selected window.")
   editor.command("delete-window", ({ editor }) => editor.deleteWindow(), "Delete the selected window.")
+  editor.command("other-window", ({ editor }) => editor.nextWindow(1), "Select another window.")
   editor.command("next-window-any-frame", ({ editor }) => editor.nextWindow(1), "Select the next window.")
   editor.command("previous-window-any-frame", ({ editor }) => editor.nextWindow(-1), "Select the previous window.")
   editor.command("tab-bar-new-tab", ({ editor }) => editor.newTab(), "Create a new tab.")
@@ -428,7 +452,7 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   }, "Interactively bind a key and persist it to the Jemacs keybinds file.")
 
   editor.command("load-plugin", async ({ editor, args }) => {
-    const path = args[0] ?? await editor.prompt("Load plugin: ", "plugins/demo-plugin.ts", "file")
+    const path = args[0] ?? await editor.completingRead("Load plugin: ", { completion: "file", history: "file", initialValue: "plugins/demo-plugin.ts" })
     if (!path) return
     await evaluator.loadPlugin(path)
     editor.message(`Loaded plugin ${path}`)
@@ -456,25 +480,25 @@ export function installDefaultCommands(editor: Editor): Evaluator {
 
   editor.command("show-messages", ({ editor }) => editor.switchToBuffer("*messages*"), "Switch to the messages buffer.")
 
-  editor.command("quit", ({ editor }) => {
+  editor.command("save-buffers-kill-terminal", ({ editor }) => {
     editor.message("Quit requested")
     editor.quit()
   }, "Quit the editor.")
 
   editor.key("C-x C-x", "exchange-point-and-mark")
   editor.key("C-x C-s", "save-buffer")
-  editor.key("C-x C-f", "open-file")
+  editor.key("C-x C-f", "find-file")
   editor.key("C-x b", "switch-to-buffer")
   editor.key("C-x C-b", "list-buffers")
-  editor.key("C-x C-e", "eval-selection")
-  editor.key("C-x C-c", "quit")
+  editor.key("C-x C-e", "eval-region")
+  editor.key("C-x C-c", "save-buffers-kill-terminal")
   editor.key("C-x C-j", "previous-buffer")
   editor.key("C-x C-l", "next-buffer")
   editor.key("C-x l", "goto-line")
   editor.key("C-x C-r", "revert-buffer")
   editor.key("C-x f", "fzf-git")
-  editor.key("C-x o", "next-window-any-frame")
-  editor.key("C-space", "set-mark")
+  editor.key("C-x o", "other-window")
+  editor.key("C-space", "set-mark-command")
   editor.key("C-u", "universal-argument")
   editor.key("C-g", "keyboard-quit")
   editor.key("C-s", "isearch-forward")
@@ -483,14 +507,18 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   editor.key("C-b", "backward-char")
   editor.key("C-n", "next-line")
   editor.key("C-p", "previous-line")
-  editor.key("C-a", "beginning-of-line")
-  editor.key("C-e", "end-of-line")
+  editor.key("C-v", "scroll-up-command")
+  editor.key("M-v", "scroll-down-command")
+  editor.key("C-a", "move-beginning-of-line")
+  editor.key("C-e", "move-end-of-line")
   editor.key("M-f", "forward-word")
   editor.key("M-b", "backward-word")
   editor.key("M-backspace", "backward-kill-word")
   editor.key("M-h", "backward-kill-word")
+  editor.key("M-d", "kill-word")
   editor.key("esc f", "forward-word")
   editor.key("esc b", "backward-word")
+  editor.key("esc d", "kill-word")
   editor.key("esc backspace", "backward-kill-word")
   editor.key("C-m", "newline")
   editor.key("C-j", "newline-and-indent")
@@ -499,13 +527,14 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   editor.key("C-d", "delete-char")
   editor.key("C-k", "kill-line")
   editor.key("C-w", "kill-region")
-  editor.key("M-w", "copy-region")
+  editor.key("M-w", "kill-ring-save")
   editor.key("C-y", "yank")
   editor.key("C-_", "undo")
-  editor.key("M-x", "run-command")
-  editor.key("esc x", "run-command")
-  editor.key("C-h e", "inspect-editor")
-  editor.key("C-h c", "inspect-commands")
+  editor.key("M-x", "execute-extended-command")
+  editor.key("esc x", "execute-extended-command")
+  editor.key("C-h e", "view-echo-area-messages")
+  editor.key("C-h b", "describe-bindings")
+  editor.key("C-h c", "describe-mode")
   editor.key("C-h k", "describe-key")
   editor.key("C-x d", "dired")
   editor.key("C-c r", "replace-string")
@@ -535,13 +564,13 @@ export function installDefaultCommands(editor: Editor): Evaluator {
   editor.key("s-r", "restart-emacs")
   editor.key("C-c C-l", "load-plugin")
   editor.key("C-c C-r", "reload-current-file")
-  editor.key("C-c C-q", "quit")
+  editor.key("C-c C-q", "save-buffers-kill-terminal")
   editor.defineKey("minibuffer", "tab", "minibuffer-complete")
   editor.defineKey("minibuffer", "C-i", "minibuffer-complete")
-  editor.defineKey("minibuffer", "enter", "minibuffer-submit")
-  editor.defineKey("minibuffer", "C-m", "minibuffer-submit")
-  editor.defineKey("minibuffer", "esc", "minibuffer-cancel")
-  editor.defineKey("minibuffer", "backspace", "minibuffer-backspace")
+  editor.defineKey("minibuffer", "enter", "exit-minibuffer")
+  editor.defineKey("minibuffer", "C-m", "exit-minibuffer")
+  editor.defineKey("minibuffer", "esc", "abort-minibuffer")
+  editor.defineKey("minibuffer", "backspace", "delete-backward-char")
 
   for (const command of ["git-link", "magit-find-main", "projectile-command-map", "ace-jump-word-mode", "ace-jump-char-mode", "yafolding-toggle-element", "lsp-find-definition", "lsp-ui-peek-find-implementation", "lsp-execute-code-action", "gptel-menu", "gptel", "restart-emacs"]) {
     if (!editor.commands.get(command)) editor.command(command, ({ editor }) => editor.message(`${command} is a package-backed command placeholder in Jemacs.`), `${command} package placeholder.`)

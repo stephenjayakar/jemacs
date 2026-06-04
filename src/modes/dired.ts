@@ -203,7 +203,7 @@ export async function diredDoCopy(editor: Editor, buffer: BufferModel, prefixArg
     return
   }
   const target = await editor.completingRead("Copy to: ", {
-    collection: [],
+    completion: "file",
     history: "file",
     initialValue: buffer.path ?? process.cwd(),
   })
@@ -235,7 +235,7 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
     return
   }
   const target = await editor.completingRead("Move marked files to: ", {
-    collection: [],
+    completion: "file",
     history: "file",
     initialValue: buffer.path ?? process.cwd(),
   })

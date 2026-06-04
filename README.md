@@ -32,32 +32,35 @@ bun run dev:self
 
 ## Keybindings
 
-| Key | Action |
+Commands use **GNU Emacs function names** (`find-file`, `kill-region`, `execute-extended-command`, …). Full tables with implementation status: [DEFAULT_KEYBINDINGS.md](DEFAULT_KEYBINDINGS.md).
+
+| Key | Emacs command |
 | --- | --- |
-| Type printable keys | Insert text |
-| Return or Ctrl-J/Ctrl-M | Insert newline |
-| Backspace | Delete backward |
-| Left/Right or Ctrl-B/Ctrl-F | Move backward/forward one character |
-| Up/Down or Ctrl-P/Ctrl-N | Move to previous/next line |
-| Ctrl-A / Ctrl-E | Move to beginning/end of line |
-| Meta-B / Meta-F | Move backward/forward one word |
-| Ctrl-D | Delete forward |
-| Ctrl-K / Ctrl-Y | Kill line / yank |
-| Ctrl-W / Meta-W | Kill region / copy region |
-| Ctrl-X Ctrl-S | Save current buffer |
-| Ctrl-X Ctrl-E | Eval selection, or current buffer if no mark |
-| Ctrl-X B | Switch to buffer |
-| Ctrl-X Ctrl-B | List buffers |
-| Ctrl-X Ctrl-F | Open file via minibuffer |
-| Ctrl-Space | Set mark |
-| Ctrl-G | Cancel minibuffer / clear key sequence |
-| Meta-X / Alt-X / Esc X | Run command by name |
-| Ctrl-H E | Inspect editor |
-| Ctrl-H C | Inspect commands |
-| Ctrl-H K | Inspect keymap |
-| Ctrl-C Ctrl-L | Load plugin file via minibuffer |
-| Ctrl-C Ctrl-R | Save and reload current file |
-| Ctrl-X Ctrl-C or Ctrl-C Ctrl-Q | Quit |
+| Type printable keys | `self-insert-command` |
+| Return or Ctrl-J/Ctrl-M | `newline` / `newline-and-indent` |
+| Backspace | `delete-backward-char` |
+| Left/Right or Ctrl-B/Ctrl-F | `backward-char` / `forward-char` |
+| Up/Down or Ctrl-P/Ctrl-N | `previous-line` / `next-line` |
+| Ctrl-A / Ctrl-E | `move-beginning-of-line` / `move-end-of-line` |
+| Meta-B / Meta-F | `backward-word` / `forward-word` |
+| Ctrl-D | `delete-char` |
+| Ctrl-K / Ctrl-Y | `kill-line` / `yank` |
+| Ctrl-W / Meta-W | `kill-region` / `kill-ring-save` |
+| Ctrl-X Ctrl-S | `save-buffer` |
+| Ctrl-X Ctrl-E | `eval-region` |
+| Ctrl-X B | `switch-to-buffer` |
+| Ctrl-X Ctrl-B | `list-buffers` |
+| Ctrl-X Ctrl-F | `find-file` |
+| Ctrl-Space | `set-mark-command` |
+| Ctrl-G | `keyboard-quit` |
+| Meta-X / Alt-X / Esc X | `execute-extended-command` |
+| Ctrl-H E | `view-echo-area-messages` |
+| Ctrl-H C | `describe-mode` |
+| Ctrl-H B | `describe-bindings` |
+| Ctrl-H K | `describe-key` |
+| Ctrl-C Ctrl-L | `load-plugin` |
+| Ctrl-C Ctrl-R | `reload-current-file` |
+| Ctrl-X Ctrl-C or Ctrl-C Ctrl-Q | `save-buffers-kill-terminal` |
 
 ## Self-editing demo
 

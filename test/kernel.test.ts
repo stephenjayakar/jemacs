@@ -4,7 +4,7 @@ import { BufferModel } from "../src/kernel/buffer"
 import { isPrintable, keyToken, Keymap } from "../src/kernel/keymap"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultCommands } from "../src/init/default-commands"
-import { visibleStyledText, visibleText } from "../src/ui/opentui"
+import { pageScrollLines, visibleStyledText, visibleText } from "../src/ui/opentui"
 
 test("buffer insert/delete/undo", () => {
   const b = new BufferModel({ name: "x", text: "abc" })
@@ -71,6 +71,50 @@ test("buffer supports emacs-style movement primitives", () => {
   expect(b.point).toBe(8)
 })
 
+test("C-v and M-v scroll by a page and are bound", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const page = pageScrollLines()
+  const lines = Array.from({ length: page + 10 }, (_, i) => `line ${i + 1}`).join("\n")
+  editor.currentBuffer.setText(lines, false)
+  editor.currentBuffer.point = 0
+
+  expect(editor.keymap.get("C-v")).toBe("scroll-up-command")
+  expect(editor.keymap.get("M-v")).toBe("scroll-down-command")
+
+  await editor.run("scroll-up-command")
+  expect(editor.currentBuffer.lineCol().line).toBe(page + 1)
+
+  await editor.run("scroll-down-command")
+  expect(editor.currentBuffer.lineCol().line).toBe(1)
+
+  editor.currentBuffer.point = 0
+  expect(await editor.handleKey({ name: "v", ctrl: true })).toEqual({ status: "command", command: "scroll-up-command" })
+  expect(editor.currentBuffer.lineCol().line).toBe(page + 1)
+
+  expect(await editor.handleKey({ name: "v", meta: true })).toEqual({ status: "command", command: "scroll-down-command" })
+  expect(editor.currentBuffer.lineCol().line).toBe(1)
+})
+
+test("M-d kills the word after point and supports yank", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("one two three", false)
+  editor.currentBuffer.point = 0
+
+  expect(editor.keymap.get("M-d")).toBe("kill-word")
+  await editor.run("kill-word")
+  expect(editor.currentBuffer.text).toBe(" two three")
+  expect(editor.currentBuffer.point).toBe(0)
+
+  await editor.run("yank")
+  expect(editor.currentBuffer.text).toBe("one two three")
+
+  editor.currentBuffer.point = 4
+  expect(await editor.handleKey({ name: "d", meta: true })).toEqual({ status: "command", command: "kill-word" })
+  expect(editor.currentBuffer.text).toBe("one  three")
+})
+
 test("default emacs keybindings are registered and runnable", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
@@ -81,7 +125,7 @@ test("default emacs keybindings are registered and runnable", async () => {
   await editor.run("forward-char")
   expect(editor.currentBuffer.point).toBe(1)
 
-  await editor.run("end-of-line")
+  await editor.run("move-end-of-line")
   expect(editor.currentBuffer.point).toBe(3)
   await editor.run("kill-line")
   expect(editor.currentBuffer.text).toBe("abcdef")
@@ -89,10 +133,10 @@ test("default emacs keybindings are registered and runnable", async () => {
   expect(editor.currentBuffer.text).toBe("abc\ndef")
 
   expect(editor.keymap.feed({ name: "x", ctrl: true }).status).toBe("pending")
-  expect(editor.keymap.feed({ name: "c", ctrl: true })).toEqual({ status: "matched", command: "quit" })
-  expect(editor.keymap.feed({ name: "≈", sequence: "≈" })).toEqual({ status: "matched", command: "run-command" })
+  expect(editor.keymap.feed({ name: "c", ctrl: true })).toEqual({ status: "matched", command: "save-buffers-kill-terminal" })
+  expect(editor.keymap.feed({ name: "≈", sequence: "≈" })).toEqual({ status: "matched", command: "execute-extended-command" })
   expect(editor.keymap.feed({ name: "escape" }).status).toBe("pending")
-  expect(editor.keymap.feed({ name: "x" })).toEqual({ status: "matched", command: "run-command" })
+  expect(editor.keymap.feed({ name: "x" })).toEqual({ status: "matched", command: "execute-extended-command" })
 })
 
 test("universal argument repeats motion, insertion, and deletion commands", async () => {
@@ -135,7 +179,7 @@ test("default commands support buffer listing, switching, newline, and regions",
 
   editor.currentBuffer.mark = 0
   editor.currentBuffer.point = 5
-  await editor.run("copy-region")
+  await editor.run("kill-ring-save")
   editor.currentBuffer.point = editor.currentBuffer.text.length
   await editor.run("yank")
   expect(editor.currentBuffer.text.endsWith("hello")).toBe(true)
@@ -152,6 +196,8 @@ test("help keybindings keep C-h as a prefix", () => {
 
   expect(editor.keymap.feed({ name: "h", ctrl: true }).status).toBe("pending")
   expect(editor.keymap.feed({ name: "k" })).toEqual({ status: "matched", command: "describe-key" })
+  expect(editor.keymap.get("C-h c")).toBe("describe-mode")
+  expect(editor.keymap.get("C-h b")).toBe("describe-bindings")
 })
 
 test("live reload keybinding is registered", () => {
@@ -234,7 +280,7 @@ test("find-file prompt defaults to cwd when buffer has no directory", async () =
   const editor = new Editor()
   installDefaultCommands(editor)
   const prompt = editor.completingRead("Find file: ", {
-    collection: [],
+    completion: "file",
     history: "file",
     initialValue: editor.currentBuffer.directory() ?? process.cwd(),
   })
@@ -243,26 +289,76 @@ test("find-file prompt defaults to cwd when buffer has no directory", async () =
   await prompt
 })
 
+test("find-file minibuffer supports readline bindings like C-a", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const initial = "/tmp/example/path"
+  const prompt = editor.completingRead("Find file: ", {
+    completion: "file",
+    history: "file",
+    initialValue: initial,
+  })
+  expect(editor.activeBuffer.point).toBe(initial.length)
+
+  await editor.handleKey({ name: "a", ctrl: true })
+  expect(editor.activeBuffer.point).toBe(0)
+
+  await editor.handleKey({ name: "e", ctrl: true })
+  expect(editor.activeBuffer.point).toBe(initial.length)
+
+  editor.minibufferCancel()
+  await prompt
+})
+
+test("minibuffer ignores major mode keymaps from the edited buffer", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await editor.openDirectory(process.cwd())
+
+  const prompt = editor.completingRead("Find file: ", {
+    completion: "file",
+    history: "file",
+    initialValue: "/tmp/example",
+  })
+  await editor.handleKey({ name: "e", ctrl: true })
+  const lengthBefore = editor.activeBuffer.text.length
+  await editor.handleKey({ name: "backspace" })
+  expect(editor.activeBuffer.text.length).toBe(lengthBefore - 1)
+
+  editor.minibufferCancel()
+  await prompt
+})
+
+test("describe-key in minibuffer reports global binding for C-a", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.completingRead("Find file: ", { completion: "file", initialValue: "/tmp" })
+  expect(editor.describeKey("C-a")).toContain("move-beginning-of-line from global-map")
+  editor.minibufferCancel()
+})
+
 test("describe-key reports the winning keymap and command", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
 
-  expect(editor.describeKey("C-x C-f")).toContain("open-file from global-map")
+  expect(editor.describeKey("C-x C-f")).toContain("find-file from global-map")
   await editor.run("describe-key", ["C-x", "C-f"])
   expect(editor.currentBuffer.name).toBe("*Help*")
-  expect(editor.currentBuffer.text).toContain("C-x C-f runs open-file from global-map")
+  expect(editor.currentBuffer.text).toContain("C-x C-f runs find-file from global-map")
 })
 
 test("keymap stack gives minibuffer bindings precedence over global bindings", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
-  editor.key("tab", "quit")
-  const prompt = editor.completingRead("M-x ", { collection: ["reload-current-file", "run-command"], history: "command", initialValue: "r" })
+  editor.key("tab", "save-buffers-kill-terminal")
+  const prompt = editor.completingRead("M-x ", { collection: ["reload-current-file", "revert-buffer"], history: "command", initialValue: "r" })
 
   await editor.handleKey({ name: "tab" })
   expect(editor.running).toBe(true)
-  expect(editor.activeBuffer.text).toBe("r")
-  expect([...editor.buffers.values()].find(b => b.name === "*Completions*")?.text).toContain("run-command")
+  expect(editor.activeBuffer.text).toBe("re")
+  expect([...editor.buffers.values()].find(b => b.name === "*Completions*")?.text).toContain("revert-buffer")
   await editor.handleKey({ name: "g", ctrl: true })
   await prompt
 })
