@@ -14,6 +14,7 @@ export class BufferModel {
   dirty = false
   readOnly = false
   mode = "text"
+  onTextChange?: (event: { start: number; end: number; text: string }) => void
   private undoStack: string[] = []
   private redoStack: string[] = []
 
@@ -45,6 +46,8 @@ export class BufferModel {
   setText(text: string, markDirty = true): void {
     this.assertWritable(markDirty)
     this.snapshot()
+    const previous = this.text
+    if (previous !== text) this.onTextChange?.({ start: 0, end: previous.length, text })
     this.text = text
     this.point = Math.min(this.point, this.text.length)
     this.dirty ||= markDirty
@@ -56,6 +59,8 @@ export class BufferModel {
     this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
+    const start = this.point
+    this.onTextChange?.({ start, end: start, text: s })
     this.text = this.text.slice(0, this.point) + s + this.text.slice(this.point)
     this.point += s.length
     this.dirty = true
@@ -66,6 +71,9 @@ export class BufferModel {
     this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
+    const end = this.point
+    const start = this.point - 1
+    this.onTextChange?.({ start, end, text: "" })
     this.text = this.text.slice(0, this.point - 1) + this.text.slice(this.point)
     this.point--
     this.dirty = true
@@ -76,6 +84,9 @@ export class BufferModel {
     this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
+    const start = this.point
+    const end = this.point + 1
+    this.onTextChange?.({ start, end, text: "" })
     this.text = this.text.slice(0, this.point) + this.text.slice(this.point + 1)
     this.dirty = true
   }
@@ -208,6 +219,7 @@ export class BufferModel {
     this.deactivateMark()
     this.assertWritable(true)
     this.snapshot()
+    this.onTextChange?.({ start: from, end: to, text: replacement })
     this.text = this.text.slice(0, from) + replacement + this.text.slice(to)
     this.point = from + replacement.length
     this.dirty = true

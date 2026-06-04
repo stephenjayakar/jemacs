@@ -4,7 +4,7 @@ import { BufferModel } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
 import { isPrintable, Keymap, KeymapStack, keyToken, type KeyEventLike } from "./keymap"
-import { enterMode, getMode, modeFeature, modeLineage, type TextSpan } from "../modes/mode"
+import { enterMode, getMode, modeFeature, modeLineage, type CompletionCandidate, type TextSpan } from "../modes/mode"
 import { makeDiredBuffer } from "../modes/dired"
 import { defaultTheme, type Theme } from "../display/theme"
 import { fileCompletionCandidates } from "./completion"
@@ -30,6 +30,7 @@ import {
   type WindowNode,
 } from "./window"
 import type { RegisterContents } from "./register"
+import type { LspManager } from "../lsp/manager"
 
 export type EditorEvents = {
   changed: { reason: string }
@@ -86,6 +87,7 @@ export class Editor {
   recenterCycle = 0
   macroRecording: string[] | null = null
   lastKbdMacro: string[] = []
+  lsp: LspManager | null = null
   private minibufferDepth = 0
 
   constructor() {
@@ -299,10 +301,12 @@ export class Editor {
     if (info?.isDirectory()) return this.openDirectory(full)
     const buffer = await BufferModel.fromFile(full)
     this.addBuffer(buffer)
+    this.lsp?.attachBuffer(buffer)
     this.setSelectedWindowBuffer(buffer.id)
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     this.enterMode(buffer, buffer.mode)
     await this.changed("open-file")
+    void this.lsp?.maybeAutoStart(buffer)
     return buffer
   }
 
@@ -488,9 +492,17 @@ export class Editor {
     void this.changed("indent-line")
   }
 
-  completeAtPoint(buffer = this.activeBuffer): boolean {
+  async completeAtPoint(buffer = this.activeBuffer): Promise<boolean> {
+    const lspCandidates = await this.lsp?.completionAtPoint(buffer) ?? []
+    if (lspCandidates.length) return this.applyCompletionCandidates(buffer, lspCandidates)
+
     const complete = modeFeature(buffer.mode, "completeAtPoint")
     const candidates = complete?.(buffer) ?? []
+    if (!candidates.length) return false
+    return this.applyCompletionCandidates(buffer, candidates)
+  }
+
+  private applyCompletionCandidates(buffer: BufferModel, candidates: CompletionCandidate[]): boolean {
     if (!candidates.length) return false
     const symbol = buffer.symbolBoundsAt()
     const texts = candidates.map(candidate => candidate.text)
@@ -508,7 +520,9 @@ export class Editor {
   }
 
   fontLock(buffer = this.currentBuffer): TextSpan[] {
-    return modeFeature(buffer.mode, "fontLock")?.(buffer) ?? []
+    const spans = modeFeature(buffer.mode, "fontLock")?.(buffer) ?? []
+    const lspSpans = this.lsp?.diagnosticSpans(buffer) ?? []
+    return [...spans, ...lspSpans]
   }
 
   setTheme(theme: Theme): void {
