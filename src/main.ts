@@ -1,5 +1,5 @@
 import { Editor } from "./kernel/editor"
-import { installDefaultConfig } from "./config"
+import { installDefaultConfig, installDefaultHooks } from "./config"
 import { installDefaultModes } from "./modes/default-modes"
 import { installLspMode } from "./lsp/install"
 import { installXref } from "./xref/install"
@@ -10,6 +10,7 @@ async function main(): Promise<void> {
   const editor = new Editor()
   installDefaultConfig(editor)
   installLspMode(editor)
+  installDefaultHooks(editor)
   installXref(editor)
 
   const file = Bun.argv[2]

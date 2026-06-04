@@ -1,5 +1,6 @@
 import type { Editor } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
+import { lspDefinitionAvailable, lspFindDefinition } from "../lsp/navigation"
 import { xrefPushMark } from "./history"
 import { bufferSearchDefinitions, jumpToXrefLocation } from "./jump"
 import { formatXrefLocation, type XrefLocation } from "./types"
@@ -30,7 +31,18 @@ export async function xrefFindDefinitionsCommand(
     return
   }
 
-  const locations = await findDefinitions(editor, buffer, identifier)
+  // LSP overrides xref when finding at point (no explicit IDENTIFIER / prefix arg).
+  const useLspOverride = options.identifier == null
+    && options.prefixArgument == null
+    && identifier === atPoint
+    && lspDefinitionAvailable(editor, buffer)
+
+  if (useLspOverride) {
+    const found = await lspFindDefinition(editor, buffer)
+    if (found) return
+  }
+
+  const locations = bufferSearchDefinitions(buffer, identifier)
   if (!locations.length) {
     editor.message(`No definitions found for: ${identifier}`)
     return
@@ -56,14 +68,4 @@ export async function xrefFindDefinitionsCommand(
   if (!choice) return
   const index = choices.indexOf(choice)
   await jumpToXrefLocation(editor, locations[index >= 0 ? index : 0]!)
-}
-
-async function findDefinitions(
-  editor: Editor,
-  buffer: BufferModel,
-  identifier: string,
-): Promise<XrefLocation[]> {
-  const lspLocations = await editor.lsp?.definitionsAtPoint(buffer) ?? []
-  if (lspLocations.length) return lspLocations
-  return bufferSearchDefinitions(buffer, identifier)
 }

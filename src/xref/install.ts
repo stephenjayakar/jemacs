@@ -15,10 +15,6 @@ export function installXref(editor: Editor): void {
     if (!xrefGoForward(editor)) editor.message("At end of xref history")
   }, "Go forward in xref history after xref-go-back.")
 
-  editor.command("lsp-find-definition", async ({ editor, args, prefixArgument }) => {
-    await xrefFindDefinitionsCommand(editor, { identifier: args[0], prefixArgument })
-  }, "Find definition via xref (LSP backend when available).")
-
   editor.key("M-.", "xref-find-definitions")
   editor.key("esc .", "xref-find-definitions")
   editor.key("M-,", "xref-go-back")

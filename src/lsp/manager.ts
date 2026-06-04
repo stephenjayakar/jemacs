@@ -2,6 +2,7 @@ import type { Editor } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
 import { allClients, serverBinaryPresent, supportsBuffer, type LspClient } from "./client"
 import { createSession, linkFolderToWorkspace, type LspSession } from "./session"
+import { shouldAutoStartLsp } from "../config/lsp-auto-modes"
 import { findProjectRoot } from "./project-root"
 import { ensureBufferLspState, getBufferLspState, setBufferWorkspaces } from "./buffer-state"
 import { bufferUri } from "./positions"
@@ -155,6 +156,7 @@ export class LspManager {
 
   async maybeAutoStart(buffer: BufferModel): Promise<void> {
     if (!this.config.autoEnable || !buffer.path) return
+    if (!shouldAutoStartLsp(buffer)) return
     const state = getBufferLspState(buffer)
     if (state?.lspMode) return
     if (this.matchingClients(buffer).length) await this.lsp(buffer)

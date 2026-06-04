@@ -127,12 +127,7 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-x h", "mark-whole-buffer")
   editor.key("C-x l", "count-lines-page")
   editor.key("M-g g", "goto-line")
-  editor.key("M-.", "xref-find-definitions")
-  editor.key("esc .", "xref-find-definitions")
-  editor.key("M-,", "xref-go-back")
-  editor.key("esc ,", "xref-go-back")
-  editor.key("M-C-,", "xref-go-forward")
-  editor.key("esc C-,", "xref-go-forward")
+  // M-. and xref history: installXref (after LSP).
   editor.key("C-x r SPC", "point-to-register")
   editor.key("C-x r j", "jump-to-register")
   editor.key("C-x r w", "window-configuration-to-register")

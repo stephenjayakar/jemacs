@@ -31,6 +31,13 @@ import {
   type WindowNode,
 } from "./window"
 import type { RegisterContents } from "./register"
+import {
+  modeHookName,
+  addHook as registerHook,
+  removeHook as unregisterHook,
+  runHooks,
+  type HookFn,
+} from "./hooks"
 import type { LspManager } from "../lsp/manager"
 
 export type EditorEvents = {
@@ -308,7 +315,7 @@ export class Editor {
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     this.enterMode(buffer, buffer.mode)
     await this.changed("open-file")
-    void this.lsp?.maybeAutoStart(buffer)
+    await this.runHook("find-file-hook", buffer)
     return buffer
   }
 
@@ -345,8 +352,23 @@ export class Editor {
     return buffer
   }
 
+  /** Register a named hook (`find-file-hook`, `python-mode-hook`, …). */
+  addHook(name: string, fn: HookFn): void {
+    registerHook(name, fn)
+  }
+
+  removeHook(name: string, fn: HookFn): void {
+    unregisterHook(name, fn)
+  }
+
+  async runHook(name: string, buffer: BufferModel): Promise<void> {
+    await runHooks(name, { editor: this, buffer })
+  }
+
   enterMode(buffer: BufferModel, modeName: string): void {
-    enterMode(buffer, getMode(modeName) ? modeName : "text")
+    const resolved = getMode(modeName) ? modeName : "text"
+    enterMode(buffer, resolved)
+    void this.runHook(modeHookName(resolved), buffer)
   }
 
   command(name: string, fn: CommandFn, description?: string): void {

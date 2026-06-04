@@ -1,5 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
+import { modeHookName, addHook, type HookFn } from "../kernel/hooks"
 
 export type FaceName = "default" | "keyword" | "string" | "comment" | "builtin" | "function" | "type" | "number" | "constant" | "directory" | "region" | "isearch" | "modeLine" | "minibuffer" | "error"
 
@@ -33,6 +34,13 @@ export function defineMode(mode: Mode): Mode {
   const keymap = mode.keymap ?? new Keymap(`${mode.name}-map`)
   const installed = { ...mode, keymap }
   modes.set(installed.name, installed)
+  if (mode.hooks?.length) {
+    const hookName = modeHookName(installed.name)
+    for (const hook of mode.hooks) {
+      const fn: HookFn = ({ buffer }) => hook(buffer)
+      addHook(hookName, fn)
+    }
+  }
   return installed
 }
 
@@ -66,6 +74,5 @@ export function enterMode(buffer: BufferModel, name: string): void {
   buffer.mode = name
   for (const mode of [...modeLineage(name)].reverse()) {
     mode.onEnter?.(buffer)
-    for (const hook of mode.hooks ?? []) hook(buffer)
   }
 }

@@ -52,4 +52,5 @@ test("xref-find-definitions is bound to M-.", () => {
   installXref(editor)
   expect(editor.keymap.get("M-.")).toBe("xref-find-definitions")
   expect(editor.commands.get("xref-find-definitions")).toBeDefined()
+  expect(editor.commands.get("lsp-find-definition")).toBeUndefined()
 })

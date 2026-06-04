@@ -2,7 +2,7 @@ import type { Editor } from "../kernel/editor"
 import { registerAllLspClients } from "./clients"
 import { lspExecuteCodeAction } from "./code-actions"
 import { LspManager } from "./manager"
-import { lspFindImplementation } from "./navigation"
+import { lspFindDefinition, lspFindImplementation } from "./navigation"
 
 let installed = false
 
@@ -45,6 +45,10 @@ export function installLspMode(editor: Editor): LspManager {
     editor.lsp!.config.logIo = !editor.lsp!.config.logIo
     editor.message(`LSP trace IO ${editor.lsp!.config.logIo ? "enabled" : "disabled"}`)
   }, "Toggle logging of LSP IO.")
+
+  editor.command("lsp-find-definition", async ({ editor, buffer }) => {
+    await lspFindDefinition(editor, buffer)
+  }, "Go to the LSP definition of the symbol at point.")
 
   editor.command("lsp-ui-peek-find-implementation", async ({ editor, buffer }) => {
     await lspFindImplementation(editor, buffer)
