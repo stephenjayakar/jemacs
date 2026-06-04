@@ -184,6 +184,9 @@ test("universal argument repeats motion, insertion, and deletion commands", asyn
 })
 
 test("default commands support buffer listing, switching, newline, and regions", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  const { getMode } = await import("../src/modes/mode")
+  installDefaultModes()
   const editor = new Editor()
   installDefaultCommands(editor)
   editor.scratch("notes", "hello world", "text")
@@ -195,7 +198,18 @@ test("default commands support buffer listing, switching, newline, and regions",
   expect(editor.keymap.feed({ name: "b", ctrl: true })).toEqual({ status: "matched", command: "list-buffers" })
   await editor.run("list-buffers")
   expect(editor.currentBuffer.name).toBe("*Buffer List*")
+  expect(editor.currentBuffer.mode).toBe("buffer-list")
+  expect(editor.currentBuffer.readOnly).toBe(true)
   expect(editor.currentBuffer.text).toContain("notes")
+  expect(getMode("buffer-list")?.keymap?.get("enter")).toBe("buffer-list-select")
+
+  const notesOffset = editor.currentBuffer.text.indexOf("notes")
+  editor.currentBuffer.point = notesOffset
+  await editor.run("buffer-list-select")
+  expect(editor.currentBuffer.name).toBe("notes")
+
+  await editor.run("list-buffers")
+  expect(() => editor.currentBuffer.insert("x")).toThrow(/read-only/)
 
   await editor.run("switch-to-buffer", ["notes"])
   editor.currentBuffer.point = 5

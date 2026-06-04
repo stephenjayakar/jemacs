@@ -1,4 +1,5 @@
 import { defineMode } from "./mode"
+import { installBufferListMode } from "./buffer-list"
 import { installDiredMode } from "./dired"
 import { installLinumMode } from "./linum-mode"
 import { installMinibufferMode } from "./minibuffer"
@@ -12,5 +13,6 @@ export function installDefaultModes(): void {
   defineMode({ name: "prog-mode", parent: "text" })
   installConfigModes()
   installPythonMode()
+  installBufferListMode()
   installDiredMode()
 }

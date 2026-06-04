@@ -21,6 +21,7 @@ import {
   diredUnmarkEntry,
   refreshDiredBuffer,
 } from "../modes/dired"
+import { bufferListEntryAtPoint, showBufferList } from "../modes/buffer-list"
 import { getMode } from "../modes/mode"
 import { pythonBeginningOfDefun, pythonEndOfDefun } from "../modes/python"
 import { Evaluator } from "../runtime/evaluator"
@@ -104,14 +105,17 @@ export function installCoreCommands(editor: Editor): Evaluator {
   }, "Prompt for a buffer name and switch to it.")
 
   editor.command("list-buffers", ({ editor }) => {
-    const lines = [...editor.buffers.values()].map(buffer => {
-      const current = buffer.id === editor.currentBufferId ? "." : " "
-      const dirty = buffer.dirty ? "*" : " "
-      const path = buffer.path ? `  ${buffer.path}` : ""
-      return `${current}${dirty}  ${buffer.name.padEnd(24)} ${buffer.mode}${path}`
-    })
-    editor.scratch("*Buffer List*", lines.join("\n"), "text")
+    showBufferList(editor)
   }, "Display the buffer list.")
+
+  editor.command("buffer-list-select", ({ buffer, editor }) => {
+    const bufferId = bufferListEntryAtPoint(buffer)
+    if (!bufferId) return
+    const target = editor.buffers.get(bufferId)
+    if (!target) return
+    editor.switchToBuffer(target.id)
+    editor.message(`Switched to ${target.name}`)
+  }, "Switch to the buffer on the current buffer-list line.")
 
   editor.command("set-mark-command", ({ buffer, editor }) => {
     buffer.setMark()
