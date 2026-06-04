@@ -405,6 +405,28 @@ test("python mode supports indentation, defun navigation, font-lock, and TAB com
   expect(spans.some(span => span.face === "string" && buffer.text.slice(span.start, span.end) === "'hi'")).toBe(true)
 })
 
+test("tree-sitter font-lock highlights javascript, html, and java modes", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+
+  const js = editor.scratch("app.js", "function greet() { return 'hi' }\n", "javascript")
+  const jsSpans = editor.fontLock(js)
+  expect(jsSpans.some(span => js.text.slice(span.start, span.end) === "function" && span.face === "keyword")).toBe(true)
+  expect(jsSpans.some(span => js.text.slice(span.start, span.end) === "greet" && span.face === "function")).toBe(true)
+
+  const html = editor.scratch("page.html", "<div class=\"x\">text</div>\n", "html")
+  const htmlSpans = editor.fontLock(html)
+  expect(htmlSpans.some(span => html.text.slice(span.start, span.end) === "div" && span.face === "keyword")).toBe(true)
+  expect(htmlSpans.some(span => html.text.slice(span.start, span.end) === "class" && span.face === "type")).toBe(true)
+
+  const java = editor.scratch("Main.java", "public class Main { void run() {} }\n", "java")
+  const javaSpans = editor.fontLock(java)
+  expect(javaSpans.some(span => java.text.slice(span.start, span.end) === "public" && span.face === "keyword")).toBe(true)
+  expect(javaSpans.some(span => java.text.slice(span.start, span.end) === "Main" && span.face === "type")).toBe(true)
+  expect(javaSpans.some(span => java.text.slice(span.start, span.end) === "run" && span.face === "function")).toBe(true)
+})
+
 test("dired opens directories, follows entries, refreshes, and exposes dired keymap", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   const { getMode } = await import("../src/modes/mode")

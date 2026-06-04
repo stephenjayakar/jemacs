@@ -243,6 +243,8 @@ export class BufferModel {
 export function inferMode(path: string): string {
   if (/\.(js|mjs|cjs|jsx)$/.test(path)) return "javascript"
   if (/\.(ts|mts|cts|tsx)$/.test(path)) return "typescript"
+  if (/\.(html?|xhtml)$/.test(path)) return "html"
+  if (/\.java$/.test(path)) return "java"
   if (/\.json$/.test(path)) return "json"
   if (/\.ya?ml$/.test(path)) return "yaml"
   if (/\.mdx?$/.test(path)) return "markdown"

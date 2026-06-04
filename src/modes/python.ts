@@ -1,6 +1,7 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate } from "./mode"
+import { createTreeSitterFontLock } from "./tree-sitter"
 
 const pythonKeywords = new Set([
   "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield", "match", "case",
@@ -26,7 +27,7 @@ export function installPythonMode(): void {
     commentStart: "#",
     keymap,
     indentLine: pythonIndentLine,
-    fontLock: pythonFontLock,
+    fontLock: createTreeSitterFontLock("python"),
     completeAtPoint: pythonCompleteAtPoint,
   })
 }
@@ -69,64 +70,6 @@ export function pythonEndOfDefun(buffer: BufferModel): void {
     offset = end + 1
   }
   buffer.point = buffer.text.length
-}
-
-export function pythonFontLock(buffer: BufferModel): TextSpan[] {
-  const spans: TextSpan[] = []
-  const text = buffer.text
-  const push = (start: number, end: number, face: TextSpan["face"]) => spans.push({ start, end, face })
-
-  for (let i = 0; i < text.length;) {
-    const ch = text[i]!
-    if (ch === "#") {
-      const end = lineEnd(text, i)
-      push(i, end, "comment")
-      i = end
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      const quote = ch
-      const triple = text.slice(i, i + 3) === quote.repeat(3)
-      let end = i + (triple ? 3 : 1)
-      while (end < text.length) {
-        if (text[end] === "\\") {
-          end += 2
-          continue
-        }
-        if (triple && text.slice(end, end + 3) === quote.repeat(3)) {
-          end += 3
-          break
-        }
-        if (!triple && text[end] === quote) {
-          end++
-          break
-        }
-        end++
-      }
-      push(i, end, "string")
-      i = end
-      continue
-    }
-    i++
-  }
-
-  addRegexSpans(text, /\b\d+(?:\.\d+)?\b/g, "number", spans)
-  addRegexSpans(text, /\b[A-Za-z_]\w*\b/g, "default", spans, (match, start) => {
-    if (insideSpan(spans, start)) return
-    if (pythonKeywords.has(match)) push(start, start + match.length, "keyword")
-    else if (pythonBuiltins.has(match)) push(start, start + match.length, "builtin")
-  })
-  addRegexSpans(text, /^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)/gm, "function", spans, (_, start, match) => {
-    const name = match[1]!
-    const nameStart = start + match[0].lastIndexOf(name)
-    push(nameStart, nameStart + name.length, "function")
-  })
-  addRegexSpans(text, /^\s*class\s+([A-Za-z_]\w*)/gm, "type", spans, (_, start, match) => {
-    const name = match[1]!
-    const nameStart = start + match[0].lastIndexOf(name)
-    push(nameStart, nameStart + name.length, "type")
-  })
-  return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
 export function pythonCompleteAtPoint(buffer: BufferModel): CompletionCandidate[] {
@@ -186,14 +129,3 @@ function lineEnd(text: string, start: number): number {
   return end === -1 ? text.length : end
 }
 
-function addRegexSpans(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], fn?: (matchText: string, start: number, match: RegExpMatchArray) => void): void {
-  for (const match of text.matchAll(regex)) {
-    const start = match.index ?? 0
-    if (fn) fn(match[0], start, match)
-    else if (!insideSpan(spans, start)) spans.push({ start, end: start + match[0].length, face })
-  }
-}
-
-function insideSpan(spans: TextSpan[], point: number): boolean {
-  return spans.some(span => point >= span.start && point < span.end && (span.face === "string" || span.face === "comment"))
-}

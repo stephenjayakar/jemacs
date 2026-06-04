@@ -1,14 +1,19 @@
 import type { BufferModel } from "../kernel/buffer"
 import { defineMode, type CompletionCandidate, type Mode, type TextSpan } from "./mode"
+import { createTreeSitterFontLock } from "./tree-sitter"
 
 const javascriptKeywords = new Set("async await break case catch class const continue default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield".split(" "))
+const htmlKeywords = new Set("html head body title meta link script style div span p a img ul ol li table tr td th form input button label select option textarea h1 h2 h3 h4 h5 h6".split(" "))
+const javaKeywords = new Set("abstract assert break case catch class continue default do else enum extends final finally for goto if implements import instanceof interface native new package private protected public return static strictfp super switch synchronized this throw throws transient try volatile while true false null var record sealed permits".split(" "))
 const rustKeywords = new Set("as async await break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while".split(" "))
 const goKeywords = new Set("break default func interface select case defer go map struct chan else goto package switch const fallthrough if range type continue for import return var".split(" "))
 const protoKeywords = new Set("syntax package import option message enum service rpc returns repeated optional reserved oneof map string int32 int64 uint32 uint64 bool bytes double float".split(" "))
 
 export function installConfigModes(): void {
-  defineCodeMode("javascript", javascriptKeywords, "//", 2)
-  defineCodeMode("typescript", javascriptKeywords, "//", 2)
+  defineTreeSitterCodeMode("javascript", javascriptKeywords, "//", 2)
+  defineTreeSitterCodeMode("typescript", javascriptKeywords, "//", 2)
+  defineTreeSitterCodeMode("html", htmlKeywords, "<!--", 2, "text")
+  defineTreeSitterCodeMode("java", javaKeywords, "//", 4)
   defineCodeMode("rust", rustKeywords, "//", 4)
   defineCodeMode("go", goKeywords, "//", 4)
   const protobuf = defineCodeMode("protobuf", protoKeywords, "//", 2)
@@ -30,6 +35,17 @@ function defineCodeMode(name: string, keywords: Set<string>, commentStart: strin
     commentStart,
     indentLine: buffer => braceIndentLine(buffer, indentWidth),
     fontLock: buffer => codeFontLock(buffer, keywords, commentStart),
+    completeAtPoint: buffer => wordCompleteAtPoint(buffer, keywords),
+  })
+}
+
+function defineTreeSitterCodeMode(name: string, keywords: Set<string>, commentStart: string, indentWidth: number, parent = "prog-mode"): Mode {
+  return defineMode({
+    name,
+    parent,
+    commentStart,
+    indentLine: buffer => braceIndentLine(buffer, indentWidth),
+    fontLock: createTreeSitterFontLock(name),
     completeAtPoint: buffer => wordCompleteAtPoint(buffer, keywords),
   })
 }
