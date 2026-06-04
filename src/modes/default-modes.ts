@@ -10,7 +10,6 @@ export function installDefaultModes(): void {
   defineMode({ name: "text" })
   installMinibufferMode()
   defineMode({ name: "prog-mode", parent: "text" })
-  defineMode({ name: "json", parent: "text" })
   installConfigModes()
   installPythonMode()
   installDiredMode()

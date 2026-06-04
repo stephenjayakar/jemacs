@@ -35,7 +35,9 @@ export class BufferModel {
   }
 
   directory(): string | undefined {
-    return this.path ? dirname(this.path) : undefined
+    if (!this.path) return undefined
+    if (this.kind === "directory") return this.path
+    return dirname(this.path)
   }
 
   lineCol(): { line: number; col: number } {
@@ -259,6 +261,7 @@ export function inferMode(path: string): string {
   if (/\.(html?|xhtml)$/.test(path)) return "html"
   if (/\.java$/.test(path)) return "java"
   if (/\.json$/.test(path)) return "json"
+  if (/\.(c|h)$/.test(path)) return "c"
   if (/\.ya?ml$/.test(path)) return "yaml"
   if (/README\.md$/i.test(path)) return "gfm"
   if (/\.(?:md|markdown|mkd|mdown|mkdn|mdwn)$/i.test(path)) return "markdown"

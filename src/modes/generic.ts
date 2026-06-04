@@ -8,6 +8,8 @@ const javaKeywords = new Set("abstract assert break case catch class continue de
 const rustKeywords = new Set("as async await break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while".split(" "))
 const goKeywords = new Set("break default func interface select case defer go map struct chan else goto package switch const fallthrough if range type continue for import return var".split(" "))
 const protoKeywords = new Set("syntax package import option message enum service rpc returns repeated optional reserved oneof map string int32 int64 uint32 uint64 bool bytes double float".split(" "))
+const cKeywords = new Set("auto break case char const continue default do double else enum extern float for goto if inline int long register return short signed sizeof static struct switch typedef union unsigned void volatile while _Bool _Complex _Imaginary".split(" "))
+const jsonKeywords = new Set("true false null".split(" "))
 
 export function installConfigModes(): void {
   defineTreeSitterCodeMode("javascript", javascriptKeywords, "//", 2)
@@ -24,6 +26,8 @@ export function installConfigModes(): void {
   defineCodeMode("elixir", new Set("def defmodule defp do end case cond else fn if nil true false use import alias require receive try rescue catch after".split(" ")), "#", 2)
   defineCodeMode("jenkinsfile", new Set("pipeline agent stages stage steps post environment options when script sh echo parallel".split(" ")), "//", 2)
   defineCodeMode("yaml", new Set("true false null yes no on off".split(" ")), "#", 2, "text")
+  defineCodeMode("json", jsonKeywords, "//", 2, "text")
+  defineCodeMode("c", cKeywords, "//", 4)
   defineMode({ name: "handlebars", parent: "text", commentStart: "{{!", fontLock: handlebarsFontLock })
   defineMode({ name: "restclient", parent: "text", commentStart: "#", fontLock: restClientFontLock })
 }

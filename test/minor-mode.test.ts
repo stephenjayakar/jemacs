@@ -48,10 +48,10 @@ test("linum-mode command toggles line numbers", async () => {
 
 test("linum-mode formats a line number gutter", () => {
   const format = formatWithLineNumbers("alpha\nbeta", 1)
-  expect(format.text).toBe("1 alpha\n2 beta")
+  expect(format.text).toBe("1  alpha\n2  beta")
   expect(mapVisibleOffset(0, "alpha\nbeta", format.prefixLen)).toBe(format.prefixLen)
   const styled = visibleStyledText("alpha\nbeta", "alpha".length, { theme: defaultTheme, maxLines: 10, showLineNumbers: true })
   const rendered = styled.chunks.map(chunk => chunk.text).join("")
-  expect(rendered).toContain("1 alpha")
-  expect(rendered).toContain("2 beta")
+  expect(rendered).toContain("1  alpha")
+  expect(rendered).toContain("2  beta")
 })

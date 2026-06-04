@@ -54,6 +54,7 @@ type MinibufferRequest = {
   historyIndex: number | null
   collection?: string[]
   completion?: "file"
+  fileCompletionDirectory?: string
   resolve: (value: string | null) => void
 }
 
@@ -62,6 +63,7 @@ export type CompletingReadOptions = {
   completion?: "file"
   history?: string
   initialValue?: string
+  defaultDirectory?: string
 }
 
 export type KeyDispatchResult =
@@ -72,6 +74,7 @@ export type KeyDispatchResult =
 
 export class Editor {
   readonly buffers = new Map<string, BufferModel>()
+  private readonly fontLockCache = new WeakMap<BufferModel, { text: string; spans: TextSpan[] }>()
   readonly commands = new CommandRegistry()
   readonly keymap = new Keymap("global-map")
   readonly minibufferKeymap = new Keymap("minibuffer-local-map")
@@ -502,7 +505,9 @@ export class Editor {
       return { status: "command", command: "self-insert-command" }
     }
 
-    this.message(`Unbound key: ${keyToken(key)}`)
+    const token = keyToken(key)
+    const detail = key.raw && key.raw !== key.sequence ? ` (${key.raw.replace(/\x1b/g, "ESC")})` : ""
+    this.message(`Unbound key: ${token}${detail}`)
     return { status: "unmatched" }
   }
 
@@ -510,7 +515,7 @@ export class Editor {
     prompt: string,
     initialValue = "",
     historyName?: string,
-    options: { collection?: string[]; completion?: "file" } = {},
+    options: { collection?: string[]; completion?: "file"; defaultDirectory?: string } = {},
   ): Promise<string | null> {
     const previous = this.minibuffer
     this.minibufferDepth++
@@ -526,6 +531,9 @@ export class Editor {
         historyIndex: null,
         collection: options.collection,
         completion: options.completion,
+        fileCompletionDirectory: options.completion === "file"
+          ? (options.defaultDirectory ?? this.currentBuffer.directory() ?? process.cwd())
+          : undefined,
         resolve: value => {
           this.buffers.delete(buffer.id)
           this.minibuffer = previous
@@ -542,6 +550,7 @@ export class Editor {
     return this.prompt(prompt, options.initialValue ?? "", options.history, {
       collection: options.collection,
       completion: options.completion,
+      defaultDirectory: options.defaultDirectory,
     })
   }
 
@@ -580,8 +589,16 @@ export class Editor {
   }
 
   fontLock(buffer = this.currentBuffer): TextSpan[] {
-    const spans = modeFeature(buffer.mode, "fontLock")?.(buffer) ?? []
+    const fontLock = modeFeature(buffer.mode, "fontLock")
+    const cached = this.fontLockCache.get(buffer)
+    let spans: TextSpan[]
+    if (cached && cached.text === buffer.text) spans = cached.spans
+    else {
+      spans = fontLock?.(buffer) ?? []
+      this.fontLockCache.set(buffer, { text: buffer.text, spans })
+    }
     const lspSpans = this.lsp?.diagnosticSpans(buffer) ?? []
+    if (!lspSpans.length) return spans
     return [...spans, ...lspSpans]
   }
 
@@ -644,14 +661,14 @@ export class Editor {
   }
 
   recenterTopBottom(): void {
+    const leaf = this.selectedWindowLeaf()
+    if (!leaf) return
     const buffer = this.currentBuffer
     const page = Math.max(1, (process.stdout.rows ?? 30) - 6)
-    const { line } = buffer.lineCol()
-    const lines = buffer.text.split("\n")
-    const lineIdx = line - 1
+    const lineIdx = buffer.lineCol().line - 1
     if (this.recenterCycle === 0) {
-      const target = Math.max(0, lineIdx - Math.floor(page / 2))
-      buffer.point = lines.slice(0, target).reduce((offset, text) => offset + text.length + 1, 0)
+      const targetStart = Math.max(0, lineIdx - Math.floor(page / 2))
+      this.windowLayout = setWindowLeafStartLine(this.windowLayout, leaf.id, targetStart)
     } else if (this.recenterCycle === 1) {
       buffer.moveToLineStart()
     } else {
@@ -659,6 +676,26 @@ export class Editor {
     }
     this.recenterCycle = (this.recenterCycle + 1) % 3
     void this.changed("recenter-top-bottom")
+  }
+
+  scrollScreen(forward: boolean, screens = 1): void {
+    const leaf = this.selectedWindowLeaf()
+    if (!leaf) return
+    const buffer = this.currentBuffer
+    const page = Math.max(1, (process.stdout.rows ?? 30) - 6) * screens
+    const lines = buffer.text.split("\n")
+    const lineCount = lines.length
+    const maxStart = Math.max(0, lineCount - 1)
+    const delta = forward ? page : -page
+    const newStart = Math.max(0, Math.min(maxStart, leaf.startLine + delta))
+    this.windowLayout = setWindowLeafStartLine(this.windowLayout, leaf.id, newStart)
+    const { line, col } = buffer.lineCol()
+    const targetLine = Math.max(0, Math.min(lineCount - 1, line - 1 + delta))
+    let offset = 0
+    for (let i = 0; i < targetLine; i++) offset += lines[i]!.length + 1
+    buffer.point = Math.max(0, Math.min(buffer.text.length, offset + Math.min(col - 1, lines[targetLine]!.length)))
+    buffer.deactivateMark()
+    void this.changed(forward ? "scroll-up" : "scroll-down")
   }
 
   nextWindow(delta = 1): void {
@@ -846,7 +883,7 @@ export class Editor {
     if (!request) return
     const buffer = this.activeBuffer
     const collection = request.completion === "file"
-      ? await fileCompletionCandidates(buffer.text)
+      ? await fileCompletionCandidates(buffer.text, request.fileCompletionDirectory ?? process.cwd())
       : request.collection ?? []
     if (!collection.length) return
 

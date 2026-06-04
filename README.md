@@ -94,9 +94,24 @@ When visiting a TypeScript or JavaScript file, `Ctrl-C Ctrl-R` saves and cache-b
 
 On macOS, some terminals send Option-key characters instead of Meta events, for example Option-X as `≈` and Option-. as `≥`. Jemacs maps the common Option encodings for `M-x`, `M-f`, `M-b`, `M-.`, and `M-,`; `Esc` plus the key (e.g. `Esc .` for xref) works as a terminal-portable Meta fallback.
 
+### Kitty and Ctrl+Tab
+
+`C-tab` / `C-S-tab` run GNU `other-window` and `other-window-backward` (cycle Emacs windows). Jemacs enables Kitty’s keyboard protocol when OpenTUI supports it.
+
+**Kitty binds Ctrl+Tab to its own tab bar by default**, so the keys may never reach Jemacs. Add to `~/.config/kitty/kitty.conf`:
+
+```
+map ctrl+tab
+map ctrl+shift+tab
+```
+
+(Empty `map` lines remove Kitty’s binding.) Restart Kitty, then split a window in Jemacs (`C-x 2`) and try again. Fallback: `C-x o` (forward) — always works.
+
+If a key still fails, check the echo area after pressing it: unbound keys show the resolved token and raw escape sequence.
+
 ## Design notes
 
-The editor kernel deliberately avoids OpenTUI imports. That keeps it testable and makes the frontend replaceable. The only OpenTUI-specific file is `src/ui/opentui.ts`.
+The editor kernel deliberately avoids OpenTUI imports. That keeps it testable and makes the frontend replaceable. OpenTUI wiring lives in `src/ui/opentui.ts` and `src/ui/opentui-key.ts`.
 
 **Core vs config:** Interactive commands live in `src/core/commands.ts` (no key bindings). Default GNU keybindings are in `src/config/default-bindings.ts` using the same `editor.key()` / `editor.defineKey()` API as plugins and user config. Startup calls `installDefaultConfig(editor)` from `src/config/index.ts`. Override keys in a plugin or `~/.jemacs/init.ts` by calling `editor.key(...)` after defaults load.
 

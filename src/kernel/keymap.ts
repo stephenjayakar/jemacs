@@ -3,6 +3,8 @@ export type KeyToken = string
 export type KeyEventLike = {
   name: string
   sequence?: string
+  /** Full escape sequence from the terminal (when available). */
+  raw?: string
   ctrl?: boolean
   meta?: boolean
   shift?: boolean
@@ -135,15 +137,16 @@ export function normalizeToken(token: string): string {
 }
 
 export function keyToken(key: KeyEventLike): string {
-  const macOptionMeta = macOptionMetaKey(key)
+  const macOptionMeta = macOptionMetaKey(canonicalizeKeyEvent(key))
   if (macOptionMeta) return `M-${macOptionMeta}`
 
-  const base = normalizeKeyName(key.name === "return" ? "enter" : key.name === "escape" ? "esc" : key.name === "space" && key.sequence === " " ? "space" : key.name)
+  const canon = canonicalizeKeyEvent(key)
+  const base = normalizeKeyName(canon.name === "return" ? "enter" : canon.name === "escape" ? "esc" : canon.name === "space" && canon.sequence === " " ? "space" : canon.name)
   const mods = [
-    key.ctrl ? "C" : null,
-    key.meta ? "M" : null,
-    key.shift ? "S" : null,
-    key.super ? "s" : null,
+    canon.ctrl ? "C" : null,
+    canon.meta ? "M" : null,
+    canon.shift ? "S" : null,
+    canon.super ? "s" : null,
   ].filter(Boolean)
   return [...mods, base].join("-")
 }
@@ -158,6 +161,62 @@ export function isPrintable(key: KeyEventLike): boolean {
 
 function normalizeKeyName(name: string): string {
   return name.toLowerCase().replace(/^<(.+)>$/, "$1")
+}
+
+/** Kitty CSI-u tab encoding: ESC [ 9 ; MOD u or ESC [ 57346 ; MOD u */
+function kittyTabModifiers(raw: string): { ctrl: boolean; shift: boolean } | null {
+  const match = raw.match(/^\x1b\[(?:9|57346);(\d+)u$/)
+  if (!match) return null
+  const mask = Number.parseInt(match[1]!, 10)
+  if (Number.isNaN(mask) || mask <= 1) return { ctrl: false, shift: false }
+  const mod = mask - 1
+  return { ctrl: !!(mod & 4), shift: !!(mod & 1) }
+}
+
+function rawLooksLikeTab(raw: string): boolean {
+  return raw.includes("\t")
+    || /^\x1b\[(?:9|57346);/.test(raw)
+    || /^\x1b\[1;\d+;9u$/.test(raw)
+    || raw === "\x1b[Z"
+}
+
+/** Normalize terminal-specific Tab encodings (Emacs `<backtab>`, `<C-tab>`, Kitty CSI-u, etc.). */
+export function canonicalizeKeyEvent(key: KeyEventLike): KeyEventLike {
+  let name = normalizeKeyName(key.name)
+  let ctrl = key.ctrl === true
+  let shift = key.shift === true
+  const seq = key.sequence
+  const raw = key.raw ?? seq ?? ""
+
+  const tabMods = kittyTabModifiers(raw)
+  if (tabMods) {
+    name = "tab"
+    ctrl = tabMods.ctrl
+    shift = tabMods.shift
+  }
+
+  if (seq === "\t" || seq === "\x09") name = "tab"
+
+  // Legacy/xterm: Ctrl+Tab is byte 9, mis-parsed as name "i" (same as C-i).
+  if (ctrl && name === "i" && rawLooksLikeTab(raw)) {
+    name = "tab"
+  }
+
+  if (name === "backtab" || name === "iso-lefttab" || name === "lefttab") {
+    name = "tab"
+    shift = true
+  }
+
+  if (name === "tab" && (raw === "\x1b[Z" || raw.includes(";2u") || raw.includes("1;2;9"))) {
+    shift = true
+  }
+
+  return {
+    ...key,
+    name,
+    ctrl: ctrl || undefined,
+    shift: shift || undefined,
+  }
 }
 
 function macOptionMetaKey(key: KeyEventLike): string | null {

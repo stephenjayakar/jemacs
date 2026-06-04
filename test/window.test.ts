@@ -34,6 +34,14 @@ test("split-window-right places panes side by side", async () => {
   }
 })
 
+test("other-window-backward cycles windows in reverse tree order", async () => {
+  const editor = installEditor()
+  await editor.run("split-window-below")
+  const start = editor.selectedWindowId
+  await editor.run("other-window-backward")
+  expect(editor.selectedWindowId).not.toBe(start)
+})
+
 test("other-window cycles through leaves in tree order", async () => {
   const editor = installEditor()
   await editor.run("split-window-below")

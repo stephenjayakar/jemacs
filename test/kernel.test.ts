@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
+import { dirname } from "node:path"
 import { BufferModel } from "../src/kernel/buffer"
 import { isPrintable, keyToken, Keymap } from "../src/kernel/keymap"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultCommands } from "../src/init/default-commands"
+import { defaultTheme } from "../src/display/theme"
 import { pageScrollLines, visibleStyledText, visibleText } from "../src/ui/opentui"
 
 test("buffer insert/delete/undo", () => {
@@ -27,6 +29,26 @@ test("keymap handles multi-key command sequences", () => {
 test("space key is printable", () => {
   expect(isPrintable({ name: "space", sequence: " " })).toBe(true)
   expect(isPrintable({ name: "space", sequence: " ", ctrl: true })).toBe(false)
+})
+
+test("tab key encodings map to Emacs-style window cycle bindings", () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+
+  expect(keyToken({ name: "tab", ctrl: true })).toBe("C-tab")
+  expect(keyToken({ name: "backtab", ctrl: true })).toBe("C-S-tab")
+  expect(keyToken({ name: "iso-lefttab", ctrl: true })).toBe("C-S-tab")
+  expect(keyToken({ name: "tab", ctrl: true, shift: true })).toBe("C-S-tab")
+  expect(keyToken({ name: "i", ctrl: true, sequence: "\t", raw: "\x1b\t" })).toBe("C-tab")
+  expect(keyToken({ name: "tab", ctrl: true, raw: "\x1b[9;5u" })).toBe("C-tab")
+  expect(keyToken({ name: "tab", ctrl: true, shift: true, raw: "\x1b[57346;6u" })).toBe("C-S-tab")
+
+  expect(editor.keymap.get("C-tab")).toBe("other-window")
+  expect(editor.keymap.get("C-S-tab")).toBe("other-window-backward")
+
+  const fed = editor.keymaps.feed({ name: "tab", ctrl: true })
+  expect(fed.status).toBe("matched")
+  if (fed.status === "matched") expect(fed.command).toBe("other-window")
 })
 
 test("mac option key sequences map to meta bindings", () => {
@@ -279,6 +301,24 @@ test("incremental search moves point as the query grows", async () => {
   expect(editor.currentBuffer.point).toBe(0)
 })
 
+test("find-file prompt defaults to dired buffer directory", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dired = await editor.openDirectory("/tmp")
+  expect(dired.directory()).toBe("/tmp")
+
+  const prompt = editor.completingRead("Find file: ", {
+    completion: "file",
+    history: "file",
+    initialValue: editor.currentBuffer.directory() ?? process.cwd(),
+  })
+  expect(editor.activeBuffer.text).toBe("/tmp")
+  editor.minibufferCancel()
+  await prompt
+})
+
 test("find-file prompt defaults to cwd when buffer has no directory", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
@@ -470,6 +510,46 @@ test("dired opens directories, follows entries, refreshes, and exposes dired key
   }
 })
 
+test("dired .. opens the parent directory", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const nested = "/tmp/jemacs-dired-nested"
+  await mkdir(nested, { recursive: true })
+  const buffer = await editor.openDirectory(nested)
+  buffer.point = buffer.text.indexOf("..")
+  await editor.run("dired-find-file")
+  expect(editor.currentBuffer.path).toBe("/tmp")
+})
+
+test("c-mode and json-mode font-lock highlight keywords and strings", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+
+  const c = editor.scratch("main.c", "int main() { return 0; }\n", "c")
+  const cSpans = editor.fontLock(c)
+  expect(cSpans.some(span => c.text.slice(span.start, span.end) === "int" && span.face === "keyword")).toBe(true)
+  expect(cSpans.some(span => c.text.slice(span.start, span.end) === "return" && span.face === "keyword")).toBe(true)
+
+  const json = editor.scratch("data.json", '{ "ok": true, "msg": "hi" }\n', "json")
+  const jsonSpans = editor.fontLock(json)
+  expect(jsonSpans.some(span => json.text.slice(span.start, span.end) === "true" && span.face === "keyword")).toBe(true)
+  expect(jsonSpans.some(span => json.text.slice(span.start, span.end) === '"hi"' && span.face === "string")).toBe(true)
+})
+
+test("font-lock cache stays stable when only point moves", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  const buffer = editor.scratch("stable.js", "const value = 1\n", "javascript")
+  const first = editor.fontLock(buffer)
+  buffer.point = buffer.text.length
+  const second = editor.fontLock(buffer)
+  expect(second).toEqual(first)
+})
+
 test("theme support renders font-lock spans as styled TUI chunks", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   installDefaultModes()
@@ -499,6 +579,25 @@ test("styled TUI chunks show the active region between mark and point", () => {
 
   expect(rendered.chunks.some(chunk => chunk.text === "hello" && chunk.bg)).toBe(true)
   expect(rendered.chunks.map(chunk => chunk.text).join("")).toBe("hello█world")
+})
+
+test("region highlight skips the line number gutter", async () => {
+  const { formatWithLineNumbers, regionSpansWithLineNumbers } = await import("../src/ui/line-numbers")
+  const visible = "aaa\nbbb"
+  const format = formatWithLineNumbers(visible, 1)
+  const spans = regionSpansWithLineNumbers(0, 5, visible, format)
+  expect(spans.length).toBeGreaterThan(0)
+  for (const span of spans) {
+    expect(span.start).toBeGreaterThanOrEqual(format.prefixLen)
+    expect(span.face).toBe("region")
+  }
+  const rendered = visibleStyledText(visible, 5, {
+    mark: 0,
+    theme: defaultTheme,
+    showLineNumbers: true,
+    maxLines: 10,
+  })
+  expect(rendered.chunks.some(chunk => chunk.text.includes("aaa") && chunk.bg)).toBe(true)
 })
 
 test("styled TUI chunks keep region highlight after movement deactivates the mark", () => {

@@ -169,7 +169,12 @@ function highlightWithQuery(spec: LanguageSpec, root: SyntaxNode): TextSpan[] {
     })
   }
 
-  candidates.sort((a, b) => b.priority - a.priority || a.start - b.start || (a.end - a.start) - (b.end - b.start))
+  candidates.sort((a, b) =>
+    b.priority - a.priority
+    || a.start - b.start
+    || (a.end - a.start) - (b.end - b.start)
+    || a.end - b.end,
+  )
   const chosen: typeof candidates = []
   for (const candidate of candidates) {
     const covered = chosen.some(span =>

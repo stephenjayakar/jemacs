@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path"
 import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises"
 import type { Editor } from "../kernel/editor"
+import { expandUserPath } from "../kernel/completion"
 import { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
 import { defineMode, type TextSpan } from "./mode"
@@ -57,11 +58,11 @@ export async function refreshDiredBuffer(buffer: BufferModel): Promise<void> {
   if (!buffer.path) throw new Error(`Dired buffer ${buffer.name} has no directory path`)
   const previousMarks = diredMarks.get(buffer) ?? new Map()
   const names = await readdir(buffer.path)
-  const entries: DiredEntry[] = [
-    await entryFor(buffer.path, "."),
-    await entryFor(buffer.path, ".."),
-  ]
-  for (const name of names.sort((a, b) => a.localeCompare(b))) entries.push(await entryFor(buffer.path, name))
+  const entries: DiredEntry[] = []
+  for (const name of [".", "..", ...names.sort((a, b) => a.localeCompare(b))]) {
+    const entry = await entryFor(buffer.path, name)
+    if (entry) entries.push(entry)
+  }
 
   const marks = new Map<string, DiredMark>()
   for (const entry of entries) {
@@ -249,14 +250,25 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
   editor.message(`Moved ${entries.length} file(s) to ${destDir}`)
 }
 
-export async function diredCreateDirectory(editor: Editor, buffer: BufferModel): Promise<void> {
-  if (!buffer.path) return
-  const name = await editor.prompt("Create directory: ", "", "dired-mkdir")
-  if (!name) return
-  const path = join(buffer.path, name)
+/** GNU `make-directory`: create DIR under PARENT (interactive prompt when NAME omitted). */
+export async function makeDirectory(
+  editor: Editor,
+  parent: string,
+  name?: string,
+  refresh?: BufferModel,
+): Promise<string | null> {
+  const dirName = name?.trim() || await editor.prompt("Make directory: ", "", "make-directory")
+  if (!dirName?.trim()) return null
+  const path = resolve(parent, expandUserPath(dirName.trim()))
   await mkdir(path, { recursive: true })
-  await refreshDiredBuffer(buffer)
+  if (refresh?.kind === "directory" && refresh.path) await refreshDiredBuffer(refresh)
   editor.message(`Created ${path}`)
+  return path
+}
+
+export async function diredCreateDirectory(editor: Editor, buffer: BufferModel, name?: string): Promise<void> {
+  if (!buffer.path) return
+  await makeDirectory(editor, buffer.path, name, buffer)
 }
 
 export function diredFlagFileDeletion(buffer: BufferModel, entry: DiredEntry | undefined): void {
@@ -319,8 +331,12 @@ function diredSpecialEntry(entry: DiredEntry): boolean {
   return entry.name === "." || entry.name === ".."
 }
 
-async function entryFor(parent: string, name: string): Promise<DiredEntry> {
-  const path = name === "." ? parent : name === ".." ? parent : join(parent, name)
-  const info = await stat(path)
-  return { name, path, isDirectory: info.isDirectory(), size: info.size, mtime: info.mtime }
+async function entryFor(parent: string, name: string): Promise<DiredEntry | null> {
+  const path = name === "." ? parent : name === ".." ? dirname(parent) : join(parent, name)
+  try {
+    const info = await stat(path)
+    return { name, path, isDirectory: info.isDirectory(), size: info.size, mtime: info.mtime }
+  } catch {
+    return null
+  }
 }

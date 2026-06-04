@@ -90,8 +90,11 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-c C-t", "lsp-ui-peek-find-implementation")
   editor.key("C-x C-a", "lsp-execute-code-action")
   editor.key("C-\\", "tiling-cycle")
-  editor.key("C-tab", "next-window-any-frame")
-  editor.key("C-S-tab", "previous-window-any-frame")
+  // GNU Emacs: C-tab → other-window; C-S-tab → (other-window -1). Also accept common terminal names.
+  for (const key of ["C-tab"]) editor.key(key, "other-window")
+  for (const key of ["C-S-tab", "C-S-iso-lefttab", "C-iso-lefttab", "C-backtab"]) {
+    editor.key(key, "other-window-backward")
+  }
   editor.key("C-M-tab", "tab-bar-switch-to-next-tab")
   editor.key("C-M-S-tab", "tab-bar-switch-to-prev-tab")
   editor.key("s-}", "tab-bar-switch-to-next-tab")

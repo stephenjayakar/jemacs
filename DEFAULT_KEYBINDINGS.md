@@ -47,6 +47,8 @@ GNU Emacs **interactive function names** are the canonical identity of each bind
 | `C-x k` | `kill-buffer` | bound |
 | `C-x 0` | `delete-window` | bound |
 | `C-x 1` | `delete-other-windows` | bound |
+| `C-tab` / `C-S-tab` | `other-window` / `other-window-backward` | bound (`C-S-iso-lefttab` too) |
+| `C-x o` | `other-window` | bound |
 | `C-x 2` | `split-window-below` | bound |
 | `C-x 3` | `split-window-right` | bound |
 | `C-x u` | `undo` | bound |

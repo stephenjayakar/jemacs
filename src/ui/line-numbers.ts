@@ -6,14 +6,47 @@ export type LineNumberFormat = {
   firstLine: number
 }
 
+const GUTTER_SEPARATOR = "  "
+
 export function formatWithLineNumbers(visible: string, firstLine: number): LineNumberFormat {
   const lines = visible.split("\n")
   const width = Math.max(1, String(firstLine + Math.max(0, lines.length - 1)).length)
-  const prefixLen = width + 1
+  const prefixLen = width + GUTTER_SEPARATOR.length
   const text = lines
-    .map((line, index) => `${String(firstLine + index).padStart(width, " ")} ${line}`)
+    .map((line, index) => `${String(firstLine + index).padStart(width, " ")}${GUTTER_SEPARATOR}${line}`)
     .join("\n")
   return { text, prefixLen, firstLine }
+}
+
+/** Apply region highlight only to buffer text, not the line-number gutter on each line. */
+export function regionSpansWithLineNumbers(
+  regionStart: number,
+  regionEnd: number,
+  visible: string,
+  format: LineNumberFormat,
+): TextSpan[] {
+  if (regionStart >= regionEnd) return []
+  const spans: TextSpan[] = []
+  const lines = visible.split("\n")
+  let pos = 0
+  let formatted = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const lineEnd = pos + line.length
+    const overlapStart = Math.max(regionStart, pos)
+    const overlapEnd = Math.min(regionEnd, lineEnd)
+    if (overlapStart < overlapEnd) {
+      const contentStart = formatted + format.prefixLen
+      spans.push({
+        start: contentStart + (overlapStart - pos),
+        end: contentStart + (overlapEnd - pos),
+        face: "region",
+      })
+    }
+    formatted += format.prefixLen + line.length + (i < lines.length - 1 ? 1 : 0)
+    pos = lineEnd + 1
+  }
+  return spans
 }
 
 export function gutterSpans(formatted: string, prefixLen: number): TextSpan[] {

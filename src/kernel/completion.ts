@@ -8,19 +8,19 @@ export function expandUserPath(input: string): string {
   return input
 }
 
-export function splitCompletionInput(input: string): { directory: string; prefix: string } {
+export function splitCompletionInput(input: string, baseDirectory = process.cwd()): { directory: string; prefix: string } {
   const expanded = expandUserPath(input)
   const lastSlash = expanded.lastIndexOf("/")
   if (lastSlash === -1) {
-    return { directory: process.cwd(), prefix: expanded }
+    return { directory: baseDirectory, prefix: expanded }
   }
   const directory = expanded.slice(0, lastSlash + 1) || "/"
   const prefix = expanded.slice(lastSlash + 1)
   return { directory, prefix }
 }
 
-export async function fileCompletionCandidates(input: string): Promise<string[]> {
-  const { directory, prefix } = splitCompletionInput(input)
+export async function fileCompletionCandidates(input: string, baseDirectory = process.cwd()): Promise<string[]> {
+  const { directory, prefix } = splitCompletionInput(input, baseDirectory)
   const dirPath = directory.startsWith("/") ? directory : resolve(process.cwd(), directory)
   const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => [])
   return entries

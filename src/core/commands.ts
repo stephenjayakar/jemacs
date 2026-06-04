@@ -5,6 +5,7 @@ import type { CommandContext } from "../kernel/command"
 import type { Editor } from "../kernel/editor"
 import {
   diredCreateDirectory,
+  makeDirectory,
   diredDoCopy,
   diredDoDelete,
   diredDoFlaggedDelete,
@@ -24,7 +25,6 @@ import { getMode } from "../modes/mode"
 import { pythonBeginningOfDefun, pythonEndOfDefun } from "../modes/python"
 import { Evaluator } from "../runtime/evaluator"
 import { inspectValue } from "../runtime/inspect"
-import { pageScrollLines } from "../ui/opentui"
 import { installEmacsStandardCommands, type KillRingApi } from "./emacs-standard"
 import { isPrintable } from "../kernel/keymap"
 
@@ -180,8 +180,8 @@ export function installCoreCommands(editor: Editor): Evaluator {
   editor.command("backward-char", ({ buffer, prefixArgument }) => buffer.move(-(prefixArgument ?? 1)), "Move point backward one character.")
   editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")
   editor.command("previous-line", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1)), "Move point up one line.")
-  editor.command("scroll-up-command", ({ buffer, prefixArgument }) => buffer.moveLine((prefixArgument ?? 1) * pageScrollLines()), "Scroll forward one screenful.")
-  editor.command("scroll-down-command", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1) * pageScrollLines()), "Scroll backward one screenful.")
+  editor.command("scroll-up-command", ({ editor, prefixArgument }) => editor.scrollScreen(true, prefixArgument ?? 1), "Scroll forward one screenful.")
+  editor.command("scroll-down-command", ({ editor, prefixArgument }) => editor.scrollScreen(false, prefixArgument ?? 1), "Scroll backward one screenful.")
   editor.command("move-beginning-of-line", ({ buffer }) => buffer.moveToLineStart(), "Move point to the beginning of the line.")
   editor.command("move-end-of-line", ({ buffer }) => buffer.moveToLineEnd(), "Move point to the end of the line.")
   editor.command("forward-word", ({ buffer, prefixArgument }) => repeat(prefixArgument, () => buffer.moveWord(1)), "Move point forward one word.")
@@ -490,8 +490,16 @@ export function installCoreCommands(editor: Editor): Evaluator {
   editor.command("dired-do-rename", async ({ buffer, editor, prefixArgument }) => {
     await diredDoRename(editor, buffer, prefixArgument)
   }, "Rename a file or move marked files to another directory.")
-  editor.command("dired-create-directory", async ({ buffer, editor }) => {
-    await diredCreateDirectory(editor, buffer)
+  editor.command("make-directory", async ({ buffer, editor, args }) => {
+    const parent = buffer.directory() ?? process.cwd()
+    await makeDirectory(editor, parent, args[0], buffer.kind === "directory" ? buffer : undefined)
+  }, "Create a new directory.")
+  editor.command("dired-create-directory", async ({ buffer, editor, args }) => {
+    if (!buffer.path || buffer.kind !== "directory") {
+      editor.message("Not in Dired")
+      return
+    }
+    await diredCreateDirectory(editor, buffer, args[0])
   }, "Create a new directory in the current Dired listing.")
   editor.command("dired-unmark-backward", ({ buffer }) => {
     diredUnmarkBackward(buffer)
@@ -503,6 +511,7 @@ export function installCoreCommands(editor: Editor): Evaluator {
 
   editor.command("delete-window", ({ editor }) => editor.deleteWindow(), "Delete the selected window.")
   editor.command("other-window", ({ editor }) => editor.nextWindow(1), "Select another window.")
+  editor.command("other-window-backward", ({ editor }) => editor.nextWindow(-1), "Select the previous window in the cycle.")
   editor.command("next-window-any-frame", ({ editor }) => editor.nextWindow(1), "Select the next window.")
   editor.command("previous-window-any-frame", ({ editor }) => editor.nextWindow(-1), "Select the previous window.")
   editor.command("tab-bar-new-tab", ({ editor }) => editor.newTab(), "Create a new tab.")

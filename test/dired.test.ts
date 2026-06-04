@@ -113,6 +113,27 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("x")).toBe("dired-do-flagged-delete")
   expect(keymap?.get("% m")).toBe("dired-mark-files-regexp")
   expect(keymap?.get("% .")).toBe("dired-mark-all")
+  expect(keymap?.get("+")).toBe("dired-create-directory")
+})
+
+test("make-directory and dired + create a subdirectory", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    expect(editor.commands.get("make-directory")).toBeDefined()
+    const buffer = await editor.openDirectory(dir)
+    await editor.run("make-directory", ["nested"])
+    expect((await stat(join(dir, "nested"))).isDirectory()).toBe(true)
+    expect(buffer.text).toContain("nested")
+
+    await editor.run("dired-create-directory", ["nested-2"])
+    expect((await stat(join(dir, "nested-2"))).isDirectory()).toBe(true)
+    expect(buffer.text).toContain("nested-2")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("dired revert keeps marks on surviving files", async () => {

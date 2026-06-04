@@ -16,13 +16,19 @@ import {
   firstVisibleLineNumber,
   formatWithLineNumbers,
   gutterSpans,
+  regionSpansWithLineNumbers,
 } from "./line-numbers"
 import type { TextSpan } from "../modes/mode"
+import { keyEventFromOpentui } from "./opentui-key"
 
 export async function startOpenTui(editor: Editor): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
-    useKittyKeyboard: {},
+    useKittyKeyboard: {
+      disambiguate: true,
+      alternateKeys: true,
+      reportText: true,
+    },
   })
 
   const ui = new EditorUi(renderer, editor)
@@ -74,7 +80,7 @@ class EditorUi {
       flexDirection: "column",
       width: "100%",
       height: "100%",
-      borderStyle: "rounded",
+      border: false,
       padding: 0,
     })
 
@@ -111,7 +117,7 @@ class EditorUi {
   }
 
   async handleKey(key: KeyEvent): Promise<void> {
-    await this.editor.handleKey(key)
+    await this.editor.handleKey(keyEventFromOpentui(key))
   }
 
   render(): void {
@@ -168,7 +174,7 @@ class EditorUi {
           flexBasis: 0,
           minWidth: 0,
           minHeight: 0,
-          borderStyle: "single",
+          border: false,
         })
         const body = new TextRenderable(this.renderer, { id: `window-body:${layout.id}`, content: "", flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 })
         const modeline = new TextRenderable(this.renderer, { id: `window-modeline:${layout.id}`, content: "" })
@@ -245,7 +251,7 @@ class EditorUi {
     leaf: WindowLeaf,
     availableLines: number,
   ): void {
-    const { pane, body, modeline } = parts
+    const { body, modeline } = parts
     const selected = leaf.id === this.editor.selectedWindowId
     const buffer = this.editor.buffers.get(leaf.bufferId)
     if (!buffer) {
@@ -269,7 +275,6 @@ class EditorUi {
     const showLineNumbers = buffer.kind !== "minibuffer" && this.editor.showLineNumbers(buffer)
     body.content = visibleStyledTextFromStart(buffer.text, point, startLine, {
       mark: selected ? buffer.mark : null,
-      markActive: selected ? buffer.markActive : false,
       spans,
       theme: this.editor.theme,
       maxLines,
@@ -338,7 +343,7 @@ function styledRegion(
 ): StyledText {
   const visibleEnd = region.visibleStart + region.visible.length
   const spans = options.spans ?? []
-  const mark = options.markActive === false ? null : (options.mark ?? null)
+  const mark = options.mark ?? null
   const allSpans: TextSpan[] = mark == null || mark === point
     ? spans
     : [...spans, { start: Math.min(mark, point), end: Math.max(mark, point), face: "region" }]
@@ -353,9 +358,20 @@ function styledRegion(
 
   const firstLine = firstVisibleLineNumber(region.visibleStart, text)
   const format = formatWithLineNumbers(visible, firstLine)
+  const contentSpans = visibleSpans.filter(span => span.face !== "region")
+  const regionBounds = visibleSpans.filter(span => span.face === "region")
+  const regionSpans = regionBounds.length
+    ? regionSpansWithLineNumbers(
+      Math.min(...regionBounds.map(span => span.start)),
+      Math.max(...regionBounds.map(span => span.end)),
+      visible,
+      format,
+    )
+    : []
   const displaySpans = [
     ...gutterSpans(format.text, format.prefixLen),
-    ...adjustSpansForLineNumbers(visibleSpans, visible, format.prefixLen),
+    ...adjustSpansForLineNumbers(contentSpans, visible, format.prefixLen),
+    ...regionSpans,
   ]
   return applyTheme(format.text, displaySpans, options.theme)
 }
