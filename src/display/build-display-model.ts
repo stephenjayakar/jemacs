@@ -178,6 +178,7 @@ function buildLeafPane(editor: Editor, leaf: WindowLeaf, availableLines: number,
     }),
     availableCols,
     clickState.gutterPrefixLen,
+    maxLines,
   )
   const lighters = editor.minorModeLighters(buffer) + textScaleLighter(buffer)
   const region = selected && buffer.markActive && buffer.mark != null
@@ -228,26 +229,32 @@ function proportionalBudget(total: number, firstRatio: number, min: number): num
 }
 
 /** Hard-wrap themed body rows at `cols`, left-padding continuation rows by
- *  `padLen` so they align under the buffer text, not the line-number gutter. */
-function wrapBodyRows(body: ThemedText, cols: number | undefined, padLen: number): ThemedText {
+ *  `padLen` so they align under the buffer text, not the line-number gutter.
+ *  Output is capped at `maxRows`; when wrapping would exceed that, leading
+ *  rows are dropped so the cursor (always in the last logical line of the
+ *  input window) stays on screen. */
+function wrapBodyRows(body: ThemedText, cols: number | undefined, padLen: number, maxRows?: number): ThemedText {
   if (cols == null || cols <= padLen + 1) return body
   const pad = " ".repeat(padLen)
-  const out: ThemedChunk[] = []
+  // Build as row-chunk-lists so we can trim from the top without re-splitting.
+  const rows: ThemedChunk[][] = [[]]
   let col = 0
   for (const chunk of body.chunks) {
     let run = ""
-    const flush = () => { if (run) { out.push({ ...chunk, text: run }); run = "" } }
+    const cur = () => rows[rows.length - 1]!
+    const flush = () => { if (run) { cur().push({ ...chunk, text: run }); run = "" } }
     for (const ch of chunk.text) {
-      if (ch === "\n") { run += ch; col = 0; continue }
-      if (col >= cols) {
-        flush()
-        out.push({ text: "\n" + pad })
-        col = padLen
-      }
-      run += ch
-      col++
+      if (ch === "\n") { flush(); rows.push([]); col = 0; continue }
+      if (col >= cols) { flush(); rows.push([{ text: pad }]); col = padLen }
+      run += ch; col++
     }
     flush()
+  }
+  const kept = maxRows != null && rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows
+  const out: ThemedChunk[] = []
+  for (let i = 0; i < kept.length; i++) {
+    if (i > 0) out.push({ text: "\n" })
+    out.push(...kept[i]!)
   }
   return { chunks: out }
 }
