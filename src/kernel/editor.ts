@@ -119,6 +119,7 @@ export class Editor {
   selectedWindowId: string
   theme: Theme = defaultTheme
   selectedTab = 0
+  tilingLayout = "tiling-master-left"
   minibuffer: MinibufferRequest | null = null
   isearch: IsearchState | null = null
   running = true
@@ -789,6 +790,13 @@ export class Editor {
     this.windowLayout = deleteOtherWindowLeaves(this.windowLayout, this.selectedWindowId)
     this.restoreSelectedWindowPoint()
     void this.changed("delete-other-windows")
+  }
+
+  cycleTilingLayout(): string {
+    const layouts = ["tiling-master-left", "tiling-master-top", "tiling-even-horizontal", "tiling-even-vertical", "tiling-tile-4"]
+    this.tilingLayout = layouts[(layouts.indexOf(this.tilingLayout) + 1) % layouts.length]!
+    void this.changed("tiling-cycle")
+    return this.tilingLayout
   }
 
   balanceWindows(): void {

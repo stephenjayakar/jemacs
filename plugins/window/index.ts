@@ -44,7 +44,11 @@ export function install(editor: Editor): void {
     editor.splitWindowBelow()
   }, "Split the selected window into two windows, one above the other.")
 
+  editor.command("tiling-cycle", ({ editor }) => editor.message(`Layout ${editor.cycleTilingLayout()}`),
+    "Cycle Jemacs tiling layouts.")
+
   editor.key("C-x +", "balance-windows")
+  editor.key("C-\\", "tiling-cycle")
 
   if (advisedEditors.has(editor)) return
   advisedEditors.add(editor)
