@@ -21,7 +21,7 @@ export async function tuiProbe(opts: {
 }): Promise<{ screen: string; modeline: string; echo: string }> {
   const session = `jt${process.pid}-${counter++}`
   try {
-    sh(["start", "--config", "stephen", ...(opts.file ? [opts.file] : [])], session)
+    sh(["start", "--config", resolve(import.meta.dir, "../fixtures/stephen-config.ts"), ...(opts.file ? [opts.file] : [])], session)
     if (opts.keys.length) sh(["keys", ...opts.keys], session)
     if (opts.waitFor) sh(["wait", opts.waitFor, "5"], session)
     const screen = sh(["cap"], session)

@@ -1,5 +1,5 @@
 import { Editor } from "./kernel/editor"
-import { installDefaultConfig, installDefaultHooks, loadCustomFile } from "./config"
+import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
 import { installDefaultModes } from "./modes/default-modes"
 import { installMarkdownMode } from "./modes/markdown"
@@ -14,12 +14,13 @@ async function main(): Promise<void> {
   const editor = new Editor()
   installMarkdownMode(editor)
   const args = parseStartupArgs(Bun.argv)
-  const evaluator = installDefaultConfig(editor, { installStephen: false })
+  const evaluator = installDefaultConfig(editor)
   for (const config of args.configs) await loadStartupConfig(editor, evaluator, config)
   installLspMode(editor)
   installDefaultHooks(editor)
   installXref(editor)
   await installBuiltinPlugins(editor)
+  await installUserConfig(editor, evaluator)
   await loadCustomFile(editor, evaluator)
 
   const file = args.files[0]

@@ -8,7 +8,7 @@ import { Editor } from "../src/kernel/editor"
 import { buildDisplayModel } from "../src/display/build-display-model"
 import { getTextScaleAmount, textScaleFactor } from "../src/core/text-scale"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
-import { installStephenConfig } from "../src/config/stephen"
+import { install as installStephenConfig } from "./fixtures/stephen-config"
 import { defaultTheme } from "../src/themes"
 import { pageScrollLines, visibleStyledText, visibleText } from "../src/ui/opentui"
 

@@ -1,7 +1,6 @@
 import { resolve } from "node:path"
 import type { Editor } from "../kernel/editor"
 import type { Evaluator } from "../runtime/evaluator"
-import { installStephenConfig } from "./stephen"
 
 export type ParsedStartupArgs = {
   configs: string[]
@@ -29,11 +28,6 @@ export function parseStartupArgs(argv: string[], ignoredFlags = new Set(["--gui"
 }
 
 export async function loadStartupConfig(editor: Editor, evaluator: Evaluator, config: string): Promise<void> {
-  if (config === "stephen") {
-    installStephenConfig(editor)
-    return
-  }
-
   const mod = await evaluator.loadModule(resolve(config))
   if (typeof mod.install === "function") await mod.install(editor)
   else if (typeof mod.installDefaultConfig === "function") mod.installDefaultConfig(editor)

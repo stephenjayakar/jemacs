@@ -112,10 +112,10 @@ Eval and plugins receive the full runtime (`src/runtime/jemacs-runtime.ts`): `de
 
 ```bash
 bun run dev:self   # opens src/main.ts
-bun run src/main.ts --config stephen path/to/file.ts
+bun run src/main.ts path/to/file.ts
 ```
 
-Startup config modules can be loaded with `--config <name-or-path>`. The built-in `stephen` alias loads `src/config/stephen.ts`; path configs should export `install(editor)` or `installDefaultConfig(editor)`.
+Startup config modules can be loaded with `--config <path>`. `~/.jemacs/init.ts` is auto-loaded when present. Config modules should export `install(editor)` or `installDefaultConfig(editor)`.
 
 Module plugins: `C-c C-l` (`load-plugin`). File buffers: `C-c C-r` (`reload-current-file`) when the file exports `install(editor)` or `installDefaultConfig(editor)`.
 
