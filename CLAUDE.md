@@ -20,6 +20,17 @@ Load the `qa` skill (`.claude/skills/qa/SKILL.md`) for the full three-layer prot
 
 If the change touches key dispatch, the minibuffer, or font-lock, also add a `buildDisplayModel(editor)` assertion (layer 2).
 
+## Landing to upstream
+
+We have write access to `stephenjayakar/jemacs`. Workflow for shipping a batch:
+
+1. Push to `fork/main` (`antsujay/jemacs`) and open a PR against `stephenjayakar/jemacs:main`.
+2. Run `/code-review medium` on the PR diff (or the deep-review workflow for large batches).
+3. If the review is clean and `bun test` is green, merge it yourself: `gh pr merge <N> --repo stephenjayakar/jemacs --merge`. Don't enable auto-merge; merge after review.
+4. Pull `origin/main` back into local `main` so the next batch is based on the merge commit.
+
+Stephen also pushes directly — fetch `origin` before each batch and merge his work first.
+
 ## Adding behavior
 
 New behavior goes in `plugins/<name>/index.ts` exporting `install(editor)`, plus `test/plugins/<name>.test.ts`. Register it in `plugins/builtin.ts`. Don't add commands to `src/core/` or `src/config/` — those are slated to become plugins themselves (see DESIGN.md).
