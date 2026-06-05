@@ -135,6 +135,8 @@ export class Editor {
   minibufferCompletionFrontend: MinibufferCompletionFrontend | null = null
   minibufferCompletionDisplay: MinibufferCompletionDisplay | null = null
   completer: Completer | null = null
+  /** Command currently executing (emacs `this-command`). */
+  thisCommand: string | null = null
   private minibufferDepth = 0
   private readonly displayNames = new Map<string, string>()
   /** Buffer ids most-recently-selected first; killBuffer's fallback source. */
@@ -601,8 +603,10 @@ export class Editor {
     if (typeof spec.interactive === "string" && !runArgs.length) {
       runArgs = await readInteractiveArgs(this, spec.interactive)
     }
+    this.thisCommand = name
     const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, keyEvent }
     const result = await invokeWithAdvice(name, spec.fn, ctx)
+    await this.runHook("post-command-hook", this.activeBuffer)
     await this.changed(`command:${name}`)
     return result
   }

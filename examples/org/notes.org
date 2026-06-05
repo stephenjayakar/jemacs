@@ -1,0 +1,10 @@
+* TODO Design the remote architecture
+** State sync protocol
+   SSP-style diffing against last ack.
+** TODO Shadow kernel
+   Same code both sides; I/O stubbed on client.
+* DONE Ship the sprint
+** Squash and push
+* Inbox
+** Look at fido edge cases
+** Term hardening followups

@@ -23,6 +23,12 @@ export type MagitHunk = {
   patch: string
 }
 
+/** Reject names that would be parsed as a flag by git. */
+function refname(s: string): string {
+  if (s.startsWith("-")) throw new Error(`invalid ref/remote name: ${s}`)
+  return s
+}
+
 async function git(args: string[], cwd: string, stdin?: string): Promise<{ out: string; err: string; code: number | null }> {
   const proc = spawnProcess({
     cmd: ["git", ...args],
@@ -119,7 +125,11 @@ export type MagitStatus = {
   hunks: MagitHunk[]
 }
 
-export async function buildStatus(root: string): Promise<MagitStatus> {
+function foldKey(file: string, staged: boolean): string {
+  return `${staged ? "S" : "U"}:${file}`
+}
+
+export async function buildStatus(root: string, folded: ReadonlySet<string> = new Set()): Promise<MagitStatus> {
   const [status, headMsg, unstagedDiff, stagedDiff, log] = await Promise.all([
     git(["status", "--porcelain=v2", "--branch"], root),
     git(["log", "-1", "--pretty=%s"], root),
@@ -151,17 +161,19 @@ export async function buildStatus(root: string): Promise<MagitStatus> {
       const start = lines.length
       push(`${changeLabel(code)} ${f.file}`)
       const fd = diffs.get(f.file)
-      for (const h of fd?.hunks ?? []) {
-        const hStart = lines.length
-        push(h.header)
-        for (const l of h.lines) push(l)
-        hunks.push({
-          file: f.file,
-          staged: isStaged,
-          startLine: hStart,
-          endLine: lines.length - 1,
-          patch: hunkPatch(fd!, h),
-        })
+      if (!folded.has(foldKey(f.file, isStaged))) {
+        for (const h of fd?.hunks ?? []) {
+          const hStart = lines.length
+          push(h.header)
+          for (const l of h.lines) push(l)
+          hunks.push({
+            file: f.file,
+            staged: isStaged,
+            startLine: hStart,
+            endLine: lines.length - 1,
+            patch: hunkPatch(fd!, h),
+          })
+        }
       }
       entries.push({ file: f.file, staged: isStaged, startLine: start, endLine: lines.length - 1 })
     }
@@ -199,9 +211,10 @@ export function hunkAtPoint(buffer: BufferModel): MagitHunk | null {
 }
 
 async function refresh(editor: Editor, root: string, point?: number): Promise<BufferModel> {
-  const status = await buildStatus(root)
   const name = `*magit: ${basename(root)}*`
   const prev = [...editor.buffers.values()].find(b => b.name === name)
+  const folded = (prev?.locals.get("magit-folded") as Set<string> | undefined) ?? new Set<string>()
+  const status = await buildStatus(root, folded)
   // Preserving the byte offset is only sound when the section layout is stable
   // (g/s/u). Callers that reshape the buffer — commit drops the whole Staged
   // section — pass an explicit point so we don't land mid-word (t-6bbb608e).
@@ -212,6 +225,7 @@ async function refresh(editor: Editor, root: string, point?: number): Promise<Bu
   buf.locals.set("magit-root", root)
   buf.locals.set("magit-entries", status.entries)
   buf.locals.set("magit-hunks", status.hunks)
+  buf.locals.set("magit-folded", folded)
   buf.point = Math.min(keepPoint, buf.text.length)
   return buf
 }
@@ -220,18 +234,73 @@ function magitRoot(buffer: BufferModel): string | null {
   return (buffer.locals.get("magit-root") as string | undefined) ?? null
 }
 
+/** Extract the 7+ hex sha at point from a `--graph --oneline` line. */
+export function logShaAtPoint(buffer: BufferModel): string | null {
+  const line = lineAt(buffer)
+  const text = buffer.text.split("\n")[line] ?? ""
+  return /\b([0-9a-f]{7,40})\b/.exec(text)?.[1] ?? null
+}
+
+async function openLog(editor: Editor, root: string): Promise<BufferModel> {
+  const { out } = await git(["log", "--oneline", "--graph", "-50"], root)
+  const buf = editor.scratch("*magit-log*", out || "(no commits)\n", "magit-log")
+  buf.readOnly = true
+  buf.path = root
+  buf.locals.set("magit-root", root)
+  buf.point = 0
+  return buf
+}
+
 export function install(editor: Editor): void {
+  // Read-only magit buffers must not fall through to self-insert on stray
+  // printables (t-e061bdb3). The kernel's self-insert fallback is unconditional,
+  // so the only mode-level lever is to claim those keys first. Binding them in a
+  // *parent* mode keeps prefix sequences in the child maps (c c, l l, S-p p, …)
+  // reachable — KeymapStack.lookup checks the child's hasPrefix before
+  // descending. This is the moral equivalent of Emacs special-mode's
+  // suppress-keymap.
+  const suppressMap = new Keymap("magit-special-map")
+  suppressMap.bind("space", "magit-undefined")
+  for (let c = 0x21; c <= 0x7e; c++) suppressMap.bind(String.fromCharCode(c), "magit-undefined")
+  for (let c = 0x61; c <= 0x7a; c++) suppressMap.bind(`S-${String.fromCharCode(c)}`, "magit-undefined")
+  defineMode({ name: "magit-special", keymap: suppressMap })
+
   const statusMap = new Keymap("magit-status-map")
   statusMap.bind("s", "magit-stage")
   statusMap.bind("u", "magit-unstage")
   statusMap.bind("g", "magit-refresh")
   statusMap.bind("c c", "magit-commit")
   statusMap.bind("q", "magit-bury-buffer")
-  defineMode({ name: "magit-status", parent: "text", keymap: statusMap })
+  // keyToken() emits 'S-p' for Shift+P, but normalizeToken stores a bare 'P'
+  // as 'p' — bind both spellings so the terminal event and the lowercase alias
+  // both reach magit-push (t-26dfa2ae).
+  statusMap.bind("P p", "magit-push")
+  statusMap.bind("S-p p", "magit-push")
+  statusMap.bind("l l", "magit-log")
+  statusMap.bind("b b", "magit-branch-checkout")
+  statusMap.bind("b c", "magit-branch-create")
+  statusMap.bind("z z", "magit-stash")
+  statusMap.bind("z p", "magit-stash-pop")
+  statusMap.bind("k", "magit-discard")
+  statusMap.bind("x", "magit-reset")
+  statusMap.bind("tab", "magit-toggle-fold")
+  defineMode({ name: "magit-status", parent: "magit-special", keymap: statusMap })
 
   const commitMap = new Keymap("magit-commit-map")
   commitMap.bind("C-c C-c", "magit-commit-finish")
+  commitMap.bind("C-c C-k", "magit-commit-abort")
   defineMode({ name: "magit-commit", parent: "text", keymap: commitMap })
+
+  const logMap = new Keymap("magit-log-map")
+  logMap.bind("return", "magit-log-show-commit")
+  logMap.bind("RET", "magit-log-show-commit")
+  logMap.bind("g", "magit-log")
+  logMap.bind("q", "magit-bury-buffer")
+  defineMode({ name: "magit-log", parent: "magit-special", keymap: logMap })
+
+  editor.command("magit-undefined", ({ editor }) => {
+    editor.message("Buffer is read-only")
+  }, "No-op for unbound printable keys in read-only Magit buffers.")
 
   editor.command("magit-status", async ({ editor, buffer, args }) => {
     const start = args[0] ?? buffer.directory() ?? process.cwd()
@@ -322,7 +391,7 @@ export function install(editor: Editor): void {
     diffBuf.readOnly = true
     diffBuf.point = 0
     editor.selectWindow(msgWindow)
-    editor.message("Type C-c C-c to finish")
+    editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Open a buffer to write a commit message for staged changes.")
 
   editor.command("magit-commit-finish", async ({ editor, buffer }) => {
@@ -349,9 +418,198 @@ export function install(editor: Editor): void {
     editor.message("Committed")
   }, "Finish the commit using the current buffer as the message.")
 
+  editor.command("magit-commit-abort", ({ editor, buffer }) => {
+    if (buffer.mode !== "magit-commit") {
+      editor.message("Not in a commit message buffer")
+      return
+    }
+    const root = magitRoot(buffer)
+    const winconf = buffer.locals.get("magit-winconf") as ReturnType<Editor["currentWindowConfiguration"]> | undefined
+    editor.killBuffer(buffer.id)
+    editor.killBuffer("*magit-diff: staged*")
+    if (winconf) editor.restoreWindowConfiguration(winconf)
+    if (root) editor.switchToBuffer(`*magit: ${basename(root)}*`)
+    editor.message("Commit aborted")
+  }, "Abort the commit message buffer without committing.")
+
+  editor.command("magit-push", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    const current = out.trim() || "HEAD"
+    const remote = args[0] ?? await editor.prompt("Push to remote: ", "origin", "magit-push-remote")
+    if (remote == null) return
+    const branch = args[1] ?? await editor.prompt("Push branch: ", current, "magit-push-branch")
+    if (branch == null) return
+    const { err, code } = await git(["push", refname(remote), refname(branch)], root)
+    if (code !== 0) {
+      editor.message(`git push failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root)
+    editor.message(`Pushed ${branch} to ${remote}`)
+  }, "Push the current branch, prompting for remote and branch.")
+
+  editor.command("magit-log", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    await openLog(editor, root)
+  }, "Show recent history in a *magit-log* buffer.")
+
+  editor.command("magit-log-show-commit", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    const sha = logShaAtPoint(buffer)
+    if (!root || !sha) {
+      editor.message("No commit at point")
+      return
+    }
+    const { out } = await git(["show", "--stat", "-p", sha], root)
+    const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "text")
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.point = 0
+  }, "Show the commit at point.")
+
+  editor.command("magit-branch-checkout", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const { out } = await git(["branch", "--list", "--format=%(refname:short)"], root)
+    const branches = out.split("\n").filter(Boolean)
+    const target = args[0] ?? await editor.completingRead("Checkout branch: ", { collection: branches, history: "magit-branch" })
+    if (!target) return
+    const { err, code } = await git(["checkout", refname(target)], root)
+    if (code !== 0) {
+      editor.message(`git checkout failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root, 0)
+    editor.message(`Checked out ${target}`)
+  }, "Checkout an existing branch.")
+
+  editor.command("magit-branch-create", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const name = args[0] ?? await editor.prompt("Create and checkout branch: ", "", "magit-branch")
+    if (!name) return
+    const { err, code } = await git(["checkout", "-b", refname(name)], root)
+    if (code !== 0) {
+      editor.message(`git checkout -b failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root, 0)
+    editor.message(`Created and checked out ${name}`)
+  }, "Create and checkout a new branch.")
+
+  editor.command("magit-stash", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const { out, err, code } = await git(["stash", "push"], root)
+    if (code !== 0) {
+      editor.message(`git stash failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root, 0)
+    editor.message(out.trim() || "Stashed")
+  }, "Stash working tree changes.")
+
+  editor.command("magit-stash-pop", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const { err, code } = await git(["stash", "pop"], root)
+    if (code !== 0) {
+      editor.message(`git stash pop failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root)
+    editor.message("Popped stash")
+  }, "Pop the most recent stash.")
+
+  editor.command("magit-discard", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    const entry = entryAtPoint(buffer)
+    if (!root || !entry || entry.staged) {
+      editor.message("Nothing to discard at point")
+      return
+    }
+    const ans = await editor.prompt(`Discard changes in ${entry.file}? (y or n) `)
+    if (ans !== "y") {
+      editor.message("Discard cancelled")
+      return
+    }
+    const { err, code } = await git(["checkout", "--", entry.file], root)
+    if (code !== 0) {
+      editor.message(`git checkout failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root)
+    editor.message(`Discarded ${entry.file}`)
+  }, "Discard unstaged changes to the file at point (with confirmation).")
+
+  editor.command("magit-reset", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const { err, code } = await git(["reset", "HEAD", "--"], root)
+    if (code !== 0) {
+      editor.message(`git reset failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root)
+    editor.message("Reset index to HEAD")
+  }, "Unstage all staged changes (reset index to HEAD).")
+
+  editor.command("magit-toggle-fold", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    const entry = entryAtPoint(buffer)
+    if (!root || !entry) {
+      editor.message("Nothing to fold at point")
+      return
+    }
+    const folded = (buffer.locals.get("magit-folded") as Set<string> | undefined) ?? new Set<string>()
+    const key = foldKey(entry.file, entry.staged)
+    if (folded.has(key)) folded.delete(key)
+    else folded.add(key)
+    buffer.locals.set("magit-folded", folded)
+    // Re-render with the new fold set; place point on the entry's header so a
+    // second TAB on the same key toggles back regardless of the diff body length.
+    const status = await buildStatus(root, folded)
+    const next = status.entries.find(e => e.file === entry.file && e.staged === entry.staged)
+    await refresh(editor, root, next ? lineToPoint(status.text, next.startLine) : buffer.point)
+  }, "Toggle folding of the diff body for the file at point.")
+
   editor.command("magit-bury-buffer", ({ editor }) => {
     editor.previousBuffer()
   }, "Bury the Magit status buffer.")
 
   editor.key("C-x g", "magit-status")
+}
+
+function lineToPoint(text: string, line: number): number {
+  let pos = 0
+  for (let i = 0; i < line; i++) {
+    const nl = text.indexOf("\n", pos)
+    if (nl < 0) return text.length
+    pos = nl + 1
+  }
+  return pos
 }

@@ -627,7 +627,7 @@ export function installCoreCommands(editor: Editor): Evaluator {
     const pattern = args[0] ?? await editor.prompt("Search project: ", "", "search")
     if (!pattern) return
     const proc = spawnProcess({
-      cmd: ["rg", "--line-number", "--column", "--no-heading", pattern],
+      cmd: ["rg", "--line-number", "--column", "--no-heading", "--", pattern],
       cwd: process.cwd(),
       stdout: "pipe",
       stderr: "pipe",

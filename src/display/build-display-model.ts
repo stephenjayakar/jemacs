@@ -3,6 +3,7 @@ import { isearchMatchSpan } from "../kernel/isearch"
 import { findWindowLeaf, type WindowLeaf, type WindowNode } from "../kernel/window"
 import { diagnosticsForBuffer } from "../lsp/diagnostics"
 import { positionToPoint } from "../lsp/positions"
+import { modeFeature } from "../modes/mode"
 import { textWithCursor } from "../ui/text-display"
 import { windowClickState } from "./click-to-point"
 import { visibleStyledTextFromStart } from "./buffer-view"
@@ -151,14 +152,20 @@ function buildLeafPane(editor: Editor, leaf: WindowLeaf, availableLines: number,
   const showLineNumbers = buffer.kind !== "minibuffer" && editor.showLineNumbers(buffer)
   const mark = selected && buffer.markActive ? buffer.mark : null
   const syncSpans = bufferHighlightSpans(point, mark, spans)
-  const clickState = windowClickState(buffer.text, startLine, maxLines, showLineNumbers)
+  // Selective-display (org folding etc.): mode may project buffer text/offsets onto a shorter body.
+  const filt = modeFeature(buffer.mode, "displayFilter")?.(buffer)
+  const dText = filt?.text ?? buffer.text
+  const dPoint = filt ? filt.map(point) : point
+  const dMark = filt && mark != null ? filt.map(mark) : mark
+  const dSpans = filt ? spans.map(s => ({ ...s, start: filt.map(s.start), end: filt.map(s.end) })) : spans
+  const clickState = windowClickState(dText, startLine, maxLines, showLineNumbers)
   // Hosts hard-wrap overflowing rows at column 0, which paints continuation
   // text into the next line's gutter (t-16be1a86). Pre-wrap here so every
   // continuation row carries the gutter's left padding.
   const body = wrapBodyRows(
-    visibleStyledTextFromStart(buffer.text, point, startLine, {
-      mark,
-      spans,
+    visibleStyledTextFromStart(dText, dPoint, startLine, {
+      mark: dMark,
+      spans: dSpans,
       theme: editor.theme,
       maxLines,
       showLineNumbers,

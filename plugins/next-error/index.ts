@@ -149,7 +149,7 @@ export function install(editor: Editor): void {
     if (!pattern) return
     const cwd = buffer.path ? await findProjectRoot(buffer.path) : process.cwd()
     const proc = spawnProcess({
-      cmd: ["rg", "--line-number", "--column", "--no-heading", pattern],
+      cmd: ["rg", "--line-number", "--column", "--no-heading", "--", pattern],
       cwd,
       stdout: "pipe",
       stderr: "pipe",

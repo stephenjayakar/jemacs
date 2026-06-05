@@ -48,6 +48,8 @@ export type Mode = {
   onEnter?: (buffer: BufferModel) => void
   indentLine?: (buffer: BufferModel) => void
   fontLock?: (buffer: BufferModel) => TextSpan[]
+  /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */
+  displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number } | null
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
 }
 

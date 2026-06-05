@@ -35,6 +35,9 @@ const builtins: Array<[name: string, load: () => Promise<{ install: (e: Editor) 
   ["smerge", () => import("./smerge")],
   ["osc52", () => import("./osc52")],
   ["term-v2", () => import("./term-v2")],
+  ["avy", () => import("./avy")],
+  ["org", () => import("./org")],
+  ["lean4", () => import("./lean4")],
 ]
 
 export async function installBuiltinPlugins(editor: Editor): Promise<void> {
