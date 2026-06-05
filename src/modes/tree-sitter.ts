@@ -120,13 +120,16 @@ const languageSpecs: Map<string, LanguageSpec> = new Map([
 const parsers = new Map<string, Parser>()
 const queries = new Map<string, Parser.Query>()
 const markdownInlineLanguage = (Markdown as { inline: Language }).inline
+/** Per-buffer cached tree + the exact text it was parsed from, so the next
+ *  call can `tree.edit()` + reparse incrementally instead of from scratch. */
+const trees = new WeakMap<BufferModel, { tree: Parser.Tree; text: string; language: string }>()
 
 export function treeSitterFontLock(language: string, buffer: BufferModel): TextSpan[] {
   const spec = languageSpecs.get(language)
   if (!spec) return []
   try {
     const parser = parserFor(language, spec.language)
-    const tree = parser.parse(buffer.text)
+    const tree = parseIncremental(parser, language, buffer)
     if (spec.highlightsPath) return highlightWithQuery(spec, tree.rootNode)
     if (language === "markdown" || language === "gfm") return highlightMarkdown(tree.rootNode, buffer.text)
     return spec.highlight?.(tree.rootNode) ?? []
@@ -134,12 +137,63 @@ export function treeSitterFontLock(language: string, buffer: BufferModel): TextS
     if (process.env.JEMACS_DEBUG_FONT_LOCK === "1") {
       console.error(`tree-sitter font-lock failed for ${language}:`, error)
     }
+    trees.delete(buffer)
     return []
   }
 }
 
 export function createTreeSitterFontLock(language: string): (buffer: BufferModel) => TextSpan[] {
   return buffer => treeSitterFontLock(language, buffer)
+}
+
+function parseIncremental(parser: Parser, language: string, buffer: BufferModel): Parser.Tree {
+  const text = buffer.text
+  const cached = trees.get(buffer)
+  if (cached?.language === language) {
+    if (cached.text === text) return cached.tree
+    cached.tree.edit(diffEdit(cached.text, text, buffer))
+    const tree = parser.parse(text, cached.tree)
+    trees.set(buffer, { tree, text, language })
+    return tree
+  }
+  const tree = parser.parse(text)
+  trees.set(buffer, { tree, text, language })
+  return tree
+}
+
+/** Derive the single bounding edit between two texts via common prefix/suffix.
+ *  `onTextChange` is single-assignment (LSP owns it), so we recover the edit
+ *  here instead — O(n) char compares, far cheaper than a full parse. */
+function diffEdit(oldText: string, newText: string, buffer: BufferModel): Parser.Edit {
+  const minLen = Math.min(oldText.length, newText.length)
+  let pre = 0
+  while (pre < minLen && oldText.charCodeAt(pre) === newText.charCodeAt(pre)) pre++
+  let suf = 0
+  const sufMax = minLen - pre
+  while (suf < sufMax && oldText.charCodeAt(oldText.length - 1 - suf) === newText.charCodeAt(newText.length - 1 - suf)) suf++
+  const startIndex = pre
+  const oldEndIndex = oldText.length - suf
+  const newEndIndex = newText.length - suf
+  const startPosition = pointInBuffer(buffer, startIndex)
+  return {
+    startIndex, oldEndIndex, newEndIndex,
+    startPosition,
+    newEndPosition: pointInBuffer(buffer, newEndIndex),
+    oldEndPosition: advancePoint(startPosition, oldText, startIndex, oldEndIndex),
+  }
+}
+
+function pointInBuffer(buffer: BufferModel, index: number): Parser.Point {
+  const row = buffer.lineAt(index)
+  return { row, column: index - buffer.lineStarts[row]! }
+}
+
+function advancePoint(from: Parser.Point, text: string, lo: number, hi: number): Parser.Point {
+  let row = from.row, col = from.column
+  for (let i = lo; i < hi; i++) {
+    if (text.charCodeAt(i) === 10) { row++; col = 0 } else col++
+  }
+  return { row, column: col }
 }
 
 function parserFor(language: string, grammar: Language): Parser {
@@ -187,25 +241,38 @@ function highlightWithQuery(spec: LanguageSpec, root: SyntaxNode): TextSpan[] {
     || (a.end - a.start) - (b.end - b.start)
     || a.end - b.end,
   )
-  const chosen: typeof candidates = []
-  for (const candidate of candidates) {
-    const covered = chosen.some(span =>
-      span.priority > candidate.priority
-      && span.start <= candidate.start
-      && span.end >= candidate.end,
-    )
-    if (covered) continue
-    const overlap = chosen.findIndex(span => candidate.start < span.end && candidate.end > span.start)
-    if (overlap === -1) {
-      chosen.push(candidate)
-      continue
-    }
-    if (candidate.priority > chosen[overlap]!.priority) chosen[overlap] = candidate
+  // Greedy: keep a candidate iff it overlaps nothing already chosen. Walk by
+  // descending-priority tiers (each tier is start-sorted by the sort above) and
+  // merge each into the start-sorted non-overlapping `chosen` — O(n) per tier
+  // for ~15 tiers, vs the previous O(n²) some()/findIndex() scan.
+  let chosen: typeof candidates = []
+  for (let i = 0; i < candidates.length;) {
+    const pri = candidates[i]!.priority
+    let j = i
+    while (j < candidates.length && candidates[j]!.priority === pri) j++
+    chosen = mergeTier(chosen, candidates, i, j)
+    i = j
   }
+  return chosen.map(({ start, end, face }) => ({ start, end, face }))
+}
 
-  return chosen
-    .map(({ start, end, face }) => ({ start, end, face }))
-    .sort((a, b) => a.start - b.start || a.end - b.end)
+/** Merge a start-sorted tier slice into start-sorted non-overlapping `chosen`,
+ *  dropping tier items that overlap any chosen item or an earlier kept tier item. */
+function mergeTier<T extends { start: number; end: number }>(chosen: T[], tier: readonly T[], lo: number, hi: number): T[] {
+  const out: T[] = []
+  let ci = 0, ti = lo, lastEnd = -1
+  while (ci < chosen.length || ti < hi) {
+    if (ci < chosen.length && (ti >= hi || chosen[ci]!.start <= tier[ti]!.start)) {
+      const c = chosen[ci++]!
+      out.push(c)
+      if (c.end > lastEnd) lastEnd = c.end
+    } else {
+      const t = tier[ti++]!
+      const hitsNext = ci < chosen.length && chosen[ci]!.start < t.end
+      if (t.start >= lastEnd && !hitsNext) { out.push(t); lastEnd = t.end }
+    }
+  }
+  return out
 }
 
 function highlightHtml(root: SyntaxNode): TextSpan[] {

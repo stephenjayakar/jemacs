@@ -212,6 +212,9 @@ export function install(editor: Editor): void {
       buffer.append(`\n[process exited ${code}]\n`)
       session.xt.dispose()
       sessions.delete(buffer)
+      // The override is editor-global; drop it whenever *this* term installed it,
+      // even if the user has since clicked into another window (t-f2e861cb).
+      if (editor.overridingTerminalLocalMap === termRawMap) editor.overridingTerminalLocalMap = null
       if (editor.currentBuffer === buffer) void editor.run("term-line-mode")
       void editor.changed("term-exit")
     })

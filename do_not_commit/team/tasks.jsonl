@@ -231,3 +231,15 @@
 {"id": "t-a1b206f4", "ts": 1780682788935, "kind": "refactor", "priority": "p1", "owns": "src/display/viewport.ts", "status": "open", "title": "lineStarts consumers: viewport.ts visibleTextRegionFromStart", "detail": "Use buffer.lineStarts/lineAt/lineBounds instead of split(\"\n\"). The primitive is in buffer.ts.", "by": "coordinator"}
 {"id": "t-17819f73", "ts": 1780682788935, "kind": "refactor", "priority": "p1", "owns": "src/lsp/positions.ts", "status": "open", "title": "lineStarts consumers: lsp/positions.ts positionToPoint/pointToPosition", "detail": "Use buffer.lineStarts/lineAt/lineBounds instead of split(\"\n\"). The primitive is in buffer.ts.", "by": "coordinator"}
 {"id": "t-a34299b6", "ts": 1780682788935, "kind": "refactor", "priority": "p1", "owns": "src/ui/line-numbers.ts", "status": "open", "title": "lineStarts consumers: line-numbers.ts firstVisibleLineNumber/mapVisibleOffset", "detail": "Use buffer.lineStarts/lineAt/lineBounds instead of split(\"\n\"). The primitive is in buffer.ts.", "by": "coordinator"}
+{"id": "t-3626ecfb", "status": "done", "ts": 1780683653330}
+{"id": "t-159210e5", "status": "done", "ts": 1780683653330}
+{"id": "t-72a786a2", "status": "done", "ts": 1780683653330}
+{"id": "t-53dc13cb", "status": "done", "ts": 1780683653330}
+{"id": "t-fa555091", "status": "done", "ts": 1780683653330}
+{"id": "t-c64dd1aa", "status": "done", "ts": 1780683653330}
+{"id": "t-b2fd0029", "status": "done", "ts": 1780683653330}
+{"id": "t-fb6d4cdb", "status": "done", "ts": 1780683653330}
+{"id": "t-11c51530", "status": "done", "ts": 1780683653330}
+{"id": "t-03f8df43", "status": "done", "ts": 1780683653330}
+{"id": "t-f2e861cb", "status": "done", "ts": 1780683653330}
+{"id": "t-5594b54f", "status": "done", "ts": 1780683653330}

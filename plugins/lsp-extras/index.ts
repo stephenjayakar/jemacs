@@ -53,7 +53,13 @@ function findBufferForPath(editor: Editor, path: string): BufferModel | undefine
   return [...editor.buffers.values()].find(b => b.path === path)
 }
 
-export async function applyWorkspaceEdit(editor: Editor, wedit: WorkspaceEdit): Promise<number> {
+export interface WorkspaceEditResult {
+  edits: number
+  files: number
+  failed: Array<{ path: string; error: Error }>
+}
+
+export async function applyWorkspaceEdit(editor: Editor, wedit: WorkspaceEdit): Promise<WorkspaceEditResult> {
   const prepared: Array<{ path: string; edits: TextEdit[] }> = []
   if (wedit.documentChanges?.length) {
     for (const change of wedit.documentChanges) {
@@ -66,19 +72,32 @@ export async function applyWorkspaceEdit(editor: Editor, wedit: WorkspaceEdit): 
       prepared.push({ path: uriToPath(uri), edits })
     }
   }
-  if (!prepared.length) return 0
+  const result: WorkspaceEditResult = { edits: 0, files: 0, failed: [] }
+  if (!prepared.length) return result
 
   const originBufferId = editor.currentBufferId
-  let total = 0
-  for (const { path, edits } of prepared) {
-    const buffer = findBufferForPath(editor, path) ?? await editor.openFile(path)
-    applyTextEdits(buffer, edits)
-    total += edits.length
+  try {
+    for (const { path, edits } of prepared) {
+      try {
+        const buffer = findBufferForPath(editor, path) ?? await editor.openFile(path)
+        applyTextEdits(buffer, edits)
+        result.edits += edits.length
+        result.files += 1
+      } catch (err) {
+        result.failed.push({ path, error: err instanceof Error ? err : new Error(String(err)) })
+      }
+    }
+  } finally {
+    if (editor.buffers.has(originBufferId) && editor.currentBufferId !== originBufferId) {
+      editor.switchToBuffer(originBufferId)
+    }
   }
-  if (editor.buffers.has(originBufferId) && editor.currentBufferId !== originBufferId) {
-    editor.switchToBuffer(originBufferId)
+  if (result.failed.length) {
+    const total = result.files + result.failed.length
+    const detail = result.failed.map(f => f.path).join(", ")
+    editor.message(`Applied edits in ${result.files} of ${total} files (${result.failed.length} failed: ${detail})`)
   }
-  return total
+  return result
 }
 
 function locationLine(editor: Editor, loc: ResolvedLocation): string {
@@ -122,13 +141,18 @@ async function lspRename(editor: Editor, buffer: BufferModel, newName?: string):
   if (!name) return
   for (const workspace of workspaces) {
     const params = lspMakeRenameParams({ ...positionParams(workspace, buffer), newName: name })
-    const result = await workspace.rpc.request("textDocument/rename", params) as WorkspaceEdit | null
-    if (!result) continue
-    const count = await applyWorkspaceEdit(editor, result)
-    if (count) {
-      editor.message(`Renamed ${count} occurrence${count === 1 ? "" : "s"} of \`${symbol}\` to \`${name}\``)
-      return
+    const response = await workspace.rpc.request("textDocument/rename", params) as WorkspaceEdit | null
+    if (!response) continue
+    const result = await applyWorkspaceEdit(editor, response)
+    if (!result.edits && !result.failed.length) continue
+    if (result.failed.length) {
+      const total = result.files + result.failed.length
+      const detail = result.failed.map(f => f.path).join(", ")
+      editor.message(`Renamed ${result.files} of ${total} files (${result.failed.length} failed: ${detail})`)
+    } else {
+      editor.message(`Renamed ${result.edits} occurrence${result.edits === 1 ? "" : "s"} of \`${symbol}\` to \`${name}\``)
     }
+    return
   }
   editor.message("Nothing to rename")
 }

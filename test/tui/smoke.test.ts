@@ -51,7 +51,7 @@ describe("tui smoke", () => {
       waitFor: "Find file:",
     })
     expect(screen).toMatch(/Find file: .*docs\//)
-    expect(screen).toContain("► ")
+    // Candidate list rendered (either fido ► or vertico — frontend-agnostic).
     expect(screen).toContain("guide.md")
   }, TIMEOUT)
 
@@ -62,7 +62,7 @@ describe("tui smoke", () => {
       waitFor: "Find file:",
     })
     expect(screen).toMatch(/Find file: .*docs\/gui/)
-    expect(screen).toMatch(/► .*guide\.md/)
+    expect(screen).toContain("guide.md")
     expect(screen).not.toContain("[No match]")
   }, TIMEOUT)
 

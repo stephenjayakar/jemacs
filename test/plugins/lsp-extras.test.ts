@@ -141,7 +141,7 @@ test("applyWorkspaceEdit prefers documentChanges over changes", async () => {
       },
     ],
   })
-  expect(count).toBe(1)
+  expect(count.edits).toBe(1)
   expect(buf.text).toBe("z y\n")
 })
 

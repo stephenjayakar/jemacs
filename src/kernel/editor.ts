@@ -47,7 +47,8 @@ import { fileExists, readFileText, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
 import { defcustom, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
-import { registerKeyBinding } from "../runtime/key-registry"
+import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
+import type { SourceLocation } from "../runtime/source"
 
 export type EditorEvents = {
   changed: { reason: string }
@@ -113,7 +114,10 @@ export class Editor {
   readonly minibufferHistory = new Map<string, string[]>()
   readonly registers = new Map<string, RegisterContents>()
   readonly tabs: Array<{ name: string; bufferId: string }> = []
-  windowLayout: WindowNode
+  private _windowLayout!: WindowNode
+  /** Read-only view of the window tree. Mutate via kernel primitives (setSelectedWindowPoint etc). */
+  get windowLayout(): WindowNode { return this._windowLayout }
+  private set windowLayout(layout: WindowNode) { this._windowLayout = layout }
   selectedWindowId: string
   theme: Theme = defaultTheme
   selectedTab = 0
@@ -135,6 +139,8 @@ export class Editor {
   minibufferCompletionFrontend: MinibufferCompletionFrontend | null = null
   minibufferCompletionDisplay: MinibufferCompletionDisplay | null = null
   completer: Completer | null = null
+  /** Gutter predicate consulted by build-display-model; modes (linum) install the policy. */
+  showLineNumbers: (buffer?: BufferModel) => boolean = () => false
   /** Command currently executing (emacs `this-command`). */
   thisCommand: string | null = null
   private minibufferDepth = 0
@@ -176,6 +182,16 @@ export class Editor {
 
   selectedWindowLeaf() {
     return findWindowLeaf(this.windowLayout, this.selectedWindowId)
+  }
+
+  /** Kernel primitive: set the selected window's stored point without bypassing persist/restore invariants. */
+  setSelectedWindowPoint(point: number): void {
+    this.windowLayout = setWindowLeafPoint(this.windowLayout, this.selectedWindowId, point)
+  }
+
+  /** Kernel primitive: set the selected window's first visible line (recenter, jump-to-location). */
+  setSelectedWindowStartLine(line: number): void {
+    this.windowLayout = setWindowLeafStartLine(this.windowLayout, this.selectedWindowId, line)
   }
 
   private persistSelectedWindowPoint(): void {
@@ -260,23 +276,6 @@ export class Editor {
       this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
     }
     this.restoreSelectedWindowPoint()
-  }
-
-  windowConfigurationToRegister(register: string): void {
-    this.registers.set(register, this.currentWindowConfiguration())
-    this.message(`Saved window configuration to register ${register}`)
-  }
-
-  jumpToRegister(register: string): boolean {
-    const value = this.registers.get(register)
-    if (!value) return false
-    if (value.kind === "point") {
-      this.currentBuffer.point = Math.max(0, Math.min(value.point, this.currentBuffer.text.length))
-      this.windowLayout = setWindowLeafPoint(this.windowLayout, this.selectedWindowId, this.currentBuffer.point)
-      return true
-    }
-    this.restoreWindowConfiguration(value)
-    return true
   }
 
   setSelectedWindowDedicated(dedicated: boolean): void {
@@ -406,16 +405,6 @@ export class Editor {
     return found
   }
 
-  nextBuffer(): BufferModel {
-    const values = [...this.buffers.values()].filter(b => b.kind !== "minibuffer")
-    const i = values.findIndex(b => b.id === this.currentBufferId)
-    const next = values[(i + 1) % values.length]!
-    this.setSelectedWindowBuffer(next.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = next.id
-    void this.changed("next-buffer")
-    return next
-  }
-
   previousBuffer(): BufferModel {
     const values = [...this.buffers.values()].filter(b => b.kind !== "minibuffer")
     const i = values.findIndex(b => b.id === this.currentBufferId)
@@ -506,36 +495,24 @@ export class Editor {
     this.commands.define(name, fn, { description, interactive: true })
   }
 
+  /** @deprecated Use `defineKey("global-map", sequence, commandName)`. */
   key(sequence: string, commandName: string): void {
-    this.keymap.bind(sequence, commandName)
-    registerKeyBinding("global-map", sequence, commandName)
+    this.defineKey("global-map", sequence, commandName)
   }
 
-  defineKey(mapName: "global" | "minibuffer" | string, sequence: string, commandName: string): void {
-    const map = mapName === "global" || mapName === "global-map"
-      ? "global-map"
-      : mapName === "minibuffer" || mapName === "minibuffer-local-map"
-        ? "minibuffer-local-map"
-        : mapName.replace(/-map$/, "")
-    if (mapName === "global" || mapName === "global-map") this.keymap.bind(sequence, commandName)
-    else if (mapName === "minibuffer" || mapName === "minibuffer-local-map") this.minibufferKeymap.bind(sequence, commandName)
+  defineKey(mapName: "global" | "minibuffer" | string, sequence: string, commandName: string, source?: SourceLocation): void {
+    const map = canonicalMapName(mapName)
+    if (map === "global-map") this.keymap.bind(sequence, commandName)
+    else if (map === "minibuffer-local-map") this.minibufferKeymap.bind(sequence, commandName)
     else {
-      const base = mapName.replace(/-map$/, "")
+      const base = map.slice(0, -4) // strip canonical "-map" suffix for mode lookup
       const mode = getMode(base)
-      if (mode?.keymap) {
-        mode.keymap.bind(sequence, commandName)
-        registerKeyBinding(map, sequence, commandName)
-        return
-      }
-      const minor = getMinorMode(base)
-      if (minor?.keymap) {
-        minor.keymap.bind(sequence, commandName)
-        registerKeyBinding(map, sequence, commandName)
-        return
-      }
-      throw new Error(`Unknown keymap: ${mapName}`)
+      const minor = mode ? undefined : getMinorMode(base)
+      const target = mode?.keymap ?? minor?.keymap
+      if (!target) throw new Error(`Unknown keymap: ${mapName}`)
+      target.bind(sequence, commandName)
     }
-    registerKeyBinding(map, sequence, commandName)
+    registerKeyBinding(map, sequence, commandName, source)
   }
 
   isMinorModeEnabled(name: string, buffer: BufferModel = this.currentBuffer): boolean {
@@ -543,10 +520,6 @@ export class Editor {
     if (!mode) return false
     if (this.globalMinorModes.has(name)) return true
     return buffer.minorModes.has(name)
-  }
-
-  showLineNumbers(buffer: BufferModel = this.currentBuffer): boolean {
-    return this.isMinorModeEnabled("linum-mode", buffer)
   }
 
   activeMinorModes(buffer: BufferModel = this.currentBuffer): MinorMode[] {
@@ -904,35 +877,6 @@ export class Editor {
     void this.changed("recenter-top-bottom")
   }
 
-  scrollScreen(forward: boolean, screens = 1): void {
-    const leaf = this.selectedWindowLeaf()
-    if (!leaf) return
-    const buffer = this.currentBuffer
-    const page = pageScrollLines() * screens
-    const lines = buffer.text.split("\n")
-    const lineCount = lines.length
-    const maxStart = Math.max(0, lineCount - 1)
-    const delta = forward ? page : -page
-    const newStart = Math.max(0, Math.min(maxStart, leaf.startLine + delta))
-    this.windowLayout = setWindowLeafStartLine(this.windowLayout, leaf.id, newStart)
-    const { line, col } = buffer.lineCol()
-    const targetLine = Math.max(0, Math.min(lineCount - 1, line - 1 + delta))
-    let offset = 0
-    for (let i = 0; i < targetLine; i++) offset += lines[i]!.length + 1
-    buffer.point = Math.max(0, Math.min(buffer.text.length, offset + Math.min(col - 1, lines[targetLine]!.length)))
-    buffer.deactivateMark()
-    void this.changed(forward ? "scroll-up" : "scroll-down")
-  }
-
-  nextWindow(delta = 1): void {
-    if (listWindowLeaves(this.windowLayout).length <= 1) return
-    this.persistSelectedWindowPoint()
-    this.selectedWindowId = nextWindowId(this.windowLayout, this.selectedWindowId, delta)
-    this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
-    this.restoreSelectedWindowPoint()
-    void this.changed("select-window")
-  }
-
   deleteWindow(): void {
     if (listWindowLeaves(this.windowLayout).length <= 1) return
     this.persistSelectedWindowPoint()
@@ -944,43 +888,6 @@ export class Editor {
     this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
     this.restoreSelectedWindowPoint()
     void this.changed("delete-window")
-  }
-
-  newTab(): void {
-    this.tabs.push({ name: String(this.tabs.length + 1), bufferId: this.currentBufferId })
-    this.selectedTab = this.tabs.length - 1
-    void this.changed("new-tab")
-  }
-
-  switchTab(delta: number): void {
-    if (!this.tabs.length) return
-    this.selectedTab = (this.selectedTab + delta + this.tabs.length) % this.tabs.length
-    this.currentBufferId = this.tabs[this.selectedTab]!.bufferId
-    this.windowLayout = setWindowLeafBuffer(this.windowLayout, this.selectedWindowId, this.currentBufferId, this.currentBuffer.point)
-    void this.changed("switch-tab")
-  }
-
-  closeTab(): void {
-    if (this.tabs.length <= 1) return
-    this.tabs.splice(this.selectedTab, 1)
-    this.selectedTab = Math.min(this.selectedTab, this.tabs.length - 1)
-    this.currentBufferId = this.tabs[this.selectedTab]!.bufferId
-    this.windowLayout = setWindowLeafBuffer(this.windowLayout, this.selectedWindowId, this.currentBufferId, this.currentBuffer.point)
-    void this.changed("close-tab")
-  }
-
-  cycleTilingLayout(): string {
-    const layouts = ["tiling-master-left", "tiling-master-top", "tiling-even-horizontal", "tiling-even-vertical", "tiling-tile-4"]
-    this.tilingLayout = layouts[(layouts.indexOf(this.tilingLayout) + 1) % layouts.length]!
-    void this.changed("tiling-cycle")
-    return this.tilingLayout
-  }
-
-  universalArgument(): number {
-    const value = this.prefixArg.universalArgument()
-    const sign = this.prefixArg.isNegative() ? "-" : ""
-    this.message(`C-u ${sign}${value}`)
-    return value
   }
 
   consumePrefixArgument(): number | null {

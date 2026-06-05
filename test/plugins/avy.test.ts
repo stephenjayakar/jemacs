@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
 import { displayRows, parseKey } from "../harness"
 import { install, avyLabels, avyCollect, avySpans, AVY_KEYS } from "../../plugins/avy"
-import { setWindowLeafStartLine } from "../../src/kernel/window"
 
 const tick = () => new Promise(r => setTimeout(r, 0))
 
@@ -54,7 +53,7 @@ describe("avyCollect", () => {
     const { editor } = setup(lines)
     // Scroll the only leaf 40 lines down; matches before that are off-screen.
     const leaf = editor.selectedWindowLeaf()!
-    editor.windowLayout = setWindowLeafStartLine(editor.windowLayout, leaf.id, 40)
+    editor.setSelectedWindowStartLine(40)
     const hits = avyCollect(editor, "x", 10)
     expect(hits.length).toBe(10)
     // First visible 'x' is on line 40.

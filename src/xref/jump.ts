@@ -1,6 +1,5 @@
 import type { Editor } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
-import { setWindowLeafPoint } from "../kernel/window"
 import { pointToPosition, positionToPoint } from "../lsp/positions"
 import type { XrefLocation } from "./types"
 
@@ -10,7 +9,7 @@ export async function jumpToXrefLocation(editor: Editor, location: XrefLocation)
     if (!buffer) return
     editor.switchToBuffer(location.bufferId)
     buffer.point = positionToPoint(buffer.text, { line: location.line, character: location.column })
-    editor.windowLayout = setWindowLeafPoint(editor.windowLayout, editor.selectedWindowId, buffer.point)
+    editor.setSelectedWindowPoint(buffer.point)
     await editor.changed("xref-jump")
     return
   }
@@ -18,7 +17,7 @@ export async function jumpToXrefLocation(editor: Editor, location: XrefLocation)
   if (!location.path) return
   const buffer = await editor.openFile(location.path)
   buffer.point = positionToPoint(buffer.text, { line: location.line, character: location.column })
-  editor.windowLayout = setWindowLeafPoint(editor.windowLayout, editor.selectedWindowId, buffer.point)
+  editor.setSelectedWindowPoint(buffer.point)
   await editor.changed("xref-jump")
 }
 

@@ -111,6 +111,13 @@ export function clearHooks(name?: string): void {
 
 export async function runHooks(name: string, ctx: HookContext): Promise<void> {
   for (const fn of getHooks(name)) {
-    await fn(ctx)
+    try {
+      await fn(ctx)
+    } catch (err) {
+      // Emacs run-hooks + condition-case semantics: a failing hook is reported
+      // and skipped so the remaining hooks (and the caller) still run.
+      const msg = err instanceof Error ? err.message : String(err)
+      ctx.editor.message(`Error in ${name}: ${msg}`)
+    }
   }
 }

@@ -15,17 +15,26 @@ export type KeyBindingSpec = {
 
 const bindings = new Map<string, KeyBindingSpec>()
 
+/** Normalize all keymap aliases to the canonical `-map`-suffixed form so every
+ *  registration/lookup path agrees on the registry key (t-159210e5). */
+export function canonicalMapName(map: string): string {
+  if (map === "global" || map === "global-map") return "global-map"
+  if (map === "minibuffer" || map === "minibuffer-local-map") return "minibuffer-local-map"
+  return map.endsWith("-map") ? map : `${map}-map`
+}
+
 function bindingKey(map: string, sequence: string): string {
-  return `${map}\0${normalizeSequence(sequence)}`
+  return `${canonicalMapName(map)}\0${normalizeSequence(sequence)}`
 }
 
 export function registerKeyBinding(map: string, sequence: string, command: string, source?: SourceLocation): void {
-  const key = bindingKey(map, sequence)
+  const canonical = canonicalMapName(map)
+  const key = bindingKey(canonical, sequence)
   const normalized = normalizeSequence(sequence)
   const existing = bindings.get(key)
   const loc = source ?? captureCallerSource(3)
   if (!existing) {
-    bindings.set(key, { map, sequence: normalized, command, source: loc, baselineCommand: command, patched: false })
+    bindings.set(key, { map: canonical, sequence: normalized, command, source: loc, baselineCommand: command, patched: false })
   } else {
     existing.command = command
     if (loc) existing.source = loc
@@ -34,7 +43,7 @@ export function registerKeyBinding(map: string, sequence: string, command: strin
   registerCatalogEntry({
     kind: "key",
     name: normalized,
-    detail: map,
+    detail: canonical,
     source: loc,
     patched: existing?.patched,
     doc: `Runs command ${command}`,
@@ -42,10 +51,7 @@ export function registerKeyBinding(map: string, sequence: string, command: strin
 }
 
 export function applyKeyBinding(editor: Editor, map: string, sequence: string, command: string, source?: SourceLocation): void {
-  registerKeyBinding(map, sequence, command, source)
-  if (map === "global-map" || map === "global") editor.keymap.bind(sequence, command)
-  else if (map === "minibuffer-local-map" || map === "minibuffer") editor.minibufferKeymap.bind(sequence, command)
-  else editor.defineKey(map, sequence, command)
+  editor.defineKey(map, sequence, command, source)
 }
 
 export function getKeyBinding(map: string, sequence: string): KeyBindingSpec | undefined {
@@ -78,5 +84,5 @@ export function markKeyBindingPatched(map: string, sequence: string, command: st
 }
 
 export function keyBindingRef(map: string, sequence: string): DefinitionRef {
-  return { kind: "key", name: normalizeSequence(sequence), detail: map }
+  return { kind: "key", name: normalizeSequence(sequence), detail: canonicalMapName(map) }
 }

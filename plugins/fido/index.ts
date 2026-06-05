@@ -55,6 +55,13 @@ export const flexCompleter: Completer = (input, collection) => {
   return scored.map(s => s.text)
 }
 
+/** Fido owns the minibuffer only when its mode is on AND no other frontend (vertico, ivy)
+ * has claimed `minibufferCompletionFrontend`. Keys are bound at install() so handlers must
+ * check this themselves and fall through to default behaviour otherwise (t-fa555091). */
+function fidoActive(editor: Editor): boolean {
+  return editor.globalMinorModes.has("fido-vertical-mode") && !editor.minibufferCompletionFrontend
+}
+
 function fidoState(editor: Editor): FidoState {
   const buffer = editor.activeBuffer
   let state = buffer.locals.get("fido") as FidoState | undefined
@@ -85,7 +92,7 @@ async function fidoExhibit(editor: Editor): Promise<void> {
 }
 
 function fidoMove(editor: Editor, delta: number): void {
-  if (!editor.minibuffer) return
+  if (!editor.minibuffer || !fidoActive(editor)) return
   const state = fidoState(editor)
   const n = state.candidates.length
   if (!n) return
@@ -102,6 +109,10 @@ async function fidoDescend(editor: Editor, dir: string): Promise<void> {
 
 async function fidoRet(editor: Editor): Promise<void> {
   if (!editor.minibuffer) return
+  if (!fidoActive(editor)) {
+    editor.minibufferSubmit()
+    return
+  }
   const state = fidoState(editor)
   const choice = state.candidates[state.selected]
   if (choice == null) {
@@ -121,6 +132,10 @@ async function fidoRet(editor: Editor): Promise<void> {
 }
 
 async function fidoSlash(editor: Editor): Promise<void> {
+  if (!fidoActive(editor)) {
+    await editor.run("self-insert-command", ["/"])
+    return
+  }
   const state = fidoState(editor)
   const choice = state.candidates[state.selected]
   if (editor.minibuffer?.completion === "file" && choice?.endsWith("/")) {
@@ -132,6 +147,10 @@ async function fidoSlash(editor: Editor): Promise<void> {
 
 async function fidoBackwardUpdir(editor: Editor): Promise<void> {
   if (!editor.minibuffer) return
+  if (!fidoActive(editor)) {
+    await editor.run("delete-backward-char")
+    return
+  }
   const buffer = editor.activeBuffer
   const input = editor.minibufferInput()
   const isFile = editor.minibuffer.completion === "file"
@@ -194,12 +213,12 @@ export function install(editor: Editor): void {
   editor.defineKey("minibuffer", "/", "icomplete-fido-slash")
 
   editor.events.on("minibuffer", async () => {
-    if (!editor.globalMinorModes.has("fido-vertical-mode")) return
+    if (!fidoActive(editor)) return
     await fidoExhibit(editor)
   })
   editor.events.on("changed", async ({ reason }) => {
     if (!editor.minibuffer) return
-    if (!editor.globalMinorModes.has("fido-vertical-mode")) return
+    if (!fidoActive(editor)) return
     if (!reason.startsWith("command:") || reason.startsWith("command:icomplete-")) return
     await fidoExhibit(editor)
   })

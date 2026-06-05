@@ -38,7 +38,11 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
         }
       }
     } catch (error) {
-      editor.message(error instanceof Error ? error.stack ?? error.message : String(error))
+      editor.message(error instanceof Error ? error.message : String(error))
+      if (error instanceof Error && error.stack) {
+        const log = [...editor.buffers.values()].find(b => b.name === "*messages*")
+        log?.append(`${error.stack}\n`)
+      }
     }
   }
 

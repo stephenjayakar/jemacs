@@ -1,6 +1,5 @@
 import type { Editor } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
-import { setWindowLeafPoint } from "../kernel/window"
 
 type XrefMark = { bufferId: string; point: number }
 
@@ -45,7 +44,7 @@ function restoreMark(editor: Editor, mark: XrefMark): boolean {
   if (!buffer) return false
   editor.switchToBuffer(mark.bufferId)
   buffer.point = Math.max(0, Math.min(mark.point, buffer.text.length))
-  editor.windowLayout = setWindowLeafPoint(editor.windowLayout, editor.selectedWindowId, buffer.point)
+  editor.setSelectedWindowPoint(buffer.point)
   void editor.changed("xref-go")
   return true
 }

@@ -2,6 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMode } from "../../src/modes/mode"
 import { Keymap, normalizeSequence, type KeyEventLike } from "../../src/kernel/keymap"
+import { addAdvice } from "../../src/runtime/advice"
 import { spawnPty, type Pty } from "./pty"
 
 export type TermState = { pty: Pty; lines: string[]; row: number; col: number }
@@ -83,6 +84,9 @@ export function install(editor: Editor): void {
     pty.onExit(code => {
       buffer.append(`\n[process exited ${code}]\n`)
       sessions.delete(buffer)
+      // The override is editor-global; drop it whenever *this* term installed it,
+      // even if the user has since clicked into another window (t-f2e861cb).
+      if (editor.overridingTerminalLocalMap === termRawMap) editor.overridingTerminalLocalMap = null
       if (editor.currentBuffer === buffer) void editor.run("term-line-mode")
       void editor.changed("term-exit")
     })
@@ -99,6 +103,14 @@ export function install(editor: Editor): void {
   editor.command("term-line-mode", ({ buffer, editor }) => {
     buffer.readOnly = false
     editor.overridingTerminalLocalMap = null
+  })
+
+  // Universal escape: a stuck term override soft-locks the whole editor, so
+  // keyboard-quit must always be able to tear it down (t-f2e861cb).
+  addAdvice("keyboard-quit", {
+    after: ({ editor }) => {
+      if (editor.overridingTerminalLocalMap === termRawMap) editor.overridingTerminalLocalMap = null
+    },
   })
 
   editor.command("term-send-raw", ({ buffer, editor, args, keyEvent }) => {

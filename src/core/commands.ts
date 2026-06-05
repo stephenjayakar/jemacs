@@ -34,6 +34,8 @@ import { revertAllDefinitions } from "../runtime/patch-eval"
 import { inspectValue } from "../runtime/inspect"
 import { installEmacsStandardCommands, readKey, type KillRingApi } from "./emacs-standard"
 import { isPrintable } from "../kernel/keymap"
+import { listWindowLeaves, nextWindowId } from "../kernel/window"
+import { pageScrollLines } from "../display/viewport"
 
 defcustom("make-backup-files", "boolean", true,
   "Non-nil means make a backup of a file the first time it is saved.")
@@ -123,8 +125,14 @@ export function installCoreCommands(editor: Editor): Evaluator {
 
   editor.command("find-file", findFile, "Open a file into a buffer.")
 
+  const cycleBuffer = (editor: Editor, delta: number) => {
+    const values = [...editor.buffers.values()].filter(b => b.kind !== "minibuffer")
+    const i = values.findIndex(b => b.id === editor.currentBufferId)
+    return editor.switchToBuffer(values[(i + delta + values.length) % values.length]!.id)
+  }
+
   editor.command("next-buffer", ({ editor }) => {
-    const b = editor.nextBuffer()
+    const b = cycleBuffer(editor, 1)
     editor.message(`Switched to ${editor.bufferDisplayName(b)}`)
   }, "Switch to the next buffer.")
 
@@ -189,7 +197,10 @@ export function installCoreCommands(editor: Editor): Evaluator {
     else editor.startIsearch(-1)
   }, "Incremental search backward.")
 
-  editor.command("universal-argument", ({ editor }) => editor.universalArgument(), "Begin or multiply the numeric prefix argument.")
+  editor.command("universal-argument", ({ editor }) => {
+    const value = editor.prefixArg.universalArgument()
+    editor.message(`C-u ${editor.prefixArg.isNegative() ? "-" : ""}${value}`)
+  }, "Begin or multiply the numeric prefix argument.")
   editor.command("negative-argument", ({ editor }) => {
     editor.prefixArg.toggleNegative()
     editor.message(`Negative argument ${editor.prefixArg.describe()}`)
@@ -222,8 +233,8 @@ export function installCoreCommands(editor: Editor): Evaluator {
   editor.command("backward-char", ({ buffer, prefixArgument }) => buffer.move(-(prefixArgument ?? 1)), "Move point backward one character.")
   editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")
   editor.command("previous-line", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1)), "Move point up one line.")
-  editor.command("scroll-up-command", ({ editor, prefixArgument }) => editor.scrollScreen(true, prefixArgument ?? 1), "Scroll forward one screenful.")
-  editor.command("scroll-down-command", ({ editor, prefixArgument }) => editor.scrollScreen(false, prefixArgument ?? 1), "Scroll backward one screenful.")
+  editor.command("scroll-up-command", ({ editor, prefixArgument }) => scrollScreen(editor, true, prefixArgument ?? 1), "Scroll forward one screenful.")
+  editor.command("scroll-down-command", ({ editor, prefixArgument }) => scrollScreen(editor, false, prefixArgument ?? 1), "Scroll backward one screenful.")
   editor.command("move-beginning-of-line", ({ buffer }) => buffer.moveToLineStart(), "Move point to the beginning of the line.")
   editor.command("move-end-of-line", ({ buffer }) => buffer.moveToLineEnd(), "Move point to the end of the line.")
   editor.command("forward-word", ({ buffer, prefixArgument }) => {
@@ -316,16 +327,22 @@ export function installCoreCommands(editor: Editor): Evaluator {
     const register = args[0] ?? await editor.prompt("Jump to register: ", "f", "register")
     if (!register) return
     const value = editor.registers.get(register)
-    if (value?.kind === "point" && value.bufferId && editor.buffers.has(value.bufferId)) {
-      editor.switchToBuffer(value.bufferId)
+    if (!value) { editor.message(`Register ${register} is empty`); return }
+    if (value.kind === "point") {
+      if (value.bufferId && editor.buffers.has(value.bufferId)) editor.switchToBuffer(value.bufferId)
+      const buffer = editor.currentBuffer
+      buffer.point = Math.max(0, Math.min(value.point, buffer.text.length))
+      editor.setSelectedWindowPoint(buffer.point)
+      return
     }
-    if (!editor.jumpToRegister(register)) editor.message(`Register ${register} is empty`)
+    editor.restoreWindowConfiguration(value)
   }, "Jump to a saved point or window configuration register.")
 
   editor.command("window-configuration-to-register", async ({ editor, args }) => {
     const register = args[0] ?? await editor.prompt("Window configuration to register: ", "w", "register")
     if (!register) return
-    editor.windowConfigurationToRegister(register)
+    editor.registers.set(register, editor.currentWindowConfiguration())
+    editor.message(`Saved window configuration to register ${register}`)
   }, "Save the current window configuration to a register.")
 
   editor.command("scroll-other-window", ({ editor, prefixArgument }) => {
@@ -523,19 +540,40 @@ export function installCoreCommands(editor: Editor): Evaluator {
   }, "Move up one line and unmark or unflag.")
   editor.command("quit-window", ({ editor }) => {
     editor.deleteWindow()
-    if (editor.windows.length === 1) editor.nextBuffer()
+    if (editor.windows.length === 1) cycleBuffer(editor, 1)
   }, "Bury the current special buffer and select another buffer.")
 
+  const otherWindow = (editor: Editor, delta: number) => {
+    if (listWindowLeaves(editor.windowLayout).length <= 1) return
+    editor.selectWindow(nextWindowId(editor.windowLayout, editor.selectedWindowId, delta))
+  }
   editor.command("delete-window", ({ editor }) => editor.deleteWindow(), "Delete the selected window.")
-  editor.command("other-window", ({ editor }) => editor.nextWindow(1), "Select another window.")
-  editor.command("other-window-backward", ({ editor }) => editor.nextWindow(-1), "Select the previous window in the cycle.")
-  editor.command("next-window-any-frame", ({ editor }) => editor.nextWindow(1), "Select the next window.")
-  editor.command("previous-window-any-frame", ({ editor }) => editor.nextWindow(-1), "Select the previous window.")
-  editor.command("tab-bar-new-tab", ({ editor }) => editor.newTab(), "Create a new tab.")
-  editor.command("tab-bar-close-tab", ({ editor }) => editor.closeTab(), "Close the current tab.")
-  editor.command("tab-bar-switch-to-next-tab", ({ editor }) => editor.switchTab(1), "Switch to the next tab.")
-  editor.command("tab-bar-switch-to-prev-tab", ({ editor }) => editor.switchTab(-1), "Switch to the previous tab.")
-  editor.command("tiling-cycle", ({ editor }) => editor.message(`Layout ${editor.cycleTilingLayout()}`), "Cycle Jemacs tiling layouts.")
+  editor.command("other-window", ({ editor }) => otherWindow(editor, 1), "Select another window.")
+  editor.command("other-window-backward", ({ editor }) => otherWindow(editor, -1), "Select the previous window in the cycle.")
+  editor.command("next-window-any-frame", ({ editor }) => otherWindow(editor, 1), "Select the next window.")
+  editor.command("previous-window-any-frame", ({ editor }) => otherWindow(editor, -1), "Select the previous window.")
+  editor.command("tab-bar-new-tab", ({ editor }) => {
+    editor.tabs.push({ name: String(editor.tabs.length + 1), bufferId: editor.currentBufferId })
+    editor.selectedTab = editor.tabs.length - 1
+  }, "Create a new tab.")
+  editor.command("tab-bar-close-tab", ({ editor }) => {
+    if (editor.tabs.length <= 1) return
+    editor.tabs.splice(editor.selectedTab, 1)
+    editor.selectedTab = Math.min(editor.selectedTab, editor.tabs.length - 1)
+    editor.switchToBuffer(editor.tabs[editor.selectedTab]!.bufferId)
+  }, "Close the current tab.")
+  const switchTab = (editor: Editor, delta: number) => {
+    if (!editor.tabs.length) return
+    editor.selectedTab = (editor.selectedTab + delta + editor.tabs.length) % editor.tabs.length
+    editor.switchToBuffer(editor.tabs[editor.selectedTab]!.bufferId)
+  }
+  editor.command("tab-bar-switch-to-next-tab", ({ editor }) => switchTab(editor, 1), "Switch to the next tab.")
+  editor.command("tab-bar-switch-to-prev-tab", ({ editor }) => switchTab(editor, -1), "Switch to the previous tab.")
+  editor.command("tiling-cycle", ({ editor }) => {
+    const layouts = ["tiling-master-left", "tiling-master-top", "tiling-even-horizontal", "tiling-even-vertical", "tiling-tile-4"]
+    editor.tilingLayout = layouts[(layouts.indexOf(editor.tilingLayout) + 1) % layouts.length]!
+    editor.message(`Layout ${editor.tilingLayout}`)
+  }, "Cycle Jemacs tiling layouts.")
 
   editor.command("load-theme", ({ editor, args }) => {
     const name = args[0]?.trim()
@@ -747,6 +785,22 @@ export function installCoreCommands(editor: Editor): Evaluator {
   installLiveSourceCommands(editor, evaluator)
 
   return evaluator
+}
+
+/** Scroll selected window by `screens` pages and move point with it (Emacs scroll-up/down). */
+function scrollScreen(editor: Editor, forward: boolean, screens: number): void {
+  const leaf = editor.selectedWindowLeaf()
+  if (!leaf) return
+  const buffer = editor.currentBuffer
+  const lines = buffer.text.split("\n")
+  const delta = (forward ? 1 : -1) * pageScrollLines() * screens
+  editor.setSelectedWindowStartLine(Math.max(0, Math.min(lines.length - 1, leaf.startLine + delta)))
+  const { line, col } = buffer.lineCol()
+  const targetLine = Math.max(0, Math.min(lines.length - 1, line - 1 + delta))
+  let offset = 0
+  for (let i = 0; i < targetLine; i++) offset += lines[i]!.length + 1
+  buffer.point = Math.max(0, Math.min(buffer.text.length, offset + Math.min(col - 1, lines[targetLine]!.length)))
+  buffer.deactivateMark()
 }
 
 function repeat(prefixArgument: number | null, fwd: () => void, bwd?: () => void): void {
