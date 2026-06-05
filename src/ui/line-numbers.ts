@@ -63,32 +63,50 @@ export function gutterSpans(formatted: string, prefixLen: number, currentLineInd
 }
 
 export function adjustSpansForLineNumbers(spans: TextSpan[], visible: string, prefixLen: number): TextSpan[] {
+  const ls = scanLineStarts(visible)
   return spans
     .map(span => ({
       ...span,
-      start: mapVisibleOffset(span.start, visible, prefixLen),
-      end: mapVisibleOffset(span.end, visible, prefixLen),
+      start: mapVisibleOffset(span.start, visible, prefixLen, ls),
+      end: mapVisibleOffset(span.end, visible, prefixLen, ls),
     }))
     .filter(span => span.end > span.start)
 }
 
-export function mapVisibleOffset(offset: number, visible: string, prefixLen: number): number {
-  const lines = visible.split("\n")
-  let pos = 0
-  let formatted = 0
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    const lineEnd = pos + line.length
-    if (offset <= lineEnd || i === lines.length - 1) {
-      return formatted + prefixLen + Math.max(0, offset - pos)
-    }
-    formatted += prefixLen + line.length + 1
-    pos = lineEnd + 1
-  }
-  return formatted
+export function mapVisibleOffset(
+  offset: number,
+  visible: string,
+  prefixLen: number,
+  /** Pass precomputed line starts for `visible` to skip the O(n) scan. */
+  lineStarts?: readonly number[],
+): number {
+  const ls = lineStarts ?? scanLineStarts(visible)
+  // Each line gains `prefixLen` gutter chars, so an offset on 0-indexed line L shifts by (L+1)*prefixLen.
+  return Math.max(0, offset) + (lineAt(ls, offset) + 1) * prefixLen
 }
 
-export function firstVisibleLineNumber(visibleStart: number, text: string): number {
+export function firstVisibleLineNumber(
+  visibleStart: number,
+  text: string,
+  /** Pass `buffer.lineStarts` when `text === buffer.text` to skip the O(n) scan. */
+  lineStarts?: readonly number[],
+): number {
   if (visibleStart <= 0) return 1
-  return text.slice(0, visibleStart).split("\n").length
+  return lineAt(lineStarts ?? scanLineStarts(text), visibleStart) + 1
+}
+
+function scanLineStarts(text: string): number[] {
+  const ls = [0]
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) ls.push(i + 1)
+  return ls
+}
+
+/** 0-indexed line containing `offset` (largest i with ls[i] <= offset). */
+function lineAt(ls: readonly number[], offset: number): number {
+  let lo = 0, hi = ls.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (ls[mid]! <= offset) lo = mid; else hi = mid - 1
+  }
+  return lo
 }

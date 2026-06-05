@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { addHook } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { defineMinorMode } from "../../src/modes/minor-mode"
 
@@ -219,12 +220,12 @@ export async function install(editor: Editor): Promise<void> {
   defineMinorMode({ name: "savehist-mode", global: true, lighter: "" })
   defineMinorMode({ name: "recentf-mode", global: true, lighter: "" })
 
-  editor.addHook("find-file-hook", ({ editor, buffer }) => {
+  addHook("find-file-hook", ({ editor, buffer }) => {
     if (!editor.globalMinorModes.has("recentf-mode")) return
     if (buffer.path) recentfPush(buffer.path)
   })
 
-  editor.addHook("kill-emacs-hook", async ({ editor }) => {
+  addHook("kill-emacs-hook", async ({ editor }) => {
     if (editor.globalMinorModes.has("savehist-mode")) await savehistSave(editor)
     if (editor.globalMinorModes.has("recentf-mode")) await recentfSaveList()
   })

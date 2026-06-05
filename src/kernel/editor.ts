@@ -35,13 +35,7 @@ import {
   type WindowNode,
 } from "./window"
 import type { RegisterContents } from "./register"
-import {
-  modeHookName,
-  addHook as registerHook,
-  removeHook as unregisterHook,
-  runHooks,
-  type HookFn,
-} from "./hooks"
+import { modeHookName, runHooks } from "./hooks"
 import type { LspManager } from "../lsp/manager"
 import { fileExists, readFileText, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
@@ -494,15 +488,6 @@ export class Editor {
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     void this.changed("scratch")
     return buffer
-  }
-
-  /** Register a named hook (`find-file-hook`, `python-mode-hook`, …). */
-  addHook(name: string, fn: HookFn): void {
-    registerHook(name, fn)
-  }
-
-  removeHook(name: string, fn: HookFn): void {
-    unregisterHook(name, fn)
   }
 
   async runHook(name: string, buffer: BufferModel): Promise<void> {

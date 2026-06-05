@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { BufferModel } from "../../src/kernel/buffer"
 import { script, keySeq } from "../harness"
 import { makeEditor } from "../plugins/helper"
+import { addHook } from "../../src/kernel/hooks"
 
 // t-sweep-fb6410 — commands.ts still feeds raw buffer.name into user-facing
 // strings (next-buffer, *-other-window collections, revert-buffer, …). With two
@@ -94,8 +95,8 @@ test("save-some-buffers threads SaveContext: hooks fire and backups are written"
     const buf = await editor.openFile(path)
     buf.insert("edited ")
     const seen: string[] = []
-    editor.addHook("before-save-hook", () => { seen.push("before") })
-    editor.addHook("after-save-hook", () => { seen.push("after") })
+    addHook("before-save-hook", () => { seen.push("before") })
+    addHook("after-save-hook", () => { seen.push("after") })
     editor.prompt = async () => "y"
     await editor.run("save-some-buffers")
     expect(seen).toEqual(["before", "after"])

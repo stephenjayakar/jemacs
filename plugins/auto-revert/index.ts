@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from "node:fs"
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
-import type { HookContext } from "../../src/kernel/hooks"
+import { addHook, type HookContext } from "../../src/kernel/hooks"
 import { defineMinorMode } from "../../src/modes/minor-mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { addAdvice } from "../../src/runtime/advice"
@@ -110,7 +110,7 @@ export function install(editor: Editor): void {
     ed.message(`Global-Auto-Revert mode ${enable ? "enabled" : "disabled"}`)
   }, "Toggle automatic reverting of file buffers when they change on disk.")
 
-  editor.addHook("find-file-hook", onFindFile)
+  addHook("find-file-hook", onFindFile)
 
   addAdvice("kill-buffer", {
     after: ({ editor: ed }) => {

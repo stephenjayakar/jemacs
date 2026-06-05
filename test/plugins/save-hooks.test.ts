@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { makeEditor } from "./helper"
 import { install, deleteTrailingWhitespace } from "../../plugins/save-hooks"
 import { clearAdvice } from "../../src/runtime/advice"
-import { clearHooks } from "../../src/kernel/hooks"
+import { addHook, clearHooks } from "../../src/kernel/hooks"
 
 beforeEach(() => {
   clearAdvice("save-buffer")
@@ -85,8 +85,8 @@ test("before-save-hook and after-save-hook fire around save-buffer", async () =>
   buf.setText("hello", false)
 
   const events: string[] = []
-  editor.addHook("before-save-hook", () => { events.push("before") })
-  editor.addHook("after-save-hook", () => { events.push("after") })
+  addHook("before-save-hook", () => { events.push("before") })
+  addHook("after-save-hook", () => { events.push("after") })
   const realSave = buf.save.bind(buf)
   buf.save = async () => { events.push("save"); await realSave() }
 
@@ -121,7 +121,7 @@ test("error in before-save-hook does not prevent save", async () => {
   const buf = await editor.openFile(path)
   buf.setText("new", false)
 
-  editor.addHook("before-save-hook", () => { throw new Error("boom") })
+  addHook("before-save-hook", () => { throw new Error("boom") })
 
   await editor.run("save-buffer")
 

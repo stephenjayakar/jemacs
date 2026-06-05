@@ -1,6 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMinorMode } from "../../src/modes/minor-mode"
+import { addHook } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 const SUBWORD_FORWARD = "[^A-Za-z0-9]*(?:[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+)"
@@ -36,7 +37,7 @@ defineMinorMode({
   global: true,
   onEnable: editor => {
     for (const buffer of editor.buffers.values()) applySubword(buffer)
-    editor.addHook("find-file-hook", ({ buffer }) => applySubword(buffer))
+    addHook("find-file-hook", ({ buffer }) => applySubword(buffer))
   },
   onDisable: editor => {
     for (const buffer of editor.buffers.values()) clearSubword(buffer)

@@ -8,16 +8,18 @@ import {
   renderTerminal,
   makeXTerm,
   keyToPtyBytes,
+  writeRaw,
   type TermSession,
 } from "../../plugins/term-v2"
 import type { Pty } from "../../plugins/term/pty"
 
-function fakePty(): Pty & { sent: string } {
-  let sent = ""
+function fakePty(): Pty & { sent: string; writes: string[] } {
+  const writes: string[] = []
   return {
     pid: 0,
-    get sent() { return sent },
-    write(d) { sent += d },
+    writes,
+    get sent() { return writes.join("") },
+    write(d) { writes.push(d) },
     resize() {},
     onData() {},
     onExit() {},
@@ -25,10 +27,11 @@ function fakePty(): Pty & { sent: string } {
   }
 }
 
-function makeSession(rows = 10, cols = 40): { session: TermSession; buffer: BufferModel } {
+function makeSession(rows = 10, cols = 40): { session: TermSession; buffer: BufferModel; pty: ReturnType<typeof fakePty> } {
   const buffer = new BufferModel({ name: "*term*", kind: "scratch" })
-  const session: TermSession = { pty: fakePty(), xt: makeXTerm(rows, cols), rows, cols }
-  return { session, buffer }
+  const pty = fakePty()
+  const session: TermSession = { pty, xt: makeXTerm(rows, cols), rows, cols }
+  return { session, buffer, pty }
 }
 
 /** xterm.write is async; wrap feed() so tests can await the parse. */
@@ -115,6 +118,29 @@ describe("term-v2: renderTerminal", () => {
         done()
       })
     })
+  })
+})
+
+describe("term-v2: writeRaw microtask batching", () => {
+  // t-9689fb's fix lives in writeRaw, but loop-t-9689fb.test.ts only drives it
+  // through term-send-raw. Pin the contract directly so an eager-flush refactor
+  // can't slip past the e2e test on favourable scheduling.
+  test("same-tick writes coalesce into one pty.write on the next microtask", async () => {
+    const { session, pty } = makeSession()
+    writeRaw(session, "h")
+    writeRaw(session, "i")
+    expect(pty.writes).toEqual([])
+    await Promise.resolve()
+    expect(pty.writes).toEqual(["hi"])
+  })
+
+  test("a second tick flushes as its own write", async () => {
+    const { session, pty } = makeSession()
+    writeRaw(session, "ab")
+    await Promise.resolve()
+    writeRaw(session, "c")
+    await Promise.resolve()
+    expect(pty.writes).toEqual(["ab", "c"])
   })
 })
 

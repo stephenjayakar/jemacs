@@ -1,6 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { addAdvice } from "../../src/runtime/advice"
+import { addHook } from "../../src/kernel/hooks"
 import { defcustom } from "../../src/runtime/custom"
 
 const deleteTrailingLines = defcustom(
@@ -62,7 +63,7 @@ export function install(editor: Editor): void {
     },
   })
 
-  editor.addHook("before-save-hook", ({ buffer }) => {
+  addHook("before-save-hook", ({ buffer }) => {
     deleteTrailingWhitespace(buffer)
   })
 }

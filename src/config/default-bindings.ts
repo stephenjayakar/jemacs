@@ -29,7 +29,7 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-x C-j", "previous-buffer")
   editor.key("C-x C-l", "next-buffer")
   editor.key("C-x C-r", "revert-buffer")
-  editor.key("C-x f", "fzf-git")
+  editor.key("C-x f", "project-find-file")
   editor.key("C-x o", "other-window")
   editor.key("C-x 4 C-f", "find-file-other-window")
   editor.key("C-x 4 f", "find-file-other-window")

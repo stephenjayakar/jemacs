@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { BufferModel } from "../src/kernel/buffer"
 import { Editor } from "../src/kernel/editor"
-import { clearHooks, getHooks, modeHookName } from "../src/kernel/hooks"
+import { addHook, clearHooks, getHooks, modeHookName } from "../src/kernel/hooks"
 import { installDefaultHooks } from "../src/config/install-hooks"
 import { installLspMode } from "../src/lsp/install"
 import { installDefaultModes } from "../src/modes/default-modes"
@@ -10,8 +10,8 @@ test("addHook and runHook execute in registration order", async () => {
   clearHooks()
   const editor = new Editor()
   const order: string[] = []
-  editor.addHook("find-file-hook", () => { order.push("a") })
-  editor.addHook("find-file-hook", () => { order.push("b") })
+  addHook("find-file-hook", () => { order.push("a") })
+  addHook("find-file-hook", () => { order.push("b") })
   const buffer = new BufferModel({ name: "t.txt", text: "", mode: "text" })
   await editor.runHook("find-file-hook", buffer)
   expect(order).toEqual(["a", "b"])
@@ -23,7 +23,7 @@ test("enterMode runs mode-hook", async () => {
   installDefaultModes()
   const editor = new Editor()
   let ran = false
-  editor.addHook(modeHookName("python"), () => { ran = true })
+  addHook(modeHookName("python"), () => { ran = true })
   const buffer = new BufferModel({ name: "x.py", text: "", mode: "text" })
   editor.addBuffer(buffer)
   editor.enterMode(buffer, "python")

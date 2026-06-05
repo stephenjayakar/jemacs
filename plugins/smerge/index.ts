@@ -2,6 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { FaceName, TextSpan } from "../../src/modes/mode"
 import { defineMinorMode } from "../../src/modes/minor-mode"
+import { addHook } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 export const SMERGE_OVERLAYS_LOCAL = "smerge-overlays"
@@ -241,7 +242,7 @@ export function install(editor: Editor): void {
     editor.defineKey("smerge-mode-map", `C-c ^ ${k}`, cmd)
   }
 
-  editor.addHook("find-file-hook", ({ editor, buffer }) => {
+  addHook("find-file-hook", ({ editor, buffer }) => {
     BEGIN_RE.lastIndex = 0
     if (BEGIN_RE.test(buffer.text)) editor.enableMinorMode("smerge-mode", { buffer })
   })

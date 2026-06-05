@@ -2,6 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
 import type { LspWorkspace } from "../../src/lsp/workspace"
 import { defineMode, enterMode, type TextSpan } from "../../src/modes/mode"
+import { addHook } from "../../src/kernel/hooks"
 import { defineMinorMode } from "../../src/modes/minor-mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { lspMakeTextDocumentIdentifier } from "../../src/lsp/lsp-protocol"
@@ -157,7 +158,7 @@ export function install(editor: Editor): void {
     "Major mode for editing Lean 4 files.")
 
   // inferMode() doesn't know .lean; pick it up at find-file time instead.
-  editor.addHook("find-file-hook", ({ buffer }) => {
+  addHook("find-file-hook", ({ buffer }) => {
     if (buffer.path && /\.lean$/i.test(buffer.path)) enterMode(buffer, "lean4")
   })
 
@@ -168,7 +169,7 @@ export function install(editor: Editor): void {
     editor.message(`Lean info ${enabled ? "enabled" : "disabled"}`)
   }, "Toggle the *lean-info* goal display for the current buffer.")
 
-  editor.addHook("post-command-hook", ({ editor, buffer }) => {
+  addHook("post-command-hook", ({ editor, buffer }) => {
     scheduleGoalUpdate(editor, buffer)
   })
 }

@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { addHook } from "../../src/kernel/hooks"
 
 export function install(editor: Editor): void {
   editor.startAutoSave()
@@ -12,7 +13,7 @@ export function install(editor: Editor): void {
     ed.message(n ? `Auto-saved ${n} buffer${n === 1 ? "" : "s"}` : "(No buffers need auto-saving)")
   }, "Auto-save all dirty file-visiting buffers now.")
 
-  editor.addHook("after-save-hook", async ({ editor: ed, buffer }) => {
+  addHook("after-save-hook", async ({ editor: ed, buffer }) => {
     await ed.deleteAutoSaveFile(buffer)
   })
 }

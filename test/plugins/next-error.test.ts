@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
+import { addHook } from "../../src/kernel/hooks"
 import {
   install,
   parseGrepOutput,
@@ -186,7 +187,7 @@ test("next-error-hook fires after visiting a location", async () => {
   install(editor)
   setLocationList(editor, fixtureLocations())
   const seen: string[] = []
-  editor.addHook("next-error-hook", ({ buffer }) => { seen.push(buffer.path ?? "") })
+  addHook("next-error-hook", ({ buffer }) => { seen.push(buffer.path ?? "") })
   await editor.run("next-error")
   await editor.run("next-error")
   expect(seen).toEqual([fileA, fileA])

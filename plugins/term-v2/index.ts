@@ -4,6 +4,7 @@ import type { FaceName, TextSpan } from "../../src/modes/mode"
 import { defineMode, getMode } from "../../src/modes/mode"
 import { Keymap, normalizeSequence, type KeyEventLike } from "../../src/kernel/keymap"
 import { addAdvice } from "../../src/runtime/advice"
+import { addHook } from "../../src/kernel/hooks"
 import { spawnPty, type Pty } from "../term/pty"
 import { Terminal as XTerm, type IBuffer, type IBufferCell } from "@xterm/headless"
 
@@ -297,7 +298,7 @@ export function install(editor: Editor): void {
   // Keep the pty's winsize in sync with the displaying window. The display
   // layer stashes the leaf's body geometry on the buffer before firing the
   // hook (Emacs convention: window-configuration-change-hook is buffer-local).
-  editor.addHook("window-configuration-change-hook", ({ buffer }) => {
+  addHook("window-configuration-change-hook", ({ buffer }) => {
     if (!sessions.has(buffer)) return
     const rows = buffer.locals.get("window-body-rows") as number | undefined
     const cols = buffer.locals.get("window-body-cols") as number | undefined

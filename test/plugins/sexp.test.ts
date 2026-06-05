@@ -62,6 +62,17 @@ describe("defgeneric / defmethod", () => {
     expect(b).toBe(a)
     expect(b.methods().has("text")).toBe(true)
     expect(listGenerics()).toContain("test-gen")
+
+    // redeclare updates fallback when provided, preserves it when omitted
+    const editor = makeEditor()
+    const buf = editor.scratch("*g*", "", "text")
+    removeMethod("test-gen", "text")
+    defgeneric("test-gen", { fallback: () => 1 })
+    expect(a(buf)).toBe(1)
+    defgeneric("test-gen", { fallback: () => 2 })
+    expect(a(buf)).toBe(2)
+    defgeneric("test-gen", {})
+    expect(a(buf)).toBe(2)
   })
 
   test("callGeneric and removeMethod", () => {
