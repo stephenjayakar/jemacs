@@ -58,6 +58,20 @@ test("dired mark, unmark, toggle, and mark-all update the listing", async () => 
   }
 })
 
+test("dired opens with point on the first real file", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    expect(diredEntryAtPoint(buffer)?.name).toBe("alpha.txt")
+    expect(buffer.point).toBe(buffer.text.indexOf("alpha.txt"))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("dired copies and deletes files with Emacs-style prompts", async () => {
   installDefaultModes()
   const editor = new Editor()

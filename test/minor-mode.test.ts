@@ -32,8 +32,10 @@ test("linum-mode is enabled from user config by default", () => {
   const editor = new Editor()
   installDefaultConfig(editor)
   expect(editor.isMinorModeEnabled("linum-mode")).toBe(true)
+  expect(editor.isMinorModeEnabled("vertico-mode")).toBe(true)
   expect(editor.showLineNumbers()).toBe(true)
   expect(editor.minorModeLighters()).toContain("Lin")
+  expect(editor.minorModeLighters()).toContain("Vertico")
 })
 
 test("linum-mode command toggles line numbers", async () => {

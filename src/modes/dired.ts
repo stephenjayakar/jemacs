@@ -297,16 +297,21 @@ function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): void {
   if (entryPath) {
     const index = entries.findIndex(entry => entry.path === entryPath)
     if (index >= 0) {
-      let offset = 0
-      const rendered = lines
-      for (let i = 0; i < HEADER_LINES + index; i++) offset += rendered[i]!.length + 1
-      buffer.point = offset + NAME_OFFSET
+      buffer.point = diredNamePoint(lines, index)
     }
   } else {
-    buffer.point = Math.min(buffer.point, buffer.text.length)
+    const firstFile = entries.findIndex(entry => !diredSpecialEntry(entry))
+    if (firstFile >= 0) buffer.point = diredNamePoint(lines, firstFile)
+    else buffer.point = Math.min(buffer.point, buffer.text.length)
   }
   buffer.dirty = false
   buffer.readOnly = wasReadOnly
+}
+
+function diredNamePoint(lines: string[], entryIndex: number): number {
+  let offset = 0
+  for (let i = 0; i < HEADER_LINES + entryIndex; i++) offset += lines[i]!.length + 1
+  return offset + NAME_OFFSET
 }
 
 function formatEntry(entry: DiredEntry, mark?: DiredMark): string {

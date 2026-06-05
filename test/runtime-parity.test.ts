@@ -48,12 +48,27 @@ test("load-path resolves plugin modules", async () => {
   clearLoadPath()
 })
 
-test("minibuffer typing shows icomplete candidates", async () => {
+test("vertico-mode shows and selects minibuffer candidates", async () => {
   const editor = new Editor()
   installDefaultConfig(editor)
   const promise = editor.prompt("Choose: ", "", undefined, { collection: ["alpha", "alphabet", "beta"] })
   editor.activeBuffer.setText("al", true)
-  editor.refreshMinibufferCompletions()
+  await editor.refreshMinibufferCompletions()
+  const completions = [...editor.buffers.values()].find(b => b.name === "*vertico*")
+  expect(completions?.text).toContain("alpha")
+  expect(completions?.text).toContain("alphabet")
+  await editor.run("vertico-next")
+  editor.minibufferSubmit()
+  await expect(promise).resolves.toBe("alphabet")
+})
+
+test("vertico-mode can be disabled to use icomplete candidates", async () => {
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  editor.disableMinorMode("vertico-mode")
+  const promise = editor.prompt("Choose: ", "", undefined, { collection: ["alpha", "alphabet", "beta"] })
+  editor.activeBuffer.setText("al", true)
+  await editor.refreshMinibufferCompletions()
   const completions = [...editor.buffers.values()].find(b => b.name === "*Completions*")
   expect(completions?.text).toContain("alpha")
   expect(completions?.text).toContain("alphabet")

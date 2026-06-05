@@ -72,6 +72,14 @@ export type CompletingReadOptions = {
   defaultDirectory?: string
 }
 
+export type MinibufferCompletionFrontend = {
+  refresh?: (editor: Editor) => void | Promise<void>
+  complete?: (editor: Editor) => void | Promise<void>
+  submitValue?: (editor: Editor) => string | undefined
+}
+
+export type CompletingReadFunction = (editor: Editor, prompt: string, options: CompletingReadOptions) => Promise<string | null>
+
 export type KeyDispatchResult =
   | { status: "command"; command: string }
   | { status: "pending" }
@@ -108,6 +116,8 @@ export class Editor {
   macroRecording: string[] | null = null
   lastKbdMacro: string[] = []
   lsp: LspManager | null = null
+  completingReadFunction: CompletingReadFunction | null = null
+  minibufferCompletionFrontend: MinibufferCompletionFrontend | null = null
   private minibufferDepth = 0
 
   constructor() {
@@ -581,6 +591,7 @@ export class Editor {
   }
 
   completingRead(prompt: string, options: CompletingReadOptions): Promise<string | null> {
+    if (this.completingReadFunction) return this.completingReadFunction(this, prompt, options)
     return this.prompt(prompt, options.initialValue ?? "", options.history, {
       collection: options.collection,
       completion: options.completion,
@@ -888,9 +899,13 @@ export class Editor {
   }
 
   /** Incremental completion (icomplete-style) while typing in the minibuffer. */
-  refreshMinibufferCompletions(): void {
+  async refreshMinibufferCompletions(): Promise<void> {
     const request = this.minibuffer
     if (!request) return
+    if (this.minibufferCompletionFrontend?.refresh) {
+      await this.minibufferCompletionFrontend.refresh(this)
+      return
+    }
     const collection = request.collection
     if (!collection?.length) return
     const text = this.activeBuffer.text
@@ -901,13 +916,14 @@ export class Editor {
   minibufferBackspace(): void {
     if (!this.minibuffer) return
     this.activeBuffer.deleteBackward()
+    void this.refreshMinibufferCompletions()
     void this.changed("minibuffer-backspace")
   }
 
   minibufferSubmit(): void {
     if (!this.minibuffer) return
     const request = this.minibuffer
-    const value = this.activeBuffer.text
+    const value = this.minibufferCompletionFrontend?.submitValue?.(this) ?? this.activeBuffer.text
     if (request.historyName && value) {
       const history = this.minibufferHistory.get(request.historyName) ?? []
       history.push(value)
@@ -927,6 +943,10 @@ export class Editor {
   async minibufferComplete(): Promise<void> {
     const request = this.minibuffer
     if (!request) return
+    if (this.minibufferCompletionFrontend?.complete) {
+      await this.minibufferCompletionFrontend.complete(this)
+      return
+    }
     const buffer = this.activeBuffer
     const collection = request.completion === "file"
       ? await fileCompletionCandidates(buffer.text, request.fileCompletionDirectory ?? process.cwd())
