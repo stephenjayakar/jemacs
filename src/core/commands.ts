@@ -184,8 +184,6 @@ export function installCoreCommands(editor: Editor): Evaluator {
   }, "Insert the character you type.")
   editor.command("previous-history-element", ({ editor }) => editor.minibufferPreviousHistory(), "Move to the previous minibuffer history element.")
   editor.command("next-history-element", ({ editor }) => editor.minibufferNextHistory(), "Move to the next minibuffer history element.")
-  editor.command("ivy-next-line", ({ editor }) => editor.ivyNextLine(), "Move to the next Ivy completion candidate.")
-  editor.command("ivy-previous-line", ({ editor }) => editor.ivyPreviousLine(), "Move to the previous Ivy completion candidate.")
   editor.command("forward-char", ({ buffer, prefixArgument }) => buffer.move(prefixArgument ?? 1), "Move point forward one character.")
   editor.command("backward-char", ({ buffer, prefixArgument }) => buffer.move(-(prefixArgument ?? 1)), "Move point backward one character.")
   editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")

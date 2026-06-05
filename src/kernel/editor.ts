@@ -61,8 +61,6 @@ type MinibufferRequest = {
   collection?: string[]
   completion?: "file"
   fileCompletionDirectory?: string
-  completionMatches: string[]
-  completionIndex: number
   resolve: (value: string | null) => void
 }
 
@@ -73,6 +71,14 @@ export type CompletingReadOptions = {
   initialValue?: string
   defaultDirectory?: string
 }
+
+export type MinibufferCompletionFrontend = {
+  refresh?: (editor: Editor) => void | Promise<void>
+  complete?: (editor: Editor) => void | Promise<void>
+  submitValue?: (editor: Editor) => string | undefined
+}
+
+export type CompletingReadFunction = (editor: Editor, prompt: string, options: CompletingReadOptions) => Promise<string | null>
 
 export type KeyDispatchResult =
   | { status: "command"; command: string }
@@ -110,6 +116,8 @@ export class Editor {
   macroRecording: string[] | null = null
   lastKbdMacro: string[] = []
   lsp: LspManager | null = null
+  completingReadFunction: CompletingReadFunction | null = null
+  minibufferCompletionFrontend: MinibufferCompletionFrontend | null = null
   private minibufferDepth = 0
 
   constructor() {
@@ -567,8 +575,6 @@ export class Editor {
         historyIndex: null,
         collection: options.collection,
         completion: options.completion,
-        completionMatches: [],
-        completionIndex: 0,
         fileCompletionDirectory: options.completion === "file"
           ? (options.defaultDirectory ?? this.currentBuffer.directory() ?? process.cwd())
           : undefined,
@@ -581,11 +587,11 @@ export class Editor {
       }
       void this.events.emit("minibuffer", { prompt })
       void this.changed("minibuffer-open")
-      void this.refreshMinibufferCompletions()
     })
   }
 
   completingRead(prompt: string, options: CompletingReadOptions): Promise<string | null> {
+    if (this.completingReadFunction) return this.completingReadFunction(this, prompt, options)
     return this.prompt(prompt, options.initialValue ?? "", options.history, {
       collection: options.collection,
       completion: options.completion,
@@ -892,12 +898,12 @@ export class Editor {
     void this.changed("minibuffer-input")
   }
 
-  /** Incremental completion while typing in the minibuffer. */
+  /** Incremental completion (icomplete-style) while typing in the minibuffer. */
   async refreshMinibufferCompletions(): Promise<void> {
     const request = this.minibuffer
     if (!request) return
-    if (this.isMinorModeEnabled("ivy-mode")) {
-      await this.refreshIvyCompletions()
+    if (this.minibufferCompletionFrontend?.refresh) {
+      await this.minibufferCompletionFrontend.refresh(this)
       return
     }
     const collection = request.collection
@@ -917,8 +923,7 @@ export class Editor {
   minibufferSubmit(): void {
     if (!this.minibuffer) return
     const request = this.minibuffer
-    const selected = this.isMinorModeEnabled("ivy-mode") ? request.completionMatches[request.completionIndex] : undefined
-    const value = selected ?? this.activeBuffer.text
+    const value = this.minibufferCompletionFrontend?.submitValue?.(this) ?? this.activeBuffer.text
     if (request.historyName && value) {
       const history = this.minibufferHistory.get(request.historyName) ?? []
       history.push(value)
@@ -938,8 +943,8 @@ export class Editor {
   async minibufferComplete(): Promise<void> {
     const request = this.minibuffer
     if (!request) return
-    if (this.isMinorModeEnabled("ivy-mode")) {
-      await this.ivyPartialOrDone()
+    if (this.minibufferCompletionFrontend?.complete) {
+      await this.minibufferCompletionFrontend.complete(this)
       return
     }
     const buffer = this.activeBuffer
@@ -975,58 +980,6 @@ export class Editor {
     if (existing) existing.setText(body, false)
     else this.addBuffer(new BufferModel({ name: "*Completions*", text: body, kind: "scratch", mode: "text" }))
     void this.changed("minibuffer-complete")
-  }
-
-  async ivyNextLine(delta = 1): Promise<void> {
-    const request = this.minibuffer
-    if (!request) return
-    if (!this.isMinorModeEnabled("ivy-mode")) {
-      if (delta < 0) await this.minibufferPreviousHistory()
-      else await this.minibufferNextHistory()
-      return
-    }
-    if (!request.completionMatches.length) {
-      await this.refreshIvyCompletions()
-      return
-    }
-    const count = request.completionMatches.length
-    request.completionIndex = (request.completionIndex + delta + count) % count
-    this.showIvyCompletions(request.completionMatches, request.completionIndex)
-  }
-
-  async ivyPreviousLine(): Promise<void> {
-    await this.ivyNextLine(-1)
-  }
-
-  private async ivyPartialOrDone(): Promise<void> {
-    const request = this.minibuffer
-    if (!request) return
-    await this.refreshIvyCompletions()
-    const selected = request.completionMatches[request.completionIndex]
-    if (!selected) return
-    this.setMinibufferText(selected, selected.length)
-  }
-
-  private async refreshIvyCompletions(): Promise<void> {
-    const request = this.minibuffer
-    if (!request) return
-    const input = this.activeBuffer.text
-    const candidates = request.completion === "file"
-      ? await fileCompletionCandidates(input, request.fileCompletionDirectory ?? process.cwd())
-      : request.collection ?? []
-    const matches = ivyFilterCandidates(candidates, input, request.completion === "file")
-    request.completionMatches = matches
-    request.completionIndex = Math.min(request.completionIndex, Math.max(0, matches.length - 1))
-    this.showIvyCompletions(matches, request.completionIndex)
-  }
-
-  private showIvyCompletions(matches: string[], selectedIndex: number): void {
-    const existing = [...this.buffers.values()].find(b => b.name === "*ivy-completions*")
-    const visible = matches.slice(0, 12).map((match, index) => `${index === selectedIndex ? "> " : "  "}${match}`)
-    const body = visible.join("\n")
-    if (existing) existing.setText(body, false)
-    else this.addBuffer(new BufferModel({ name: "*ivy-completions*", text: body, kind: "scratch", mode: "text" }))
-    void this.changed("ivy-complete")
   }
 
   async minibufferPreviousHistory(): Promise<void> {
@@ -1103,11 +1056,4 @@ function commonPrefix(values: string[]): string {
     while (!value.startsWith(prefix)) prefix = prefix.slice(0, -1)
   }
   return prefix
-}
-
-function ivyFilterCandidates(candidates: string[], input: string, fileCompletion: boolean): string[] {
-  if (fileCompletion) return candidates
-  const needle = input.trim().toLowerCase()
-  if (!needle) return candidates
-  return candidates.filter(candidate => candidate.toLowerCase().includes(needle))
 }
