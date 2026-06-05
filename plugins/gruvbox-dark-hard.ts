@@ -1,4 +1,6 @@
-import { defineTheme } from "../display/theme"
+import type { Editor } from "../src/kernel/editor"
+import { defineTheme } from "../src/display/theme"
+import { registerTheme } from "../src/themes"
 
 /** Gruvbox dark hard palette (24-bit GUI colors from emacs-theme-gruvbox). */
 export const gruvboxDarkHardPalette = {
@@ -48,3 +50,7 @@ export const gruvboxDarkHardTheme = defineTheme("gruvbox-dark-hard", {
   lineNumber: { fg: gruvboxDarkHardPalette.dark4, bg: gruvboxDarkHardPalette.dark1 },
   lineNumberCurrent: { fg: gruvboxDarkHardPalette.bright_orange, bg: gruvboxDarkHardPalette.dark2 },
 })
+
+export function install(_editor: Editor): void {
+  registerTheme(gruvboxDarkHardTheme)
+}

@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { appendFile, mkdir } from "node:fs/promises"
 import type { CommandContext } from "../kernel/command"
 import type { Editor } from "../kernel/editor"
-import { getBuiltinTheme } from "../themes"
+import { defaultTheme, disableBuiltinTheme, enableBuiltinTheme, getBuiltinTheme, listEnabledBuiltinThemes } from "../themes"
 import {
   diredCreateDirectory,
   makeDirectory,
@@ -502,7 +502,7 @@ export function installCoreCommands(editor: Editor): Evaluator {
   editor.command("load-theme", ({ editor, args }) => {
     const name = args[0]?.trim()
     if (name) {
-      const theme = getBuiltinTheme(name)
+      const theme = enableBuiltinTheme(name)
       if (!theme) {
         editor.message(`Unknown theme: ${name}`)
         return
@@ -513,6 +513,38 @@ export function installCoreCommands(editor: Editor): Evaluator {
     }
     editor.message(`Loaded theme ${editor.theme.name}`)
   }, "Load a built-in theme by name, or reload the active theme.")
+
+  editor.command("enable-theme", ({ editor, args }) => {
+    const name = args[0]?.trim()
+    if (!name) {
+      editor.message("No theme specified")
+      return
+    }
+    const theme = enableBuiltinTheme(name)
+    if (!theme) {
+      editor.message(`Unknown theme: ${name}`)
+      return
+    }
+    editor.setTheme(theme)
+    editor.message(`Enabled theme ${name}`)
+  }, "Enable a built-in theme.")
+
+  editor.command("disable-theme", ({ editor, args }) => {
+    const name = args[0]?.trim()
+    if (!name) {
+      editor.message("No theme specified")
+      return
+    }
+    if (!getBuiltinTheme(name)) {
+      editor.message(`Unknown theme: ${name}`)
+      return
+    }
+    disableBuiltinTheme(name)
+    const enabled = listEnabledBuiltinThemes()
+    const active = enabled.at(-1)
+    editor.setTheme(active ? getBuiltinTheme(active)! : defaultTheme)
+    editor.message(`Disabled theme ${name}`)
+  }, "Disable a built-in theme.")
 
   editor.command("fzf-git", async ({ editor, args }) => {
     const query = args[0] ?? ""

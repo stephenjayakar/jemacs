@@ -2,7 +2,8 @@ import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { Editor } from "../kernel/editor"
 import { getMode } from "../modes/mode"
-import { gruvboxDarkHardTheme } from "../themes"
+import { enableBuiltinTheme } from "../themes"
+import { gruvboxDarkHardTheme, install as installGruvboxDarkHardTheme } from "../../plugins/gruvbox-dark-hard"
 import { install as installVertico } from "../../plugins/vertico"
 
 const packageBackedCommands = [
@@ -18,6 +19,8 @@ const packageBackedCommands = [
 ]
 
 export function installStephenConfig(editor: Editor): void {
+  installGruvboxDarkHardTheme(editor)
+  enableBuiltinTheme(gruvboxDarkHardTheme.name)
   editor.setTheme(gruvboxDarkHardTheme)
   installVertico(editor)
   editor.enableMinorMode("linum-mode")

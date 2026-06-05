@@ -6,6 +6,7 @@ import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig } from "../src/config"
 import { getMode } from "../src/modes/mode"
 import { defcustom, getCustom, getCustomVariable, setCustom } from "../src/runtime/custom"
+import { disableBuiltinTheme, isBuiltinThemeEnabled, listSavedBuiltinThemes, saveEnabledBuiltinThemes } from "../src/themes"
 import { parseInteractiveForm } from "../src/runtime/interactive"
 import { addAdvice } from "../src/runtime/advice"
 import { addToLoadPath, clearLoadPath, getLoadPath } from "../src/runtime/load-path"
@@ -171,4 +172,102 @@ test("customize displays user options and updates values", async () => {
   await editor.run("customize-reset")
   expect(getCustom<boolean>("jemacs-customize-test-flag")).toBe(false)
   expect(getCustomVariable("jemacs-customize-test-flag")?.customized).toBe(false)
+})
+
+test("customize registers Emacs customize.el command surface", () => {
+  const editor = new Editor()
+  installDefaultConfig(editor)
+
+  for (const name of [
+    "customize",
+    "customize-group",
+    "customize-group-other-window",
+    "customize-variable",
+    "customize-variable-other-window",
+    "customize-option",
+    "customize-option-other-window",
+    "customize-face",
+    "customize-face-other-window",
+    "customize-apropos",
+    "customize-apropos-options",
+    "customize-apropos-faces",
+    "customize-apropos-groups",
+    "customize-changed",
+    "customize-changed-options",
+    "customize-customized",
+    "customize-saved",
+    "customize-unsaved",
+    "customize-rogue",
+    "customize-mode",
+    "customize-browse",
+    "customize-themes",
+    "customize-set-variable",
+    "customize-save-variable",
+    "customize-set-value",
+    "customize-save-customized",
+    "customize-create-theme",
+    "custom-theme-visit-theme",
+    "custom-buffer-create",
+    "custom-toggle-hide-all-widgets",
+    "Custom-set",
+    "Custom-save",
+    "Custom-buffer-done",
+  ]) {
+    expect(editor.commands.get(name), name).toBeDefined()
+  }
+
+  expect(getMode("customize-mode")?.keymap?.get("C-c C-c")).toBe("Custom-set")
+  expect(getMode("customize-mode")?.keymap?.get("C-x C-s")).toBe("Custom-save")
+  expect(getMode("custom-theme-choose-mode")?.keymap?.get("return")).toBe("customize-theme-toggle")
+})
+
+test("customize direct setters and filtered buffers match Emacs customize flows", async () => {
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  defcustom("jemacs-customize-direct-flag", "boolean", false, "direct customize flag")
+  defcustom("jemacs-customize-direct-count", "number", 1, "direct customize count")
+
+  await editor.run("customize-set-variable", ["jemacs-customize-direct-flag", "true"])
+  expect(getCustom<boolean>("jemacs-customize-direct-flag")).toBe(true)
+
+  await editor.run("customize-save-variable", ["jemacs-customize-direct-count", "7"])
+  expect(getCustom<number>("jemacs-customize-direct-count")).toBe(7)
+  expect(getCustomVariable("jemacs-customize-direct-count")?.savedValue).toBe(7)
+
+  await editor.run("customize-unsaved")
+  expect(editor.currentBuffer.text).toContain("Variable: jemacs-customize-direct-flag")
+  expect(editor.currentBuffer.text).not.toContain("Variable: jemacs-customize-direct-count")
+
+  await editor.run("customize-saved")
+  expect(editor.currentBuffer.text).toContain("Variable: jemacs-customize-direct-count")
+
+  await editor.run("customize-apropos-options", ["direct-count"])
+  expect(editor.currentBuffer.text).toContain("Variable: jemacs-customize-direct-count")
+  expect(editor.currentBuffer.text).not.toContain("Variable: jemacs-customize-direct-flag")
+})
+
+test("customize-themes toggles and saves plugin themes", async () => {
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  disableBuiltinTheme("gruvbox-dark-hard")
+  saveEnabledBuiltinThemes([])
+
+  await editor.run("customize-themes")
+  expect(editor.currentBuffer.name).toBe("*Custom Themes*")
+  expect(editor.currentBuffer.mode).toBe("custom-theme-choose-mode")
+  expect(editor.currentBuffer.text).toContain("Theme: gruvbox-dark-hard [ ]")
+  expect(editor.currentBuffer.text).toContain("Source: plugin")
+
+  editor.currentBuffer.point = editor.currentBuffer.text.indexOf("Theme: gruvbox-dark-hard")
+  await editor.run("customize-theme-toggle")
+  expect(isBuiltinThemeEnabled("gruvbox-dark-hard")).toBe(true)
+  expect(editor.theme.name).toBe("gruvbox-dark-hard")
+  expect(editor.currentBuffer.text).toContain("Theme: gruvbox-dark-hard [X]")
+
+  await editor.run("customize-themes-save")
+  expect(listSavedBuiltinThemes()).toContain("gruvbox-dark-hard")
+
+  editor.currentBuffer.point = editor.currentBuffer.text.indexOf("Theme: gruvbox-dark-hard")
+  await editor.run("customize-theme-toggle")
+  expect(isBuiltinThemeEnabled("gruvbox-dark-hard")).toBe(false)
 })
