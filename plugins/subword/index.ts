@@ -37,11 +37,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     global: true,
     onEnable: editor => {
       for (const buffer of editor.buffers.values()) applySubword(buffer)
-      ctx.hook("find-file-hook", ({ buffer }) => applySubword(buffer))
     },
     onDisable: editor => {
       for (const buffer of editor.buffers.values()) clearSubword(buffer)
     },
+  })
+
+  ctx.hook("find-file-hook", ({ editor, buffer }) => {
+    if (!editor.globalMinorModes.has("global-subword-mode")) return
+    applySubword(buffer)
   })
 
   editor.command("subword-mode", ({ editor, buffer, prefixArgument }) => {

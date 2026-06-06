@@ -71,10 +71,19 @@ export function createPluginContext(editor: Editor): PluginContext {
  *  *for that editor*. A second Editor in the process must not dispose the
  *  first's contexts. */
 const contexts = new WeakMap<Editor, Map<string, PluginContext>>()
+const quitHooks = new WeakMap<Editor, HookFn>()
 
 function mapFor(editor: Editor): Map<string, PluginContext> {
   let m = contexts.get(editor)
-  if (!m) { m = new Map(); contexts.set(editor, m) }
+  if (!m) {
+    m = new Map()
+    contexts.set(editor, m)
+    // First trackedContext caller is lisp/ boot — register the quit-hook here so
+    // kernel/editor.ts's quit() can dispose contexts without importing runtime/.
+    const hook: HookFn = ({ editor: ed }) => { if (ed === editor) disposeAllContexts(ed) }
+    quitHooks.set(editor, hook)
+    addHook("kill-emacs-hook", hook)
+  }
   return m
 }
 
@@ -92,10 +101,12 @@ export function getPluginContext(editor: Editor, key: string): PluginContext | u
   return contexts.get(editor)?.get(key)
 }
 
-/** Dispose every tracked context for `editor` (called from quit()). */
+/** Dispose every tracked context for `editor` (wired to quit() via kill-emacs-hook). */
 export function disposeAllContexts(editor: Editor): void {
   const m = contexts.get(editor)
   if (!m) return
   for (const ctx of m.values()) ctx.dispose()
   contexts.delete(editor)
+  const hook = quitHooks.get(editor)
+  if (hook) { removeHook("kill-emacs-hook", hook); quitHooks.delete(editor) }
 }
