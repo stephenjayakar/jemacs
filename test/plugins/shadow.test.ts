@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Editor } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
-import { attachShadow, shadowState, type ShadowLink, type ShadowOp } from "../../src/shadow/shadow"
+import { attachShadow, authorityState, shadowState, type ShadowLink, type ShadowOp } from "../../src/shadow/shadow"
 import { getCustomFace } from "../../src/runtime/faces"
 import {
   install,
@@ -112,5 +112,66 @@ describe("shadow plugin", () => {
 
     link.partitioned = true
     expect(shadowModeLighter(buf)).toBe(" [⊘ partition]")
+  })
+})
+
+// ── Command-level: shadow-serve / shadow-connect over a real loopback socket ──
+
+async function until(pred: () => boolean, ms = 5_000): Promise<void> {
+  const t0 = Date.now()
+  while (!pred()) {
+    if (Date.now() - t0 > ms) throw new Error("until: timed out")
+    await new Promise(r => setTimeout(r, 5))
+  }
+}
+
+function captureMessages(editor: Editor): string[] {
+  const msgs: string[] = []
+  editor.events.on("message", ({ text }) => { msgs.push(text) })
+  return msgs
+}
+
+describe("shadow plugin commands", () => {
+  test("M-x shadow-serve on A + M-x shadow-connect ws:// on S → converge", async () => {
+    const A = new Editor()
+    const S = new Editor()
+    install(A)
+    install(S)
+    const aMsgs = captureMessages(A)
+    const sMsgs = captureMessages(S)
+    // Same id on both sides so the splice routes; real flow uses announceBuffer.
+    const bufA = A.addBuffer(new BufferModel({ id: "buf-ws", name: "t", text: "" }))
+    const bufS = S.addBuffer(new BufferModel({ id: "buf-ws", name: "t", text: "" }))
+
+    await A.run("shadow-serve")
+    const serveMsg = aMsgs.find(m => m.includes("ws://127.0.0.1:"))
+    expect(serveMsg).toBeDefined()
+    const url = serveMsg!.match(/ws:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)![0]
+
+    try {
+      await S.run("shadow-connect", [url])
+      expect(sMsgs.some(m => m.includes("connected to"))).toBe(true)
+      expect(shadowState(S)?.link.role).toBe("shadow")
+      await until(() => authorityState(A) !== undefined)
+      expect(authorityState(A)!.link.role).toBe("authority")
+      expect(authorityState(A)!.link.trust).toBe("full")
+
+      bufS.insert("via M-x")
+      await until(() => bufA.text === "via M-x")
+      await until(() => (shadowState(S)!.pending.get("buf-ws") ?? []).length === 0)
+      expect(bufS.text).toBe(bufA.text)
+
+      // Second serve/connect while active is refused with a hint, not a crash.
+      await A.run("shadow-serve")
+      expect(aMsgs.some(m => m.includes("already serving"))).toBe(true)
+      await S.run("shadow-connect", [url])
+      expect(sMsgs.some(m => m.includes("already connected"))).toBe(true)
+
+      await S.run("shadow-disconnect")
+      await until(() => sMsgs.some(m => m.includes("disconnected")))
+    } finally {
+      await A.run("shadow-stop-server")
+    }
+    expect(aMsgs.some(m => m.includes("server stopped"))).toBe(true)
   })
 })

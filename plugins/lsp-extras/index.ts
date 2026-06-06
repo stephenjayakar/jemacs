@@ -14,6 +14,9 @@ import { formatLocation, normalizeLocations, type ResolvedLocation } from "../..
 import { gotoResolvedLocation } from "../../src/lsp/navigation"
 import { pointToPosition, positionToPoint, uriToPath } from "../../src/lsp/positions"
 import { xrefPushMark } from "../../src/xref/history"
+import { allClients, supportsBuffer } from "../../src/lsp/client"
+import { clientInstallCmds } from "../../src/lsp/clients"
+import { shadowState } from "../../src/shadow/shadow"
 
 function activeWorkspaces(editor: Editor, buffer: BufferModel): LspWorkspace[] {
   return editor.lsp?.bufferWorkspaces(buffer).filter(w => w.status === "initialized") ?? []
@@ -158,6 +161,36 @@ async function lspRename(editor: Editor, buffer: BufferModel, newName?: string):
   editor.message("Nothing to rename")
 }
 
+/** Pick a serverId with a known installCmd — explicit `serverId` wins, else the
+ *  highest-priority client matching `buffer.mode`, else prompt across all. */
+export async function pickInstallableServer(editor: Editor, buffer: BufferModel, serverId?: string): Promise<string | undefined> {
+  if (serverId) return clientInstallCmds[serverId] ? serverId : undefined
+  const matching = allClients()
+    .filter(c => supportsBuffer(c, buffer) && clientInstallCmds[c.serverId])
+    .sort((a, b) => b.priority - a.priority)
+  if (matching.length) return matching[0]!.serverId
+  const all = Object.keys(clientInstallCmds)
+  return await editor.completingRead("Install LSP server: ", { collection: all, history: "lsp-install-server" }) || undefined
+}
+
+async function lspInstallServer(editor: Editor, buffer: BufferModel, serverId?: string): Promise<void> {
+  const id = await pickInstallableServer(editor, buffer, serverId)
+  const cmd = id ? clientInstallCmds[id] : undefined
+  if (!id || !cmd) {
+    editor.message(`No install command for ${serverId ?? buffer.mode}`)
+    return
+  }
+  // Remote buffer: the server binary needs to exist on A, not S — ship the
+  // install as a Cmd op so A runs it via `compile` (DESIGN.md §Ops, S→A only).
+  const state = buffer.link ? shadowState(editor) : undefined
+  if (state) {
+    state.link.send({ kind: "command", name: "compile", args: [cmd], seq: state.nextSeq++ })
+    editor.message(`[shadow] installing ${id} on remote: ${cmd}`)
+    return
+  }
+  await editor.run("compile", [cmd])
+}
+
 async function lspFindReferences(editor: Editor, buffer: BufferModel): Promise<void> {
   const workspaces = activeWorkspaces(editor, buffer)
   if (!workspaces.length) {
@@ -202,6 +235,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("lsp-find-references", async ({ editor, buffer }) => {
     await lspFindReferences(editor, buffer)
   }, "List all LSP references to the symbol at point.")
+
+  editor.command("lsp-install-server", async ({ editor, buffer, args }) => {
+    await lspInstallServer(editor, buffer, args[0])
+  }, "Install the LSP server for the current buffer's mode (runs on the remote when shadowed).")
 
   editor.key("C-c r", "lsp-rename")
 }

@@ -9,10 +9,22 @@ export type { ShadowOp, Splice, Seq } from "./ops"
 
 /** Third arg to attach{Shadow,Authority}. `onDispose` kept at top level so the
  *  pre-CAS call shape `attachX(editor, link, ctx)` still typechecks. */
-export type AttachOpts = { onDispose?(fn: () => void): void; cas?: Cas }
+export type AttachOpts = {
+  onDispose?(fn: () => void): void
+  cas?: Cas
+  /** A-side: debounce-flush externals this many ms after the last S op (or the
+   *  ext itself). ≤0 disables the timer — DST sim drives flushExternal directly. */
+  flushMs?: number
+  /** A-side: force-flush externals after this many acks even if S never goes
+   *  quiet, so a hot S can't defer the rebase forever. */
+  flushEveryN?: number
+}
 
 /** S→A ops that carry a seq and are subject to in-order buffering on A. */
 type SeqOp = Splice | Point | Cmd
+
+/** A shipped splice plus the undo-tree seq it left the buffer at. */
+type SentSplice = Splice & { bufSeq: number }
 
 // ── State stashed in editor.locals ──────────────────────────────────────────
 
@@ -22,6 +34,11 @@ export type ShadowState = {
   nextSeq: Seq
   /** Ops sent to A, not yet ack'd. Each list is also mirrored to buffer.locals["shadow-pending"] for display. */
   pending: Map<string, Splice[]>
+  /** Every shipped splice with the buf.seq it left S at. Pruned by rebase, not
+   *  ack — an ack reordered ahead of a rebase mustn't lose the rewind target. */
+  sent: Map<string, SentSplice[]>
+  /** buf.seq at the synced base (wire-seq ≤ last rebase's baseSeq). */
+  baseBufSeq: Map<string, number>
   /** Chunk reassembly: bufferId → {offset → slice, eofAt}. Assembled once a
    *  contiguous run from 0 reaches eofAt; tolerant of reorder + dup. */
   partial: Map<string, { chunks: Map<number, string>; eofAt?: number }>
@@ -40,6 +57,12 @@ export type AuthorityState = {
    *  Kept in S's frame: advanced past each applied S op so flushExternal can ship
    *  them as a rebase at baseSeq=lastSeq with no rewind needed on S. */
   external: Map<string, Splice[]>
+  /** Deferred-rebase trigger: debounce timer armed whenever `external` is
+   *  non-empty, reset on each S op, fired `flushMs` after the last. */
+  flushMs: number
+  flushEveryN: number
+  acksSinceFlush: number
+  flushTimer?: ReturnType<typeof setTimeout>
 }
 
 const SHADOW_KEY = "shadow"
@@ -69,22 +92,26 @@ function setPending(editor: Editor, state: ShadowState, bufferId: string, list: 
 // ── Shadow side (S) ─────────────────────────────────────────────────────────
 
 export function attachShadow(editor: Editor, link: ShadowLink, opts?: AttachOpts): () => void {
-  const state: ShadowState = { link, cas: opts?.cas ?? new FileCas(), nextSeq: 1, pending: new Map(), partial: new Map() }
+  const state: ShadowState = { link, cas: opts?.cas ?? new FileCas(), nextSeq: 1, pending: new Map(), sent: new Map(), baseBufSeq: new Map(), partial: new Map() }
   editor.locals.set(SHADOW_KEY, state)
 
   const restore: Array<() => void> = []
   const hookBuffer = (buf: BufferModel) => {
     const prev = buf.onSplice
     buf.link = link
+    state.baseBufSeq.set(buf.id, buf.seq)
     buf.onSplice = (s, o) => {
       // snapshot:false ⇒ undo/redo/append: no new undo node was recorded, so
-      // shipping it would break the pending-count == undo-depth invariant the
-      // rebase rewind relies on. Those edits route via Cmd or A→S rebase instead.
+      // shipping it would break the 1:1 sent↔undo-node invariant the rebase
+      // rewind relies on. Those edits route via Cmd or A→S rebase instead.
       if (o.snapshot === false) return
       const op: Splice = { ...s, seq: state.nextSeq++ }
       const list = state.pending.get(buf.id) ?? []
       list.push(op)
       setPending(editor, state, buf.id, list)
+      const sent = state.sent.get(buf.id) ?? []
+      sent.push({ ...op, bufSeq: buf.seq })
+      state.sent.set(buf.id, sent)
       link.send(op)
     }
     restore.push(() => { buf.onSplice = prev; buf.link = undefined; buf.locals.delete(PENDING_KEY) })
@@ -125,26 +152,33 @@ function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: Sh
     case "rebase": {
       const buf = editor.buffers.get(op.bufferId)
       if (!buf) break
-      const list = state.pending.get(op.bufferId) ?? []
-      const toRewind = list.filter(p => p.seq > op.baseSeq)
+      const sentList = state.sent.get(op.bufferId) ?? []
+      const wasPending = new Set((state.pending.get(op.bufferId) ?? []).map(p => p.seq))
+      // Map wire baseSeq → buf.seq. `sent` survives ack, so an ack reordered
+      // ahead of this rebase can't under-count the rewind.
+      let targetBufSeq = state.baseBufSeq.get(op.bufferId) ?? 0
+      for (const s of sentList) if (s.seq <= op.baseSeq) targetBufSeq = s.bufSeq
+      const toRewind = sentList.filter(s => s.seq > op.baseSeq)
       withoutEmit(buf, () => {
-        // 1. Rewind optimistic state past baseSeq.
-        for (let i = 0; i < toRewind.length; i++) buf.undo()
+        // 1. Rewind optimistic state to baseSeq via the undo tree.
+        buf.rewindTo(targetBufSeq)
         // 2. Apply A's ops with gravity point-adjust (not replaceRange's forced
         //    jump) so S.point tracks baseline when toRewind is empty.
         //    snapshot:false — they become the new base, not a user-undoable step.
         for (const a of op.ops) buf.splice(a.from, a.to, a.text, { snapshot: false })
-        // 3. Transform surviving pending past A's ops, re-apply, advancing A's
-        //    ops past each replayed pending so the next transform is in-frame.
+        // 3. Transform surviving sent past A's ops, re-apply, advancing A's
+        //    ops past each replayed op so the next transform is in-frame.
         let exts = op.ops.slice()
-        const survived: Splice[] = []
+        const survived: SentSplice[] = []
         for (const p of toRewind) {
           const t = transformPast(p, exts, true)
-          if (t) { buf.replaceRange(t.from, t.to, t.text); survived.push(t) }
+          if (t) { buf.replaceRange(t.from, t.to, t.text); survived.push({ ...t, bufSeq: buf.seq }) }
           exts = advancePast(exts, p)
         }
-        // 4. Pending now relative to A's tip.
-        setPending(editor, state, op.bufferId, survived)
+        // 4. sent/pending now relative to A's tip; baseBufSeq advances to baseSeq.
+        state.baseBufSeq.set(op.bufferId, targetBufSeq)
+        state.sent.set(op.bufferId, survived)
+        setPending(editor, state, op.bufferId, survived.filter(s => wasPending.has(s.seq)))
       })
       // Stale-sync path lands here too: the diff arrived as a rebase, S is now
       // at A's text. Record it in the CAS so the next BufferRef is a hit.
@@ -229,7 +263,10 @@ function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: Sh
 // ── Authority side (A) ──────────────────────────────────────────────────────
 
 export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachOpts): () => void {
-  const state: AuthorityState = { link, cas: opts?.cas ?? new FileCas(), recvSeq: 0, held: new Map(), lastSeq: new Map(), external: new Map() }
+  const state: AuthorityState = {
+    link, cas: opts?.cas ?? new FileCas(), recvSeq: 0, held: new Map(), lastSeq: new Map(), external: new Map(),
+    flushMs: opts?.flushMs ?? 50, flushEveryN: opts?.flushEveryN ?? 32, acksSinceFlush: 0,
+  }
   editor.locals.set(AUTHORITY_KEY, state)
 
   const restore: Array<() => void> = []
@@ -241,6 +278,7 @@ export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachO
       const list = state.external.get(buf.id) ?? []
       list.push(s)
       state.external.set(buf.id, list)
+      scheduleFlush(editor, state)
     }
     restore.push(() => { buf.onSplice = prev })
   }
@@ -252,6 +290,7 @@ export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachO
   link.on(op => onAuthorityOp(editor, link, state, op))
 
   const detach = () => {
+    if (state.flushTimer !== undefined) { clearTimeout(state.flushTimer); state.flushTimer = undefined }
     for (const r of restore) r()
     editor.locals.delete(AUTHORITY_KEY)
   }
@@ -270,12 +309,23 @@ export function announceBuffer(editor: Editor, bufferId: string): void {
   state.link.send({ kind: "buffer-ref", id: buf.id, path: buf.path, sha, mode: buf.mode })
 }
 
+/** Arm/reset the debounce timer that calls `flushExternal` once S has been
+ *  quiet for `flushMs`. No-op when the timer is disabled (≤0) — DST runs
+ *  synchronously and calls flushExternal from drain() instead. */
+function scheduleFlush(editor: Editor, state: AuthorityState): void {
+  if (state.flushMs <= 0) return
+  if (state.flushTimer !== undefined) clearTimeout(state.flushTimer)
+  state.flushTimer = setTimeout(() => { state.flushTimer = undefined; flushExternal(editor) }, state.flushMs)
+}
+
 /** Ship any buffered externals to S as a rebase at the current lastSeq, then clear.
- *  Called from the DST drain after all of S's pending have been applied+acked, so
- *  S's pending is empty and the rebase needs no rewind — just apply on top. */
+ *  Driven by the debounce timer / Nth-ack fallback on real links, or explicitly
+ *  from the DST drain. Safe to call when external is empty (no-op). */
 export function flushExternal(editor: Editor): number {
   const state = authorityState(editor)
   if (!state) return 0
+  if (state.flushTimer !== undefined) { clearTimeout(state.flushTimer); state.flushTimer = undefined }
+  state.acksSinceFlush = 0
   let n = 0
   for (const [bufferId, ext] of state.external) {
     if (!ext.length) continue
@@ -374,4 +424,13 @@ function applyAuthorityOp(editor: Editor, link: ShadowLink, state: AuthorityStat
     applyRemoteOp(editor, link, op)
   }
   link.send({ kind: "ack", upTo: op.seq })
+  // Deferred-rebase trigger for real links: prefer to ship ext once S goes
+  // quiet (debounce), but cap how long a hot S can defer it (Nth-ack).
+  state.acksSinceFlush++
+  for (const ext of state.external.values()) {
+    if (!ext.length) continue
+    if (state.acksSinceFlush >= state.flushEveryN) flushExternal(editor)
+    else scheduleFlush(editor, state)
+    break
+  }
 }

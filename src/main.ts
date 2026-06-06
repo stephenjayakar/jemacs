@@ -1,4 +1,7 @@
 import { writeFileSync } from "node:fs"
+import { closeSync, openSync, unlinkSync, writeSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Editor } from "./kernel/editor"
 import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
@@ -34,8 +37,16 @@ async function main(): Promise<void> {
 
   // Out-of-band buffer probe for the layer-3 shadow integration test and
   // scripts/shadow-pair.sh: lets a test read A's in-memory text without a UI.
+  // O_EXCL + 0o600: buffer content can be sensitive; don't follow a pre-planted
+  // symlink and don't leave it world-readable. Unlink first so repeat dumps work.
   process.on("SIGUSR1", () => {
-    try { writeFileSync(`/tmp/jemacs-dump-${process.pid}`, editor.currentBuffer.text) } catch { /* best-effort */ }
+    const p = join(tmpdir(), `jemacs-dump-${process.pid}`)
+    try { unlinkSync(p) } catch { /* may not exist */ }
+    try {
+      const fd = openSync(p, "wx", 0o600)
+      writeSync(fd, editor.currentBuffer.text)
+      closeSync(fd)
+    } catch { /* best-effort */ }
   })
 
   if (serveStdio) {

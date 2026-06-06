@@ -404,3 +404,14 @@
 {"id": "t-audit-45c70597", "status": "done", "ts": 1780713338728}
 {"id": "t-a4094cea", "ts": 1780726853973, "kind": "feature", "priority": "p1", "owns": "src/shadow/ws-link.ts + plugins/shadow/index.ts", "status": "open", "title": "shadow: WsLink + shadow-serve/shadow-connect commands", "detail": "After sim.prop passes: Bun.serve({websocket}) on 127.0.0.1, one-time token in handshake. shadow-connect dials + attachShadow. shadow-serve attachAuthority.", "by": "sujay-shadow"}
 {"id": "t-a87a08c7", "ts": 1780726853973, "kind": "feature", "priority": "p1", "owns": "scripts/shadow-pair.sh + test/shadow/integration.test.ts", "status": "open", "title": "shadow: scripts/shadow-pair.sh + test/shadow/integration.test.ts", "detail": "tmux split, left=serve right=connect. Integration test (skipIf TUI) spawns both, types in S via tui-drive, asserts A buffer via --dump-buffer flag (add to src/main.ts).", "by": "sujay-shadow"}
+{"id": "t-f360d582", "ts": 1780731071454, "kind": "bug", "priority": "p1", "owns": "src/shadow/shadow.ts + src/kernel/buffer.ts", "status": "open", "title": "shadow: rewind-by-buffer-seq (replace rewind-by-count)", "detail": "S records buf.seq alongside wire-seq at send time. rebase{baseSeq} maps wire-seq\u2192buf.seq, rewindTo(bufSeq). Fixes ack-before-rebase under reorder. Add interleaveExt+adversary to sim-adversary.prop.test.ts.", "by": "shadow-phase5"}
+{"id": "t-aee820d5", "ts": 1780731071454, "kind": "feature", "priority": "p1", "owns": "src/shadow/install.ts + scripts/bundle.sh", "status": "open", "title": "shadow: self-install over ssh (probe + scp bundle)", "detail": "Per DESIGN.md \u00a7Self-install. probeRemote(host) checks ~/.jemacs/bin/jemacs-$REV; if missing, scp bundle + ensure bun. shadow-connect ssh:// calls before spawnLink.", "by": "shadow-phase5"}
+{"id": "t-9bf3edf8", "ts": 1780731071454, "kind": "feature", "priority": "p2", "owns": "src/lsp/clients/*.ts + plugins/lsp-extras/", "status": "open", "title": "shadow: lsp-install-server per-client", "detail": "Each client gets installCmd. Runs on A via {command} when buffer.link.", "by": "shadow-phase5"}
+{"id": "t-be95fbd9", "ts": 1780731071454, "kind": "bug", "priority": "p1", "owns": "src/shadow/shadow.ts", "status": "open", "title": "shadow: deferred-rebase flush trigger for real links", "detail": "flushExternal currently only at sim drain. Real links need: timer (e.g. 50ms after last S op) OR on every Nth ack. Otherwise ext sits forever.", "by": "shadow-phase5"}
+{"id": "t-a4094cea", "status": "done", "ts": 1780731580175}
+{"id": "t-a87a08c7", "status": "done", "ts": 1780731580175}
+{"id": "t-f360d582", "status": "done", "ts": 1780731580175}
+{"id": "t-aee820d5", "status": "done", "ts": 1780731580175}
+{"id": "t-be95fbd9", "status": "done", "ts": 1780731580175}
+{"id": "t-audit-4b71804f", "status": "done", "ts": 1780731580175}
+{"id": "t-9bf3edf8", "status": "done", "ts": 1780731580175}
