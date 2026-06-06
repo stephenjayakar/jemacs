@@ -10,14 +10,18 @@ import { listCatalogEntries } from "../../src/runtime/definitions"
 // command's advice alone (both advisors no-op when their minor mode is disabled).
 const GUARDED_ADVICE = new Set(["self-insert-command"])
 
-/** Editor with default modes/commands/bindings, ready for a plugin's `install`. */
-export function makeEditor(): Editor {
-  // advice/hooks are process-global and append-only; drop whatever earlier test
-  // files left behind so every makeEditor() starts from the same baseline (t-f35ebf).
+/** Clear process-global advice/hooks left by earlier test files. Shared by
+ *  makeEditor() and script() so every fresh editor starts from the same baseline. */
+export function resetTestGlobals(): void {
   for (const name of new Set(listCatalogEntries("advice").map(e => e.name))) {
     if (!GUARDED_ADVICE.has(name)) clearAdvice(name)
   }
   clearHooks()
+}
+
+/** Editor with default modes/commands/bindings, ready for a plugin's `install`. */
+export function makeEditor(): Editor {
+  resetTestGlobals()
   installDefaultModes()
   const editor = new Editor()
   installDefaultConfig(editor)
