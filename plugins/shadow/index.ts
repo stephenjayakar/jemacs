@@ -5,8 +5,9 @@ import { createPluginContext, type PluginContext } from "../../src/runtime/plugi
 import { defface } from "../../src/runtime/faces"
 import { defvar } from "../../src/runtime/custom"
 import { transformSplice, type Splice } from "../../src/shadow/ops"
-import { attachShadow, shadowState } from "../../src/shadow/shadow"
+import { attachAuthority, attachShadow, authorityState, shadowState } from "../../src/shadow/shadow"
 import { parseConnectTarget, spawnStdioLink } from "../../src/shadow/stdio-link"
+import { connectWs, serveShadow, type ServeShadowResult } from "../../src/shadow/ws-link"
 
 /** buffer.locals key written by attachShadow (shadow.ts mirrors ShadowState.pending here). */
 export const SHADOW_PENDING_LOCAL = "shadow-pending"
@@ -65,22 +66,42 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   })
 
   ctx.command("shadow-connect", async ({ editor, args }) => {
-    const target = args[0] ?? await editor.prompt("Connect to (ssh://host or stdio:CMD): ", "", "shadow-connect")
+    const target = args[0] ?? await editor.prompt("Connect to (ssh://host, ws://host:port/?token=…, or stdio:CMD): ", "", "shadow-connect")
     if (!target) return
     if (shadowState(editor)) {
       editor.message("[shadow] already connected; M-x shadow-disconnect first")
       return
     }
-    const link = spawnStdioLink(parseConnectTarget(target), {
-      onClose: () => editor.message(`[shadow] disconnected from ${target}`),
-    })
+    const onClose = () => editor.message(`[shadow] disconnected from ${target}`)
+    // ws:// routes to WsLink; everything else falls through to the stdio/ssh parser.
+    const link = target.startsWith("ws://")
+      ? connectWs(target, { onClose })
+      : spawnStdioLink(parseConnectTarget(target), { onClose })
     attachShadow(editor, link, ctx)
     editor.message(`[shadow] connected to ${target}`)
-  }, "Attach this editor as a shadow of a remote authority over ssh:// or stdio:.")
+  }, "Attach this editor as a shadow of a remote authority over ssh://, ws://, or stdio:.")
 
   ctx.command("shadow-disconnect", ({ editor }) => {
     const state = shadowState(editor)
     if (!state) { editor.message("[shadow] not connected"); return }
     state.link.close()
   }, "Close the active shadow link.")
+
+  let serving: ServeShadowResult | undefined
+  ctx.command("shadow-serve", ({ editor }) => {
+    if (serving || authorityState(editor)) {
+      editor.message("[shadow] already serving; M-x shadow-stop-server first")
+      return
+    }
+    serving = serveShadow(link => attachAuthority(editor, link, ctx))
+    ctx.onDispose(() => { serving?.stop(); serving = undefined })
+    editor.message(`[shadow] serving — connect with: ${serving.url}`)
+  }, "Serve this editor as an authority on a loopback WebSocket and print the one-time URL.")
+
+  ctx.command("shadow-stop-server", ({ editor }) => {
+    if (!serving) { editor.message("[shadow] not serving"); return }
+    serving.stop()
+    serving = undefined
+    editor.message("[shadow] server stopped")
+  }, "Stop the shadow WebSocket server.")
 }

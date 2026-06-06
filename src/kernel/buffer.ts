@@ -44,8 +44,10 @@ export class BufferModel {
   /** Set ⇒ this buffer's authoritative copy lives on the peer; save() etc. route via Cmd. */
   link?: ShadowLink
   onTextChange?: (event: { start: number; end: number; text: string }) => void
-  /** Shadow send hook — fires per `_splice` with seq:0; the link layer assigns the real seq. */
-  onSplice?: (s: Splice) => void
+  /** Shadow send hook — fires per `_splice` with seq:0; the link layer assigns the real seq.
+   *  Second arg carries `_splice`'s opts so the link layer can filter undo/redo/append
+   *  (snapshot:false) to keep the pending↔undo-node 1:1 the rebase rewind relies on. */
+  onSplice?: (s: Splice, opts: { snapshot?: boolean; markDirty?: boolean }) => void
   private nextSeq = 0
   private undoRoot: UndoNode = { ops: [], parent: null, children: [], seq: 0 }
   private undoCur: UndoNode = this.undoRoot
@@ -130,7 +132,7 @@ export class BufferModel {
     this.assertWritable(markDirty)
     const removed = this._text.slice(a, b)
     if (opts.snapshot ?? true) this.record(a, b, removed, repl)
-    this.onSplice?.({ kind: "splice", bufferId: this.id, from: a, to: b, text: repl, seq: 0 })
+    this.onSplice?.({ kind: "splice", bufferId: this.id, from: a, to: b, text: repl, seq: 0 }, opts)
     this.onTextChange?.({ start: a, end: b, text: repl })
     this._text = this._text.slice(0, a) + repl + this._text.slice(b)
     this._spliceLineStarts(a, b, removed, repl)
@@ -346,8 +348,11 @@ export class BufferModel {
   }
 
   /** Fold the most recent mutation into the previous undo step. Call immediately
-   *  after the second mutation. */
+   *  after the second mutation. No-op while a shadow link is attached: unlinking a
+   *  node whose splice already shipped breaks the pending↔undo-node 1:1 that the
+   *  rebase rewind counts on, so over the wire each splice stays its own step. */
   amalgamateUndo(): void {
+    if (this.link) return
     const p = this.undoCur.parent
     if (!p?.parent) return
     this.undoCur.ops = [...p.ops, ...this.undoCur.ops]

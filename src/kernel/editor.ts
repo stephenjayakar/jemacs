@@ -368,9 +368,14 @@ export class Editor {
     return this.minibufferDepth
   }
 
+  /** Shadow attach hook — set by attachAuthority/attachShadow so buffers created
+   *  after attach (find-file, compile) get the same onSplice wiring as the initial set. */
+  onAddBuffer?: (buffer: BufferModel) => void
+
   addBuffer(buffer: BufferModel): BufferModel {
     this.buffers.set(buffer.id, buffer)
     this.uniquifyBufferNames()
+    this.onAddBuffer?.(buffer)
     return buffer
   }
 

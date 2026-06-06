@@ -64,7 +64,8 @@ export function applyRemoteOp(editor: Editor, link: ShadowLink, op: ShadowOp): b
         return false
       }
       if (typeof op.name !== "string" || !Array.isArray(op.args)) return false
-      void editor.run(op.name, op.args.map(a => typeof a === "string" ? a : String(a)))
+      editor.run(op.name, op.args.map(a => typeof a === "string" ? a : String(a)))
+        .catch((e: unknown) => editor.message(`[shadow] command '${op.name}' failed: ${(e as Error)?.message ?? e}`))
       return true
     }
     case "ack":

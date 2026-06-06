@@ -22,8 +22,9 @@ export type ShadowState = {
   nextSeq: Seq
   /** Ops sent to A, not yet ack'd. Each list is also mirrored to buffer.locals["shadow-pending"] for display. */
   pending: Map<string, Splice[]>
-  /** Chunk reassembly: bufferId → text accumulated so far. Cleared on eof. */
-  partial: Map<string, string>
+  /** Chunk reassembly: bufferId → {offset → slice, eofAt}. Assembled once a
+   *  contiguous run from 0 reaches eofAt; tolerant of reorder + dup. */
+  partial: Map<string, { chunks: Map<number, string>; eofAt?: number }>
 }
 
 export type AuthorityState = {
@@ -75,7 +76,11 @@ export function attachShadow(editor: Editor, link: ShadowLink, opts?: AttachOpts
   const hookBuffer = (buf: BufferModel) => {
     const prev = buf.onSplice
     buf.link = link
-    buf.onSplice = s => {
+    buf.onSplice = (s, o) => {
+      // snapshot:false ⇒ undo/redo/append: no new undo node was recorded, so
+      // shipping it would break the pending-count == undo-depth invariant the
+      // rebase rewind relies on. Those edits route via Cmd or A→S rebase instead.
+      if (o.snapshot === false) return
       const op: Splice = { ...s, seq: state.nextSeq++ }
       const list = state.pending.get(buf.id) ?? []
       list.push(op)
@@ -127,7 +132,8 @@ function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: Sh
         for (let i = 0; i < toRewind.length; i++) buf.undo()
         // 2. Apply A's ops with gravity point-adjust (not replaceRange's forced
         //    jump) so S.point tracks baseline when toRewind is empty.
-        for (const a of op.ops) buf.splice(a.from, a.to, a.text)
+        //    snapshot:false — they become the new base, not a user-undoable step.
+        for (const a of op.ops) buf.splice(a.from, a.to, a.text, { snapshot: false })
         // 3. Transform surviving pending past A's ops, re-apply, advancing A's
         //    ops past each replayed pending so the next transform is in-frame.
         let exts = op.ops.slice()
@@ -184,12 +190,26 @@ function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: Sh
     case "chunk": {
       const buf = editor.buffers.get(op.id)
       if (!buf) break
-      const sofar = (state.partial.get(op.id) ?? "") + op.data
-      if (!op.eof) { state.partial.set(op.id, sofar); break }
-      state.partial.delete(op.id)
-      withoutEmit(buf, () => buf.replaceRange(0, buf.text.length, sofar))
-      buf.locals.set("shadow-cached-sha", state.cas.write(sofar))
-      buf.locals.delete("shadow-sync")
+      let p = state.partial.get(op.id)
+      if (!p) state.partial.set(op.id, p = { chunks: new Map() })
+      p.chunks.set(op.offset, op.data)
+      if (op.eof) p.eofAt = op.offset
+      if (p.eofAt === undefined) break
+      // Assemble only once 0..eofAt is contiguous; otherwise wait for the gap to fill.
+      let assembled = "", at = 0
+      for (;;) {
+        const slice = p.chunks.get(at)
+        if (slice === undefined) break
+        assembled += slice
+        if (at === p.eofAt) {
+          state.partial.delete(op.id)
+          withoutEmit(buf, () => buf.replaceRange(0, buf.text.length, assembled))
+          buf.locals.set("shadow-cached-sha", state.cas.write(assembled))
+          buf.locals.delete("shadow-sync")
+          break
+        }
+        at += slice.length
+      }
       break
     }
     case "splice":
@@ -213,7 +233,7 @@ export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachO
   editor.locals.set(AUTHORITY_KEY, state)
 
   const restore: Array<() => void> = []
-  for (const buf of editor.buffers.values()) {
+  const hookAuthorityBuffer = (buf: BufferModel) => {
     const prev = buf.onSplice
     // Any splice that fires while onSplice is installed is, by construction, *not*
     // from S (applyRemoteOp suppresses the hook), so it's an external edit.
@@ -224,6 +244,10 @@ export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachO
     }
     restore.push(() => { buf.onSplice = prev })
   }
+  for (const buf of editor.buffers.values()) hookAuthorityBuffer(buf)
+  const prevOnAdd = editor.onAddBuffer
+  editor.onAddBuffer = b => { hookAuthorityBuffer(b); prevOnAdd?.(b) }
+  restore.push(() => { editor.onAddBuffer = prevOnAdd })
 
   link.on(op => onAuthorityOp(editor, link, state, op))
 
@@ -330,8 +354,18 @@ function applyAuthorityOp(editor: Editor, link: ShadowLink, state: AuthorityStat
   if (op.kind === "splice") {
     const ext = state.external.get(op.bufferId) ?? []
     const t = transformPast(op, ext, true)
-    if (t) applyRemoteOp(editor, link, t)
-    state.external.set(op.bufferId, advancePast(ext, op))
+    if (t) {
+      applyRemoteOp(editor, link, t)
+      state.external.set(op.bufferId, advancePast(ext, op))
+    } else {
+      // S's op overlapped an external A already applied — S's frame is stale.
+      // advancePast would silently drop the overlapping ext (it's been applied
+      // to A's buffer but S would never learn of it ⇒ permanent divergence).
+      // Ship ext as a rebase now so S rewinds, applies it, and discards the
+      // conflicting op via the same null-on-overlap rule. ext is then cleared.
+      link.send({ kind: "rebase", bufferId: op.bufferId, baseSeq: state.lastSeq.get(op.bufferId) ?? 0, ops: ext.slice() })
+      state.external.set(op.bufferId, [])
+    }
     state.lastSeq.set(op.bufferId, op.seq)
   } else if (op.kind === "point") {
     applyRemoteOp(editor, link, op)

@@ -1,6 +1,7 @@
 import { Editor } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
 import { attachAuthority, attachShadow, authorityState, flushExternal, resendPending, shadowState } from "../../src/shadow/shadow"
+import { MemCas } from "../../src/shadow/cas"
 import { FakeLink, type Adversary } from "./fake-link"
 
 export { FakeLink } from "./fake-link"
@@ -54,6 +55,10 @@ export type SimulatorOpts = {
   bufferIds?: string[]
   /** Include externalSplice(A) in the random action mix. */
   withExternalSplice?: boolean
+  /** Allow ext to be a non-empty replace and to interleave with in-flight S ops
+   *  (no drain bracketing). The baseline oracle is unsound in this mode — only
+   *  A≡S is checked. Exists to unmask the overlap-conflict path in applyAuthorityOp. */
+  interleaveExt?: boolean
   /** Link adversary. Threaded to both directions of the FakeLink pair. */
   adversary?: Partial<Adversary>
 }
@@ -68,11 +73,13 @@ export class Simulator {
   readonly bufferIds: readonly string[]
   readonly trace: Action[] = []
   readonly withExternalSplice: boolean
+  readonly interleaveExt: boolean
   stepN = 0
 
   constructor(readonly seed: number, opts: SimulatorOpts = {}) {
     this.rng = new SeededRng(seed)
     this.withExternalSplice = opts.withExternalSplice ?? false
+    this.interleaveExt = opts.interleaveExt ?? false
     this.A = new Editor()
     this.S = new Editor()
     this.baseline = new Editor()
@@ -88,8 +95,9 @@ export class Simulator {
     const { sLink, aLink } = FakeLink.pair({ rng: linkRng, adversary: opts.adversary })
     this.sLink = sLink
     this.aLink = aLink
-    attachAuthority(this.A, aLink)
-    attachShadow(this.S, sLink)
+    const cas = new MemCas()
+    attachAuthority(this.A, aLink, { cas })
+    attachShadow(this.S, sLink, { cas })
   }
 
   buf(e: Editor, id = this.bufferIds[0]!): BufferModel { return e.buffers.get(id)! }
@@ -138,7 +146,9 @@ export class Simulator {
     // A and baseline) and one after (here, so S has the ext before the next key).
     // Without the trailing drain, absolute-position keys like <end> reference
     // different text lengths on S vs baseline and the oracle is unsound.
-    if (a.k === "ext") this.drain()
+    // interleaveExt drops the bracketing (and the baseline oracle) so ext can
+    // race S's in-flight ops and reach the overlap-conflict path on A.
+    if (a.k === "ext" && !this.interleaveExt) this.drain()
     return a
   }
 
@@ -159,11 +169,15 @@ export class Simulator {
     // thing on A and baseline. Pure insert: a non-empty replaced range can put
     // S.point inside it, where the transform invalidates S's next op while
     // baseline's gravity-clamped point applies it — A≢baseline by construction.
+    // interleaveExt keeps this leading drain (so ext is at most one entry deep
+    // when S ops arrive — multi-ext frame composition is a separate workstream)
+    // but allows a non-empty replace range and skips the trailing drain.
     if (!this.quiescent()) this.drain()
     const len = this.buf(this.A).text.length
     const from = r.int(len + 1)
+    const to = this.interleaveExt ? from + r.int(len + 1 - from) : from
     const text = Array.from({ length: 1 + r.int(2) }, () => EXT_CHARS[r.int(EXT_CHARS.length)]).join("")
-    return { k: "ext", from, to: from, text }
+    return { k: "ext", from, to, text }
   }
 
   apply(a: Action): void {
@@ -176,7 +190,7 @@ export class Simulator {
         // `splice`, not `replaceRange`: we want gravity point-adjust on baseline so
         // it tracks S's post-rebase point, not a forced jump to end-of-insert.
         this.buf(this.A).splice(a.from, a.to, a.text)
-        this.buf(this.baseline).splice(a.from, a.to, a.text)
+        if (!this.interleaveExt) this.buf(this.baseline).splice(a.from, a.to, a.text)
         break
       case "partition":
         this.sLink.partitioned = true
@@ -201,11 +215,17 @@ export class Simulator {
       const a = this.buf(this.A, id)
       const s = this.buf(this.S, id)
       const b = this.buf(this.baseline, id)
-      if (a.text !== s.text || s.text !== b.text) {
-        throw this.fail(id, `text diverged\n  A=${JSON.stringify(a.text)}\n  S=${JSON.stringify(s.text)}\n  B=${JSON.stringify(b.text)}`)
+      if (a.text !== s.text) {
+        throw this.fail(id, `A≢S\n  A=${JSON.stringify(a.text)}\n  S=${JSON.stringify(s.text)}`)
       }
-      if (s.point !== b.point) {
-        throw this.fail(id, `point diverged S=${s.point} baseline=${b.point} (text=${JSON.stringify(s.text)})`)
+      // baseline oracle is unsound under interleaveExt (see step()).
+      if (!this.interleaveExt) {
+        if (s.text !== b.text) {
+          throw this.fail(id, `text diverged\n  A=${JSON.stringify(a.text)}\n  S=${JSON.stringify(s.text)}\n  B=${JSON.stringify(b.text)}`)
+        }
+        if (s.point !== b.point) {
+          throw this.fail(id, `point diverged S=${s.point} baseline=${b.point} (text=${JSON.stringify(s.text)})`)
+        }
       }
     }
     const ss = shadowState(this.S)
@@ -218,9 +238,13 @@ export class Simulator {
   private fail(bufferId: string, msg: string): Error {
     const start = Math.max(0, this.trace.length - 30)
     const tail = this.trace.slice(start).map((a, i) => `  [${start + i}] ${JSON.stringify(a)}`).join("\n")
+    const optBits = [
+      this.withExternalSplice && "withExternalSplice:true",
+      this.interleaveExt && "interleaveExt:true",
+    ].filter(Boolean).join(", ")
     return new Error(
       `seed=${this.seed} step=${this.stepN} buffer=${bufferId}: ${msg}\n` +
-      `repro: new Simulator(${this.seed}${this.withExternalSplice ? ", {withExternalSplice:true}" : ""}).run(${this.stepN})\n` +
+      `repro: new Simulator(${this.seed}${optBits ? `, {${optBits}}` : ""}).run(${this.stepN})\n` +
       `last ${this.trace.length - start} actions:\n${tail}`,
     )
   }

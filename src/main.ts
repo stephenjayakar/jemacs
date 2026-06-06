@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs"
 import { Editor } from "./kernel/editor"
 import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
@@ -30,6 +31,12 @@ async function main(): Promise<void> {
 
   const file = args.files[0]
   if (file) await editor.openFile(file)
+
+  // Out-of-band buffer probe for the layer-3 shadow integration test and
+  // scripts/shadow-pair.sh: lets a test read A's in-memory text without a UI.
+  process.on("SIGUSR1", () => {
+    try { writeFileSync(`/tmp/jemacs-dump-${process.pid}`, editor.currentBuffer.text) } catch { /* best-effort */ }
+  })
 
   if (serveStdio) {
     const link = new StdioLink(process.stdin, process.stdout, {
