@@ -30,10 +30,8 @@ test("@jemacs/core re-exports kernel + PluginContext (DESIGN.md, packages/README
   expect(typeof (core as any).createPluginContext).toBe("function")
 })
 
-test("@jemacs/core still exports the host bootstrap surface", () => {
-  // Regression guard: the original surface must not be lost in the re-curation.
+test("@jemacs/core does NOT export host bootstrap (Stephen split: hosts are separate packages)", () => {
   expect(typeof core.Editor).toBe("function")
-  expect(typeof core.runJemacs).toBe("function")
-  expect(typeof core.bindJemacsHost).toBe("function")
-  expect(typeof core.buildDisplayModel).toBe("function")
+  expect((core as Record<string, unknown>).runJemacs).toBeUndefined()
+  expect((core as Record<string, unknown>).bindJemacsHost).toBeUndefined()
 })

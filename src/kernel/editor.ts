@@ -738,7 +738,9 @@ export class Editor {
     void this.changed("theme")
   }
 
+  /** @deprecated Compat shim — call `mutateWindowLayout` with `splitWindowLeaf`, or `run("split-window-below")`. */
   splitWindowBelow(): void { this.splitSelectedWindow("vertical") }
+  /** @deprecated Compat shim — call `mutateWindowLayout` with `splitWindowLeaf`, or `run("split-window-right")`. */
   splitWindowRight(): void { this.splitSelectedWindow("horizontal") }
 
   private splitSelectedWindow(orientation: "vertical" | "horizontal"): void {
@@ -754,15 +756,18 @@ export class Editor {
     void this.changed(`split-window-${orientation === "vertical" ? "below" : "right"}`)
   }
 
+  /** @deprecated Compat shim — call `mutateWindowLayout` with `deleteOtherWindowLeaves`, or `run("delete-other-windows")`. */
   deleteOtherWindows(): void {
     if (listWindowLeaves(this.windowLayout).length <= 1) return
     this.mutateWindowLayout(layout => deleteOtherWindowLeaves(layout, this.selectedWindowId), "delete-other-windows")
   }
 
+  /** @deprecated Compat shim — call `mutateWindowLayout` with `balanceWindowTree`, or `run("balance-windows")`. */
   balanceWindows(): void {
     this.mutateWindowLayout(balanceWindowTree, "balance-windows")
   }
 
+  /** @deprecated Compat shim — call `mutateWindowLayout` with `deleteWindowLeaf`, or `run("delete-window")`. */
   deleteWindow(): void {
     if (listWindowLeaves(this.windowLayout).length <= 1) return
     const next = nextWindowId(this.windowLayout, this.selectedWindowId, 1)

@@ -382,3 +382,10 @@
 {"id": "t-audit-3365fd1c", "status": "done", "ts": 1780705990956}
 {"id": "t-audit-45c70597", "status": "done", "ts": 1780705990956}
 {"id": "t-audit-7c5a1a20", "status": "done", "ts": 1780705990956}
+{"id": "t-4c675087", "ts": 1780706163512, "kind": "refactor", "priority": "p1", "owns": "packages/jemacs-core/index.ts", "status": "open", "title": "packages/jemacs-core: re-export kernel/runtime/display only (Stephen split prep)", "detail": "Re-export src/kernel/* + src/runtime/* + src/display/protocol + src/display/theme. Do NOT export lisp/ or plugins/. Verify: a fresh consumer can import {Editor, BufferModel, Keymap, defcustom, addAdvice, DisplayModel, UiHost} from @jemacs/core.", "by": "stephen-split-prep"}
+{"id": "t-91c9d447", "ts": 1780706163512, "kind": "refactor", "priority": "p2", "owns": "plugins/ + lisp/", "status": "open", "title": "Audit plugins/ + lisp/ for ../../src/ imports \u2192 @jemacs/core (Stephen split prep)", "detail": "grep \"from \"../../src/\"\" plugins/ lisp/ -r. Each should become \"from @jemacs/core\". Do NOT do the rewrite yet (Stephen will move repos) \u2014 just produce the list + flag any that import non-core paths (modes/dired etc.).", "by": "stephen-split-prep"}
+{"id": "t-audit-240c8e6a", "status": "done", "ts": 1780706596460}
+{"id": "t-4c675087", "status": "done", "ts": 1780706596460}
+{"id": "t-audit-49fa6b23", "status": "done", "ts": 1780706596460}
+{"id": "t-audit-f20d060e", "status": "done", "ts": 1780706596460}
+{"id": "t-91c9d447", "status": "done", "ts": 1780706596460}
