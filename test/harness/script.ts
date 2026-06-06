@@ -5,6 +5,7 @@ import { type KeyEventLike } from "../../src/kernel/keymap"
 import { installDefaultModes } from "../../src/modes/default-modes"
 import { installDefaultConfig } from "../../src/config"
 import { installBuiltinPlugins } from "../../plugins/builtin"
+import { resetTestGlobals } from "../plugins/helper"
 
 /** Parse an Emacs-style key token into the KeyEventLike a terminal would send.
  *  This is the *inverse* of `keyToken()` — tests written with string tokens
@@ -64,6 +65,7 @@ export type EditorScript = {
 }
 
 export function script(opts?: { plugins?: boolean }): EditorScript {
+  resetTestGlobals()
   installDefaultModes()
   const editor = new Editor()
   installDefaultConfig(editor)
