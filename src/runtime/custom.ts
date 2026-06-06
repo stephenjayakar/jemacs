@@ -20,9 +20,19 @@ export type CustomVariable<T = unknown> = {
 const variables = new Map<string, CustomVariable>()
 
 export function defcustom<T>(name: string, type: CustomType, value: T, doc?: string, group?: string): CustomVariable<T> {
-  const existing = variables.get(name)
-  if (existing) return existing as CustomVariable<T>
   const source = captureCallerSource(3)
+  const existing = variables.get(name)
+  if (existing) {
+    // Set-if-unbound for the value, but refresh metadata so describe-variable
+    // and the customize catalog track the re-evaluated definition.
+    existing.type = type
+    existing.doc = doc
+    existing.group = group
+    existing.source = source
+    existing.baselineValue = value
+    registerCatalogEntry({ kind: "variable", name, source, doc, patched: existing.patched })
+    return existing as CustomVariable<T>
+  }
   const variable: CustomVariable<T> = { name, type, value, doc, group, source, baselineValue: value, patched: false }
   variables.set(name, variable as CustomVariable)
   registerCatalogEntry({ kind: "variable", name, source, doc, patched: false })
@@ -30,8 +40,6 @@ export function defcustom<T>(name: string, type: CustomType, value: T, doc?: str
 }
 
 export function defvar<T>(name: string, value: T, doc?: string, group?: string): CustomVariable<T> {
-  const existing = variables.get(name)
-  if (existing) return existing as CustomVariable<T>
   const type: CustomType = typeof value === "boolean"
     ? "boolean"
     : typeof value === "number"

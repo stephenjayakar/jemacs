@@ -1140,7 +1140,11 @@ export class Editor {
     await this.events.emit("changed", { reason })
   }
 
-  quit(): void {
+  async quit(): Promise<void> {
+    this.stopAutoSave()
+    // runtime/ registers a kill-emacs-hook that disposes plugin contexts, so the
+    // kernel sheds auto-save/eldoc/watchman timers without importing runtime/.
+    await this.runHook("kill-emacs-hook", this.currentBuffer)
     this.running = false
     void this.changed("quit")
   }

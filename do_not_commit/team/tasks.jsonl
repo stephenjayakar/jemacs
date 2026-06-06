@@ -392,3 +392,7 @@
 {"id": "t-919e3b3d", "ts": 1780708144476, "kind": "bug", "priority": "p1", "owns": "plugins/subword/index.ts", "status": "open", "title": "subword: ctx.hook inside onEnable accumulates on toggle", "detail": "Hoist ctx.hook out of onEnable; gate the hook body on globalMinorModes.has(\"global-subword-mode\").", "by": "pr12-review"}
 {"id": "t-3532741e", "ts": 1780708144476, "kind": "bug", "priority": "p1", "owns": "src/kernel/editor.ts + src/runtime/plugin-context.ts", "status": "open", "title": "quit() should call disposeAllContexts(editor)", "detail": "quit() needs to import + call disposeAllContexts(this) so auto-save/eldoc/watchman timers stop. Avoid the kernel\u2192runtime cycle by having lisp/ register a quit-hook that calls it.", "by": "pr12-review"}
 {"id": "t-f43266b4", "ts": 1780708144476, "kind": "bug", "priority": "p2", "owns": "src/runtime/custom.ts", "status": "open", "title": "defcustom early-return loses doc/source on hot-reload", "detail": "Early-return preserves user value but should still update doc/source/type metadata.", "by": "pr12-review"}
+{"id": "t-audit-c081a535", "status": "done", "ts": 1780709530476}
+{"id": "t-919e3b3d", "status": "done", "ts": 1780709530476}
+{"id": "t-3532741e", "status": "done", "ts": 1780709530476}
+{"id": "t-f43266b4", "status": "done", "ts": 1780709530476}
