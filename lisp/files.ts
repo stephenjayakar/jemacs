@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import type { SaveContext } from "../src/kernel/buffer"
 import type { CommandContext } from "../src/kernel/command"
 import type { Editor } from "../src/kernel/editor"
+import { setModeSystem } from "../src/kernel/extension-points"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { readKey } from "./misc"
 import { readFileText } from "../src/platform/runtime"
@@ -24,8 +25,12 @@ import {
   diredUnmarkBackward,
   diredUnmarkEntry,
   makeDirectory,
+  makeDiredBuffer,
   refreshDiredBuffer,
 } from "../src/modes/dired"
+
+// Kernel's openDirectory routes through this seam so kernel/ stays free of modes/dired.
+setModeSystem({ makeDirectoryBuffer: makeDiredBuffer })
 
 defcustom("make-backup-files", "boolean", true,
   "Non-nil means make a backup of a file the first time it is saved.")

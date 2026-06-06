@@ -12,11 +12,11 @@ import type {
   Theme,
   WindowClickState,
 } from "./extension-points"
+import { modeSystem } from "./extension-points"
 // Value-level upward imports below remain until the per-import sub-tasks move
 // the calling methods out to lisp/ and wire `setModeSystem` (t-audit-1c671e26).
 import { enterMode, getMode, modeFeature, modeLineage } from "../modes/mode"
 import { allMinorModes, getMinorMode } from "../modes/minor-mode"
-import { makeDiredBuffer } from "../modes/dired"
 import { pointFromWindowClick } from "../display/click-to-point"
 import { syncViewportStartLine } from "../display/visual-line-height"
 import type { HostCapabilities } from "../display/protocol"
@@ -429,7 +429,7 @@ export class Editor {
   }
 
   /** Visit a path: reuse an existing buffer, else create one via `make`. The factory is what
-   *  decouples the kernel from modes/ — lisp/files.ts passes `makeDiredBuffer` for directories. */
+   *  decouples the kernel from modes/ — `modeSystem.makeDirectoryBuffer` supplies the dired one. */
   async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string): Promise<BufferModel> {
     const existing = [...this.buffers.values()].find(b => b.path === full)
     if (existing) return this.switchToBuffer(existing.id)
@@ -451,7 +451,12 @@ export class Editor {
   }
 
   async openDirectory(path: string): Promise<BufferModel> {
-    return this.visitPath(resolve(path), makeDiredBuffer, "dired")
+    const make = modeSystem.makeDirectoryBuffer ?? (async full => {
+      const b = new BufferModel({ name: `${basename(full) || full}/`, path: full, kind: "directory" })
+      b.readOnly = true
+      return b
+    })
+    return this.visitPath(resolve(path), make, "dired")
   }
 
   scratch(name: string, text = "", mode = "text"): BufferModel {
