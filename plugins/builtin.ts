@@ -1,10 +1,13 @@
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Editor } from "../src/kernel/editor"
+import { Evaluator, type InstallFn } from "../src/runtime/evaluator"
 
 /**
  * Explicit, ordered load list. Order matters: state providers first
  * (mark-ring, persist), then editing primitives, then UI, then LSP.
  */
-const builtins: Array<[name: string, load: () => Promise<{ install: (e: Editor) => void | Promise<void> }>]> = [
+const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>]> = [
   ["motion", () => import("./motion")],
   ["window", () => import("./window")],
   ["mark-ring", () => import("./mark-ring")],
@@ -27,7 +30,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: (e: Editor) 
   ["which-key", () => import("./which-key")],
   ["eldoc", () => import("./eldoc")],
   ["project", () => import("./project")],
-  ["compile", () => import("./compile")],
+  ["compile", () => import("./compile").then(m => ({ install: (e, ctx) => m.install(e, {}, ctx) }))],
   ["completion-preview", () => import("./completion-preview")],
   ["magit", () => import("./magit")],
   ["dogfood", () => import("./dogfood")],
@@ -43,11 +46,18 @@ const builtins: Array<[name: string, load: () => Promise<{ install: (e: Editor) 
   ["tiling", () => import("./tiling")],
 ]
 
-export async function installBuiltinPlugins(editor: Editor): Promise<void> {
+const HERE = dirname(fileURLToPath(import.meta.url))
+
+export async function installBuiltinPlugins(
+  editor: Editor,
+  evaluator: Evaluator = new Evaluator(editor),
+): Promise<void> {
   for (const [name, load] of builtins) {
     try {
       const mod = await load()
-      await mod.install(editor)
+      // Key by resolved index path so a later evaluator.loadPlugin on the same
+      // file finds and disposes this boot-time context before re-installing.
+      await evaluator.installPlugin(join(HERE, name, "index.ts"), mod.install)
     } catch (err) {
       editor.message(`plugin ${name} failed: ${(err as Error).message}`)
       console.error(`[plugins/builtin] ${name}:`, err)

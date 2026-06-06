@@ -1,5 +1,5 @@
 import type { Editor, Completer } from "../../src/kernel/editor"
-import { defineMinorMode } from "../../src/modes/minor-mode"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 type FidoState = {
@@ -166,8 +166,8 @@ async function fidoBackwardUpdir(editor: Editor): Promise<void> {
   await fidoExhibit(editor)
 }
 
-export function install(editor: Editor): void {
-  defineMinorMode({
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  ctx.minorMode({
     name: "fido-vertical-mode",
     lighter: " Fido",
     global: true,

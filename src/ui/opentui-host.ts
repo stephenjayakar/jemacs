@@ -30,7 +30,7 @@ function useTextareaEditor(): boolean {
 }
 
 export class OpenTuiHost implements UiHost {
-  readonly kind = "tui" as const
+  readonly label = "Jemacs OpenTUI"
   readonly capabilities = {
     unit: "cells" as const,
     mouse: true,
@@ -71,6 +71,7 @@ export class OpenTuiHost implements UiHost {
       },
     })
     this.mount()
+    this.attachInput()
     this.renderer.on("resize", (width, height) => {
       const viewport = { rows: height, cols: width }
       for (const handler of this.resizeHandlers) handler(viewport)
@@ -111,25 +112,18 @@ export class OpenTuiHost implements UiHost {
     this.resizeHandlers.push(handler)
   }
 
-  /** Wire OpenTUI key/paste streams after `start()`. Called from `runJemacs`. */
-  attachInput(renderer: CliRenderer): void {
-    renderer.keyInput.on("keypress", async key => {
+  private attachInput(): void {
+    this.renderer.keyInput.on("keypress", async key => {
       for (const handler of this.inputHandlers) {
         await handler({ type: "key", key: keyEventFromOpentui(key) })
       }
     })
-    renderer.keyInput.on("paste", event => {
+    this.renderer.keyInput.on("paste", event => {
       const text = new TextDecoder().decode(event.bytes)
       for (const handler of this.inputHandlers) {
         void handler({ type: "paste", text })
       }
     })
-  }
-
-  attachMouse(): void {
-    for (const { body } of this.leafPanes.values()) {
-      this.wireBodyMouse(body)
-    }
   }
 
   private wireBodyMouse(body: BodyRenderable): void {
@@ -144,10 +138,6 @@ export class OpenTuiHost implements UiHost {
         void handler({ type: "mouse", windowId, row, col, button: event.button })
       }
     }
-  }
-
-  getRenderer(): CliRenderer {
-    return this.renderer
   }
 
   private mount(): void {

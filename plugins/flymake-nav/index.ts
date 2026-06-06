@@ -1,5 +1,6 @@
 import { relative } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { LspDiagnostic } from "../../src/lsp/buffer-state"
 import { positionToPoint } from "../../src/lsp/positions"
@@ -123,7 +124,7 @@ function showDiagnostics(editor: Editor, name: string, locations: ErrorLocation[
   return buf
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const keymap = new Keymap("flymake-diagnostics-map")
   keymap.bind("enter", "compile-goto-error")
   keymap.bind("return", "compile-goto-error")

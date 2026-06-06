@@ -1,6 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("copy-to-register", async ({ buffer, editor, args }) => {
     const register = args[0] ?? await editor.prompt("Copy to register: ", "", "register")
     if (!register) return

@@ -1,8 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { FaceName, TextSpan } from "../../src/modes/mode"
-import { defineMinorMode } from "../../src/modes/minor-mode"
-import { addHook } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 export const SMERGE_OVERLAYS_LOCAL = "smerge-overlays"
@@ -100,10 +99,14 @@ export function smergeFindConflicts(text: string): SmergeMatch[] {
   const out: SmergeMatch[] = []
   BEGIN_RE.lastIndex = 0
   for (let m: RegExpExecArray | null; (m = BEGIN_RE.exec(text)); ) {
+    const resumeAt = BEGIN_RE.lastIndex
     const conflict = parseConflict(text, m.index, m[0].length)
     if (conflict) {
       out.push(conflict)
       BEGIN_RE.lastIndex = conflict.end
+    } else {
+      // parseConflict clobbers BEGIN_RE.lastIndex; resume past this marker.
+      BEGIN_RE.lastIndex = resumeAt
     }
   }
   return out
@@ -194,11 +197,11 @@ function gotoConflict(editor: Editor, buffer: BufferModel, dir: 1 | -1): void {
   buffer.point = target.start
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("smerge-auto-leave", "boolean", true,
     "Non-nil means to leave `smerge-mode' when the last conflict is resolved.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "smerge-mode",
     lighter: " SMerge",
     onEnable: (ed, buf) => { if (buf) refresh(ed, buf) },
@@ -242,7 +245,7 @@ export function install(editor: Editor): void {
     editor.defineKey("smerge-mode-map", `C-c ^ ${k}`, cmd)
   }
 
-  addHook("find-file-hook", ({ editor, buffer }) => {
+  ctx.hook("find-file-hook", ({ editor, buffer }) => {
     BEGIN_RE.lastIndex = 0
     if (BEGIN_RE.test(buffer.text)) editor.enableMinorMode("smerge-mode", { buffer })
   })

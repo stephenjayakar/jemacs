@@ -1,6 +1,6 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { Keymap } from "../../src/kernel/keymap"
-import { defineMinorMode } from "../../src/modes/minor-mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { modeLineage } from "../../src/modes/mode"
 
@@ -91,13 +91,13 @@ function schedule(editor: Editor, prefix: string): void {
   }, ms)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("which-key-idle-delay", "number", 0.5,
     "Seconds to wait after a prefix key before showing the which-key display.")
   defcustom("which-key-separator", "string", " → ",
     "String drawn between a key and its command in the which-key display.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "which-key-mode",
     lighter: " WK",
     global: true,

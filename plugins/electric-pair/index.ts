@@ -1,7 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { defineMinorMode } from "../../src/modes/minor-mode"
-import { addAdvice, getTrackedAdvice } from "../../src/runtime/advice"
+import { getTrackedAdvice } from "../../src/runtime/advice"
 
 const OPENERS: Record<string, string> = {
   "(": ")",
@@ -47,8 +47,8 @@ function postSelfInsert(editor: Editor, buffer: BufferModel): void {
 
 let adviceId: string | undefined
 
-export function install(editor: Editor): void {
-  defineMinorMode({ name: "electric-pair-mode", global: true, lighter: " ElP" })
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  ctx.minorMode({ name: "electric-pair-mode", global: true, lighter: " ElP" })
 
   editor.command("electric-pair-mode", ({ editor, buffer, prefixArgument }) => {
     if (prefixArgument === 1) editor.enableMinorMode("electric-pair-mode", { buffer })
@@ -56,11 +56,13 @@ export function install(editor: Editor): void {
     else editor.toggleMinorMode("electric-pair-mode", { buffer })
   }, "Toggle automatic insertion of matching delimiters.")
 
-  // Re-register if a prior clearAdvice() dropped our entry; the boolean guard
-  // it replaces could desync from the registry and leave us silently inert.
+  // ctx.advice handles disposal on reload; the id guard remains so test
+  // helpers that don't dispose (makeEditor) still avoid stacking on
+  // self-insert-command across files.
   if (adviceId === undefined || getTrackedAdvice(adviceId) === undefined) {
-    adviceId = addAdvice("self-insert-command", {
+    adviceId = ctx.advice("self-insert-command", {
       after: ({ editor, buffer }) => postSelfInsert(editor, buffer),
     })
+    ctx.onDispose(() => { adviceId = undefined })
   }
 }

@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path"
 import { mkdir, rename } from "node:fs/promises"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
@@ -109,7 +110,7 @@ function changeToDired(buffer: BufferModel): void {
   buffer.locals.delete(PREV_ON_CHANGE)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("wdired-create-parent-directories", "boolean", true,
     "If non-nil, create parent directories of destination files when renaming.")
 

@@ -8,21 +8,29 @@ import { defaultTheme, disableBuiltinTheme, enableBuiltinTheme, getBuiltinTheme,
 import { defcustom, getCustom } from "../src/runtime/custom"
 import { saveContextOptions } from "../src/core/save-context"
 import { Evaluator } from "../src/runtime/evaluator"
+import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { revertAllDefinitions } from "../src/runtime/patch-eval"
 import { inspectValue } from "../src/runtime/inspect"
+import { defineMinorMode } from "../src/modes/minor-mode"
 
+defcustom("text-scale-mode-step", "number", 1.2,
+  "Each step of text scale multiplies face height by this factor.")
 
-import { textScaleStep } from "../src/core/text-scale"
 const TEXT_SCALE_AMOUNT_KEY = "text-scale-mode-amount"
 const TEXT_SCALE_ADJUST_MAP = "text-scale-adjust-map"
 const MIN_AMOUNT = -20
 const MAX_AMOUNT = 20
 
-let textScaleAdjustRepeatInc = 1
-let textScaleAdjustMap: Keymap | null = null
+type TextScaleAdjustState = { repeatInc: number; map: Keymap | null }
+const textScaleAdjust = new WeakMap<Editor, TextScaleAdjustState>()
+function textScaleAdjustState(editor: Editor): TextScaleAdjustState {
+  let s = textScaleAdjust.get(editor)
+  if (!s) textScaleAdjust.set(editor, s = { repeatInc: 1, map: null })
+  return s
+}
 
-export function install(editor: Editor): Evaluator {
-  const evaluator = new Evaluator(editor)
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor), evaluator: Evaluator = new Evaluator(editor)): Evaluator {
+  void ctx // commands/keys overwrite in place; ctx reserved for future hooks/advice here
 
   // ---- prefix args / quit ------------------------------------------------
 
@@ -99,7 +107,13 @@ export function install(editor: Editor): Evaluator {
   editor.command("apropos-command", async ({ editor, args }) => {
     const pattern = args[0] ?? await editor.prompt("Apropos: ", "", "apropos")
     if (!pattern) return
-    const re = new RegExp(pattern, "i")
+    let re: RegExp
+    try {
+      re = new RegExp(pattern, "i")
+    } catch (err) {
+      editor.message(`Invalid regexp: ${(err as SyntaxError).message}`)
+      return
+    }
     const lines = editor.commands.entries()
       .filter(c => re.test(c.name) || re.test(c.description ?? ""))
       .map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)
@@ -161,8 +175,14 @@ export function install(editor: Editor): Evaluator {
   editor.command("load-plugin", async ({ editor, args }) => {
     const path = args[0] ?? await editor.completingRead("Load plugin: ", { completion: "file", history: "file", initialValue: "plugins/demo-plugin.ts" })
     if (!path) return
-    await evaluator.loadPlugin(path)
-    editor.message(`Loaded plugin ${path}`)
+    try {
+      await evaluator.loadPlugin(path)
+      editor.message(`Loaded plugin ${path}`)
+    } catch (err) {
+      const e = err as Error
+      editor.scratch("*Backtrace*", e.stack ?? String(e), "text")
+      editor.message(`Load error: ${e.message}`)
+    }
   }, "Load a plugin module exporting install(editor).")
 
   editor.command("reload-current-file", async ({ buffer, editor }) => {
@@ -182,8 +202,8 @@ export function install(editor: Editor): Evaluator {
     const display = editor.bufferDisplayName(buffer)
     const mod = await evaluator.loadModule(buffer.path)
     if (typeof mod.install === "function") {
-      await mod.install(editor)
-      editor.message(`Reloaded ${display} via install(editor)`)
+      await evaluator.loadPlugin(buffer.path)
+      editor.message(`Reloaded ${display} via install(editor, ctx)`)
       return
     }
     if (typeof mod.installDefaultConfig === "function") {
@@ -323,23 +343,24 @@ export function install(editor: Editor): Evaluator {
     const level = prefixArgument ?? Number(args[0])
     if (!Number.isFinite(level)) return
     textScaleSet(editor, buffer, level)
-  }, "Set buffer text scale to LEVEL steps (0 = default).", { interactive: "p" })
+  }, "Set buffer text scale to LEVEL steps (0 = default).")
 
   editor.command("text-scale-increase", ({ editor, buffer, args, prefixArgument }) => {
     const inc = prefixArgument ?? Number(args[0])
     if (!Number.isFinite(inc)) return
     textScaleIncrease(editor, buffer, inc)
-  }, "Increase buffer text scale by INC steps (0 resets).", { interactive: "p" })
+  }, "Increase buffer text scale by INC steps (0 resets).")
 
   editor.command("text-scale-decrease", ({ editor, buffer, args, prefixArgument }) => {
     const dec = prefixArgument ?? Number(args[0])
     if (!Number.isFinite(dec)) return
     textScaleIncrease(editor, buffer, -dec)
-  }, "Decrease buffer text scale by DEC steps.", { interactive: "p" })
+  }, "Decrease buffer text scale by DEC steps.")
 
   editor.command("text-scale-adjust", ({ editor, buffer, args, prefixArgument, keyEvent }) => {
-    const inc = Math.abs(prefixArgument ?? (Number(args[0]) || textScaleAdjustRepeatInc)) || 1
-    if (prefixArgument != null || args[0]) textScaleAdjustRepeatInc = inc
+    const state = textScaleAdjustState(editor)
+    const inc = Math.abs(prefixArgument ?? (Number(args[0]) || state.repeatInc)) || 1
+    if (prefixArgument != null || args[0]) state.repeatInc = inc
     const step = textScaleStepFromKey(keyEvent, inc)
     textScaleIncrease(editor, buffer, step)
     if (step !== 0) {
@@ -348,7 +369,7 @@ export function install(editor: Editor): Evaluator {
     } else {
       clearTextScaleAdjustMap(editor)
     }
-  }, "Adjust buffer text scale; repeats with +, =, -, or 0.", { interactive: "p" })
+  }, "Adjust buffer text scale; repeats with +, =, -, or 0.")
 
   // ---- key bindings ------------------------------------------------------
 
@@ -422,8 +443,25 @@ async function refreshThemeBufferIfCurrent(editor: Editor): Promise<void> {
   await editor.run("customize-themes")
 }
 
-function getTextScaleAmount(buffer: BufferModel): number {
+export function getTextScaleAmount(buffer: BufferModel): number {
   return (buffer.locals.get(TEXT_SCALE_AMOUNT_KEY) as number | undefined) ?? 0
+}
+
+export function textScaleFactor(buffer: BufferModel): number {
+  const amount = getTextScaleAmount(buffer)
+  if (amount === 0) return 1
+  const step = getCustom<number>("text-scale-mode-step") ?? 1.2
+  return step ** amount
+}
+
+export function textScaleLighter(buffer: BufferModel): string {
+  const amount = getTextScaleAmount(buffer)
+  if (amount === 0) return ""
+  return amount >= 0 ? ` +${amount}` : ` ${amount}`
+}
+
+export function installTextScaleMode(): void {
+  defineMinorMode({ name: "text-scale-mode" })
 }
 
 function setTextScaleAmount(buffer: BufferModel, amount: number): void {
@@ -472,20 +510,22 @@ function textScaleStepFromKey(key: KeyEventLike | null, inc: number): number {
 }
 
 function installTextScaleAdjustMap(editor: Editor, inc: number): void {
-  textScaleAdjustRepeatInc = Math.abs(inc) || 1
+  const state = textScaleAdjustState(editor)
+  state.repeatInc = Math.abs(inc) || 1
   const map = new Keymap(TEXT_SCALE_ADJUST_MAP)
   for (const mods of ["", "C-"]) {
     for (const key of ["+", "=", "-", "0"]) {
       map.bind(`${mods}${key}`, "text-scale-adjust")
     }
   }
-  textScaleAdjustMap = map
+  state.map = map
   editor.overridingMap = map
 }
 
 function clearTextScaleAdjustMap(editor: Editor): void {
-  if (textScaleAdjustMap && editor.overridingMap === textScaleAdjustMap) {
+  const state = textScaleAdjustState(editor)
+  if (state.map && editor.overridingMap === state.map) {
     editor.overridingMap = null
   }
-  textScaleAdjustMap = null
+  state.map = null
 }

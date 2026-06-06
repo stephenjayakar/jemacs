@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { defvar, getCustom, setCustom } from "../../src/runtime/custom"
 
 const LAYOUTS = ["tiling-master-left", "tiling-master-top", "tiling-even-horizontal", "tiling-even-vertical", "tiling-tile-4"] as const
@@ -18,7 +19,7 @@ export function cycleTilingLayout(editor: Editor): string {
   return next
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("tiling-cycle", ({ editor }) => editor.message(`Layout ${cycleTilingLayout(editor)}`),
     "Cycle i3-style tiling layouts (state in `tiling-layout` defvar; hosts opt in to render it).")
   editor.key("C-\\", "tiling-cycle")

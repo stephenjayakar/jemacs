@@ -2,6 +2,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { findProjectRoot } from "../../src/lsp/project-root"
 import { spawnProcess } from "../../src/platform/runtime"
 import { defcustom, getCustom } from "../../src/runtime/custom"
@@ -68,7 +69,7 @@ async function projectCurrent(editor: Editor, override?: string): Promise<string
   return root
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("project-list-file", "string", join(homedir(), ".jemacs", "projects.json"),
     "File where the list of known project roots is persisted.")
 

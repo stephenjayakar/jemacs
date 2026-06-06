@@ -5,7 +5,7 @@ import type { DisplayModel, InputHandler, UiHost } from "../../src/display/proto
 import type { ViewportSize } from "../../src/display/viewport"
 
 class StubHost implements UiHost {
-  readonly kind = "tui" as const
+  readonly label = "stub"
   readonly capabilities = { unit: "cells" as const, mouse: false, clipboard: false, osc52: false }
   models: DisplayModel[] = []
   async start(): Promise<void> {}

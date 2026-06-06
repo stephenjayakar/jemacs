@@ -5,7 +5,7 @@ import type { DisplayModel, InputHandler, ResizeHandler, UiHost } from "../../sr
 import type { ViewportSize } from "../../src/display/viewport"
 
 class CountingHost implements UiHost {
-  readonly kind = "tui" as const
+  readonly label = "stub"
   readonly capabilities = { unit: "cells" as const, mouse: false, clipboard: false, osc52: false }
   presents = 0
   input!: InputHandler

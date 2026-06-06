@@ -1,7 +1,11 @@
 import type { Editor } from "../../src/kernel/editor"
-import { addAdvice } from "../../src/runtime/advice"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
+import { removeAdvice } from "../../src/runtime/advice"
 
-const advisedEditors = new WeakSet<Editor>()
+// Advice is process-global; the handler reads its editor from CommandContext,
+// so one registration serves every editor. Track ids so a second install (or
+// reload) tears down the prior set instead of stacking.
+let adviceIds: string[] = []
 
 function balanceAfterWindowChange({ editor }: { editor: Editor }): void {
   editor.balanceWindows()
@@ -26,7 +30,7 @@ function splitWindow(editor: Editor, direction: string | undefined): void {
   }
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("balance-windows", ({ editor }) => {
     editor.balanceWindows()
     editor.message("Balanced windows")
@@ -46,16 +50,14 @@ export function install(editor: Editor): void {
 
   editor.key("C-x +", "balance-windows")
 
-  if (advisedEditors.has(editor)) return
-  advisedEditors.add(editor)
-  for (const command of [
+  for (const id of adviceIds) removeAdvice(id)
+  adviceIds = [
     "split-window",
     "split-window-below",
     "split-window-right",
     "split-window-horizontally",
     "split-window-vertically",
     "delete-window",
-  ]) {
-    addAdvice(command, { after: balanceAfterWindowChange })
-  }
+  ].map(cmd => ctx.advice(cmd, { after: balanceAfterWindowChange }))
+  ctx.onDispose(() => { adviceIds = [] })
 }

@@ -1,7 +1,7 @@
 import type { Editor, CompletingReadFunction, MinibufferCompletionFrontend } from "../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { BufferModel } from "../src/kernel/buffer"
 import { fileCompletionCandidates, splitCompletionInput } from "../src/kernel/completion"
-import { defineMinorMode } from "../src/modes/minor-mode"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 
 type VerticoState = {
@@ -32,10 +32,10 @@ const verticoFrontend: MinibufferCompletionFrontend = {
   submitValue: editor => verticoSubmitValue(editor),
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   installCustomVariables()
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "vertico-mode",
     lighter: " Vertico",
     global: true,

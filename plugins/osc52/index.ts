@@ -1,6 +1,6 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { CommandContext } from "../../src/kernel/command"
-import { addAdvice } from "../../src/runtime/advice"
 import { defcustom } from "../../src/runtime/custom"
 
 /** Build the OSC 52 clipboard-set sequence for `text`. */
@@ -22,9 +22,9 @@ function emit(text: string): void {
 /** Destructive kills all bottom out in `deleteRange`, which leaves point at the
  *  removed span's start — so the killed text is recoverable from a before/after
  *  diff without needing access to the (closure-captured) kill ring. */
-function adviseDestructive(name: string): void {
+function adviseDestructive(ctx: PluginContext, name: string): void {
   let beforeText = ""
-  addAdvice(name, {
+  ctx.advice(name, {
     before: ({ buffer }) => { beforeText = buffer.text },
     after: ({ buffer }) => {
       const delta = beforeText.length - buffer.text.length
@@ -41,9 +41,9 @@ function copyRegionAfter({ buffer }: CommandContext): void {
   emit(line.text + (line.end < buffer.text.length ? "\n" : ""))
 }
 
-export function install(_editor: Editor): void {
+export function install(_editor: Editor, ctx: PluginContext = createPluginContext(_editor)): void {
   for (const name of ["kill-region", "kill-line", "kill-word", "backward-kill-word"]) {
-    adviseDestructive(name)
+    adviseDestructive(ctx, name)
   }
-  addAdvice("kill-ring-save", { after: copyRegionAfter })
+  ctx.advice("kill-ring-save", { after: copyRegionAfter })
 }

@@ -1,5 +1,6 @@
 import type { Hover, MarkedString, MarkupContent, TextEdit, WorkspaceEdit } from "vscode-languageserver-types"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { LspWorkspace } from "../../src/lsp/workspace"
 import {
@@ -189,7 +190,7 @@ async function lspFindReferences(editor: Editor, buffer: BufferModel): Promise<v
   await gotoResolvedLocation(editor, collected[index >= 0 ? index : 0]!)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("lsp-hover", async ({ editor, buffer }) => {
     await lspHover(editor, buffer)
   }, "Display LSP hover documentation for the symbol at point.")

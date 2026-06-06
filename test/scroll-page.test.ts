@@ -6,10 +6,18 @@ import { themedTextPlain } from "../src/display/themed-text"
 import { setCustom } from "../src/runtime/custom"
 import { makeEditor } from "./plugins/helper"
 
-const rows = 30
+// Tall enough that line 40 is visible from startLine 0 in the numeric-prefix
+// test (bodyBudget = rows - 4). Pinned to lastViewport so scroll math is
+// independent of process.stdout.rows.
+const rows = 50
+const scrollEditor = () => {
+  const editor = makeEditor()
+  editor.lastViewport = { rows }
+  return editor
+}
 
 test("C-v / M-v use next-screen-context-lines overlap like Emacs", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   const page = pageScrollLines(rows)
   const context = 2
   const step = page - context
@@ -25,7 +33,7 @@ test("C-v / M-v use next-screen-context-lines overlap like Emacs", async () => {
 })
 
 test("M-v at buffer top signals Beginning of buffer by default", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   editor.scratch("t.txt", "line 1\nline 2\n", "text").point = 0
   expect(findWindowLeaf(editor.windowLayout, editor.selectedWindowId)!.startLine).toBe(0)
 
@@ -35,7 +43,7 @@ test("M-v at buffer top signals Beginning of buffer by default", async () => {
 })
 
 test("scroll-error-top-bottom moves to line 1 when M-v cannot scroll further", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   const page = pageScrollLines(rows)
   const lines = Array.from({ length: page + 5 }, (_, i) => `line ${i + 1}`).join("\n")
   editor.scratch("t.txt", lines, "text").point = 0
@@ -50,7 +58,7 @@ test("scroll-error-top-bottom moves to line 1 when M-v cannot scroll further", a
 })
 
 test("numeric prefix scrolls lines without moving point when it stays visible", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   const lines = Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join("\n")
   editor.scratch("t.txt", lines, "text")
   editor.currentBuffer.point = editor.currentBuffer.text.indexOf("line 40")
@@ -62,7 +70,7 @@ test("numeric prefix scrolls lines without moving point when it stays visible", 
 })
 
 test("full-screen scroll moves point to top line when it scrolled off (Emacs C-v)", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   const page = pageScrollLines(rows)
   const lines = Array.from({ length: page + 10 }, (_, i) => `line ${i + 1}`).join("\n")
   editor.scratch("t.txt", lines, "text").point = 0
@@ -73,7 +81,7 @@ test("full-screen scroll moves point to top line when it scrolled off (Emacs C-v
 })
 
 test("startLine 0 shows line 1 even when an early line wraps", async () => {
-  const editor = makeEditor()
+  const editor = scrollEditor()
   const lines = ["line 1", "X".repeat(240), ...Array.from({ length: 40 }, (_, i) => `body ${i}`)]
   editor.scratch("t.txt", lines.join("\n") + "\n", "text").point = 0
 
@@ -87,6 +95,7 @@ test("startLine 0 shows line 1 even when an early line wraps", async () => {
 
   const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows, cols: 80 } })
   const pane = model.windows.kind === "leaf" ? model.windows.pane : null
-  const body = themedTextPlain(pane!.body)
-  expect(body.startsWith("line 1") || body.includes("\nline 1")).toBe(true)
+  const firstRow = themedTextPlain(pane!.body).split("\n")[0]!
+  // Cursor glyph sits on the `l` at point 0, so match the rest of the line.
+  expect(firstRow.endsWith("ine 1")).toBe(true)
 })

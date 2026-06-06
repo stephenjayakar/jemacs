@@ -15,7 +15,7 @@ const ROW_PX = 18
 const COL_PX = 9
 
 export class ElectronHost implements UiHost {
-  readonly kind = "gui" as const
+  readonly label = "Jemacs GUI"
   readonly capabilities = {
     unit: "pixels" as const,
     mouse: true,

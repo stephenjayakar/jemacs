@@ -72,7 +72,8 @@ export type InputHandler = (input: NormalizedInput) => void | Promise<void>
 export type ResizeHandler = (viewport: ViewportSize) => void
 
 export interface UiHost {
-  readonly kind: "tui" | "gui"
+  /** Human-readable host name for the title bar / `hostLabel`. */
+  readonly label: string
   readonly capabilities: HostCapabilities
   start(): Promise<void>
   destroy(): void

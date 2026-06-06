@@ -1,8 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { defineMinorMode } from "../../src/modes/minor-mode"
 import { modeFeature, modeLineage } from "../../src/modes/mode"
-import { addAdvice } from "../../src/runtime/advice"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 export const COMPLETION_PREVIEW_LOCAL = "completion-preview-overlay"
@@ -62,13 +61,11 @@ function previewShow(editor: Editor, buffer: BufferModel): void {
   }
 }
 
-let adviceInstalled = false
-
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("completion-preview-minimum-symbol-length", "number", 3,
     "Minimum length of the symbol at point before showing a preview.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "completion-preview-mode",
     lighter: " CP",
     global: true,
@@ -77,7 +74,7 @@ export function install(editor: Editor): void {
     },
   })
 
-  const active = defineMinorMode({
+  const active = ctx.minorMode({
     name: "completion-preview-active-mode",
     lighter: "",
   })
@@ -100,12 +97,9 @@ export function install(editor: Editor): void {
     previewHide(editor, buffer)
   }, "Accept the current completion preview, inserting the suggested suffix.")
 
-  if (!adviceInstalled) {
-    addAdvice("self-insert-command", {
-      after: ({ editor, buffer }) => previewShow(editor, buffer),
-    })
-    adviceInstalled = true
-  }
+  ctx.advice("self-insert-command", {
+    after: ({ editor, buffer }) => previewShow(editor, buffer),
+  })
 
   editor.events.on("changed", ({ reason }) => {
     if (!reason.startsWith("command:")) return

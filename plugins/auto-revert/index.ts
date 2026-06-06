@@ -1,10 +1,9 @@
 import { watch, type FSWatcher } from "node:fs"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { addHook, type HookContext } from "../../src/kernel/hooks"
-import { defineMinorMode } from "../../src/modes/minor-mode"
+import { type HookContext } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
-import { addAdvice } from "../../src/runtime/advice"
 import { fileExists, readFileText } from "../../src/platform/runtime"
 
 type WatchEntry = {
@@ -85,13 +84,13 @@ function onFindFile({ editor, buffer }: HookContext): void {
   if (editor.isMinorModeEnabled("global-auto-revert-mode")) adopt(editor, buffer)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("auto-revert-interval", "number", 0.2,
     "Seconds to wait after a file-change notification before reverting.")
   defcustom("auto-revert-verbose", "boolean", true,
     "When non-nil, echo a message whenever a buffer is auto-reverted.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "global-auto-revert-mode",
     lighter: "",
     global: true,
@@ -110,13 +109,15 @@ export function install(editor: Editor): void {
     ed.message(`Global-Auto-Revert mode ${enable ? "enabled" : "disabled"}`)
   }, "Toggle automatic reverting of file buffers when they change on disk.")
 
-  addHook("find-file-hook", onFindFile)
+  ctx.hook("find-file-hook", onFindFile)
 
-  addAdvice("kill-buffer", {
+  ctx.advice("kill-buffer", {
     after: ({ editor: ed }) => {
       for (const id of [...entries(ed).keys()]) {
         if (!ed.buffers.has(id)) release(ed, id)
       }
     },
   })
+
+  ctx.onDispose(() => releaseAll(editor))
 }

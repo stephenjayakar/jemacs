@@ -5,11 +5,7 @@ import { Editor, type CompletingReadFunction, type MinibufferCompletionFrontend 
 // Dead-state removal (tilingLayout, get windows/selectedWindow) is covered by
 // the migrated callers compiling; these cover the behavioural fixes.
 
-function makeEditor() {
-  const editor = new Editor()
-  editor.command("self-insert-command", ({ buffer, args }) => buffer.insert(args[0] ?? ""))
-  return editor
-}
+import { makeEditor } from "../plugins/helper"
 
 describe("t-6d222ddb: completing-read / frontend stacks", () => {
   test("push/pop by identity tolerates out-of-order disable", () => {

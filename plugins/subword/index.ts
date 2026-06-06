@@ -1,7 +1,6 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { defineMinorMode } from "../../src/modes/minor-mode"
-import { addHook } from "../../src/kernel/hooks"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 const SUBWORD_FORWARD = "[^A-Za-z0-9]*(?:[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+)"
@@ -24,27 +23,27 @@ function clearSubword(buffer: BufferModel | null): void {
   buffer.locals.delete("word-backward-regexp")
 }
 
-defineMinorMode({
-  name: "subword-mode",
-  lighter: " ,",
-  onEnable: (_editor, buffer) => applySubword(buffer),
-  onDisable: (_editor, buffer) => clearSubword(buffer),
-})
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  ctx.minorMode({
+    name: "subword-mode",
+    lighter: " ,",
+    onEnable: (_editor, buffer) => applySubword(buffer),
+    onDisable: (_editor, buffer) => clearSubword(buffer),
+  })
 
-defineMinorMode({
-  name: "global-subword-mode",
-  lighter: " ,",
-  global: true,
-  onEnable: editor => {
-    for (const buffer of editor.buffers.values()) applySubword(buffer)
-    addHook("find-file-hook", ({ buffer }) => applySubword(buffer))
-  },
-  onDisable: editor => {
-    for (const buffer of editor.buffers.values()) clearSubword(buffer)
-  },
-})
+  ctx.minorMode({
+    name: "global-subword-mode",
+    lighter: " ,",
+    global: true,
+    onEnable: editor => {
+      for (const buffer of editor.buffers.values()) applySubword(buffer)
+      ctx.hook("find-file-hook", ({ buffer }) => applySubword(buffer))
+    },
+    onDisable: editor => {
+      for (const buffer of editor.buffers.values()) clearSubword(buffer)
+    },
+  })
 
-export function install(editor: Editor): void {
   editor.command("subword-mode", ({ editor, buffer, prefixArgument }) => {
     if (prefixArgument != null && prefixArgument <= 0) editor.disableMinorMode("subword-mode", { buffer })
     else if (prefixArgument != null) editor.enableMinorMode("subword-mode", { buffer })

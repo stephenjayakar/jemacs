@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
@@ -152,7 +153,11 @@ export async function compilationStart(
   return buf
 }
 
-export function install(editor: Editor, deps: CompileDeps = {}): void {
+// `deps` stays positional-2 so tests can inject spawn/projectRoot; builtin.ts
+// passes a PluginContext there, which satisfies CompileDeps (all-optional) and
+// is ignored — compile registers no hooks/advice/timers needing disposal.
+export function install(editor: Editor, deps: CompileDeps = {}, ctx: PluginContext = createPluginContext(editor)): void {
+  void ctx
   const projectRoot = deps.projectRoot ?? findProjectRoot
 
   const keymap = new Keymap("compilation-map")

@@ -1,11 +1,11 @@
 import { join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { LspWorkspace } from "../../src/lsp/workspace"
 import { allClients, type RequestHandler } from "../../src/lsp/client"
 import { pathToUri } from "../../src/lsp/positions"
 import { spawnProcess } from "../../src/platform/runtime"
 import { defcustom, getCustom } from "../../src/runtime/custom"
-import { addAdvice } from "../../src/runtime/advice"
 
 export type WatchmanExpression = readonly [string, ...unknown[]]
 
@@ -34,7 +34,21 @@ type WatchState = {
   runner: WatchmanRunner
 }
 
-const state = new Map<LspWorkspace, WatchState>()
+// WeakMap so a dropped workspace isn't pinned by its watch state; timers are
+// torn down via PluginContext.onDispose (t-audit-66bc6157).
+const state = new WeakMap<LspWorkspace, WatchState>()
+
+// Editors that have installed this plugin, so the (process-global) request
+// handlers can resolve workspace → owning editor at call time instead of
+// capturing one install-time editor (t-audit-984f60be).
+const installed = new Set<Editor>()
+
+function ownerOf(workspace: LspWorkspace): Editor | undefined {
+  for (const ed of installed) {
+    if (ed.lsp?.workspaces.includes(workspace)) return ed
+  }
+  return undefined
+}
 
 export const stats = { polls: 0, notifications: 0, files: 0, errors: 0 }
 
@@ -193,14 +207,25 @@ export function handleUnregisterCapability(workspace: LspWorkspace, params: unkn
   return null
 }
 
-export function install(editor: Editor): void {
+// Module-level so every install() writes the *same* function into the global
+// client registry — a second editor's install is then a no-op overwrite, and
+// the handler resolves the right editor per call via ownerOf().
+const onRegister: RequestHandler = (workspace, params) => {
+  const ed = ownerOf(workspace)
+  return ed ? handleRegisterCapability(ed, workspace, params) : null
+}
+const onUnregister: RequestHandler = (workspace, params) =>
+  handleUnregisterCapability(workspace, params)
+
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  installed.add(editor)
+  ctx.onDispose(() => {
+    for (const ws of editor.lsp?.workspaces ?? []) unregisterCapability(ws)
+    installed.delete(editor)
+  })
+
   defcustom("lsp-watchman-poll-interval", "number", 1.5,
     "Seconds between watchman since-queries for workspace/didChangeWatchedFiles.")
-
-  const onRegister: RequestHandler = (workspace, params) =>
-    handleRegisterCapability(editor, workspace, params)
-  const onUnregister: RequestHandler = (workspace, params) =>
-    handleUnregisterCapability(workspace, params)
 
   for (const client of allClients()) {
     const handlers = client.requestHandlers ?? new Map()
@@ -209,7 +234,7 @@ export function install(editor: Editor): void {
     client.requestHandlers = handlers
   }
 
-  addAdvice("lsp-shutdown-workspace", {
+  ctx.advice("lsp-shutdown-workspace", {
     before: ({ editor: ed }) => {
       for (const ws of ed.lsp?.bufferWorkspaces(ed.currentBuffer) ?? []) unregisterCapability(ws)
     },

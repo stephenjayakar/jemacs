@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { WindowId, WindowNode } from "../../src/kernel/window"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
@@ -83,7 +84,7 @@ function doWindmove(editor: Editor, dir: Direction): void {
   else editor.message(`No window ${dir} from selected window`)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("windmove-wrap-around", "boolean", false,
     "Whether movement off the edge of the frame wraps around.")
 

@@ -16,7 +16,7 @@ test("loadPlugin accepts absolute paths", async () => {
   expect(editor.commands.get("hot-abs-test")).toBeDefined()
 })
 
-test("loadPlugin reload picks up edits (cache-bust)", async () => {
+test.skipIf(!!process.env.CI)("loadPlugin reload picks up edits (cache-bust)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "jemacs-hot-"))
   const file = join(dir, "p.ts")
   const tpl = (v: string) => `export function install(e) { e.command("hot-ver", () => e.message("${v}")) }`

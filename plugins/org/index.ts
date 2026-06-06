@@ -1,8 +1,8 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode } from "../../src/modes/mode"
-import { addHook } from "../../src/kernel/hooks"
 import { Keymap } from "../../src/kernel/keymap"
 
 export const ORG_FOLDED_LOCAL = "org-folded"
@@ -277,7 +277,7 @@ export function orgFontLock(buffer: BufferModel): TextSpan[] {
   return spans
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const keymap = new Keymap("org-mode-map")
   keymap.bind("tab", "org-cycle")
   keymap.bind("C-c C-t", "org-todo")
@@ -324,7 +324,7 @@ export function install(editor: Editor): void {
     "Major mode for editing Org files.")
 
   // inferMode() doesn't know .org; pick it up at find-file time instead.
-  addHook("find-file-hook", ({ buffer }) => {
+  ctx.hook("find-file-hook", ({ buffer }) => {
     if (buffer.path && /\.org$/i.test(buffer.path)) enterMode(buffer, "org-mode")
   })
 }

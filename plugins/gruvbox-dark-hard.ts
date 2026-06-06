@@ -1,4 +1,5 @@
 import type { Editor } from "../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { defineTheme } from "../src/display/theme"
 import { registerTheme } from "../src/themes"
 
@@ -52,6 +53,6 @@ export const gruvboxDarkHardTheme = defineTheme("gruvbox-dark-hard", {
   lineNumberCurrent: { fg: gruvboxDarkHardPalette.bright_orange, bg: gruvboxDarkHardPalette.dark2 },
 })
 
-export function install(_editor: Editor): void {
+export function install(_editor: Editor, ctx: PluginContext = createPluginContext(_editor)): void {
   registerTheme(gruvboxDarkHardTheme)
 }

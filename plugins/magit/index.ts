@@ -1,5 +1,6 @@
 import { basename } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMode, type TextSpan } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
@@ -267,7 +268,7 @@ async function openLog(editor: Editor, root: string): Promise<BufferModel> {
   return buf
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   // Read-only magit buffers must not fall through to self-insert on stray
   // printables (t-e061bdb3). The kernel's self-insert fallback is unconditional,
   // so the only mode-level lever is to claim those keys first. Binding them in a
@@ -620,8 +621,8 @@ export function install(editor: Editor): void {
     await refresh(editor, root, next ? lineToPoint(status.text, next.startLine) : buffer.point)
   }, "Toggle folding of the diff body for the file at point.")
 
-  editor.command("magit-bury-buffer", ({ editor }) => {
-    editor.previousBuffer()
+  editor.command("magit-bury-buffer", async ({ editor }) => {
+    await editor.run("previous-buffer")
   }, "Bury the Magit status buffer.")
 
   editor.key("C-x g", "magit-status")

@@ -864,11 +864,19 @@ function linkUrlAtPoint(text: string, point: number): string | null {
   return null
 }
 
+const SAFE_URL_SCHEME = /^(https?|mailto):/i
+
 function spawnUrl(url: string): void {
+  // The url comes from markdown link text — refuse anything that isn't a
+  // browser-safe scheme so `[x](--flag)` or `[x](file:///etc/passwd)` can't
+  // reach the OS opener, and `--` stops it being parsed as an option.
+  let scheme: string
+  try { scheme = new URL(url).protocol } catch { return }
+  if (!SAFE_URL_SCHEME.test(scheme)) return
   const platform = process.platform
-  const cmd = platform === "darwin" ? ["open", url]
-    : platform === "win32" ? ["cmd", "/c", "start", "", url]
-    : ["xdg-open", url]
+  const cmd = platform === "darwin" ? ["open", "--", url]
+    : platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", url]
+    : ["xdg-open", "--", url]
   void import("../../src/platform/runtime").then(({ spawnProcess }) => {
     try { spawnProcess({ cmd }) } catch { /* best effort */ }
   })

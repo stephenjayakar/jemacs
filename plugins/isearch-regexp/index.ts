@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import {
   findRegexpBackward,
   findRegexpForward,
@@ -9,7 +10,7 @@ import {
 
 export { isearchNoUpperCaseP }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   function start(direction: 1 | -1, regexp: boolean): void {
     setIsearchRegexp(regexp)
     editor.startIsearch(direction)

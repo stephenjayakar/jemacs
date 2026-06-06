@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { modeFeature } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
@@ -67,7 +68,7 @@ function backToIndentation(buffer: BufferModel): void {
   buffer.point = line.start + indent
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const requireStarter = (buffer: BufferModel): string | null => {
     const starter = modeFeature(buffer.mode, "commentStart")
     if (!starter) {

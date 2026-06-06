@@ -2,6 +2,7 @@ import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
+import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
@@ -56,6 +57,17 @@ export type Mode = {
 
 export const modes = new Map<string, Mode>()
 
+/** Per-mode behaviour fields that dispatch via `defgeneric`. `defineMode`
+ *  registers them with `defmethod`; `modeFeature` reads the same table, so a
+ *  third-party `defmethod` and a `Mode.field` resolve identically. */
+const MODE_GENERICS = {
+  indentLine: "indent-line",
+  completeAtPoint: "complete-at-point",
+  fontLock: "font-lock",
+  displayFilter: "display-filter",
+} as const
+type ModeGenericField = keyof typeof MODE_GENERICS
+
 const modeBaselines = new Map<string, Mode>()
 const modePatched = new Set<string>()
 const modeHookFns = new Map<string, HookFn[]>()
@@ -69,6 +81,7 @@ export function defineMode(mode: Mode, source?: SourceLocation): Mode {
   else if (!modePatched.has(installed.name)) modeBaselines.set(installed.name, installed)
   modes.set(installed.name, installed)
   modePatched.delete(installed.name)
+  syncModeMethods(installed, loc)
   registerCatalogEntry({ kind: "mode", name: installed.name, source: loc, doc: installed.parent ? `Child of ${installed.parent}` : undefined })
   const hookName = modeHookName(installed.name)
   for (const fn of modeHookFns.get(installed.name) ?? []) removeHook(hookName, fn)
@@ -85,6 +98,15 @@ export function defineMode(mode: Mode, source?: SourceLocation): Mode {
   return installed
 }
 
+function syncModeMethods(mode: Mode, source?: SourceLocation): void {
+  for (const field of Object.keys(MODE_GENERICS) as ModeGenericField[]) {
+    const generic = MODE_GENERICS[field]
+    const fn = mode[field]
+    if (fn) defmethod(generic, mode.name, fn, source)
+    else removeMethod(generic, mode.name)
+  }
+}
+
 export function markModePatched(name: string): void {
   modePatched.add(name)
   registerCatalogEntry({ kind: "mode", name, patched: true })
@@ -93,8 +115,10 @@ export function markModePatched(name: string): void {
 export function restoreMode(name: string): boolean {
   const baseline = modeBaselines.get(name)
   if (!baseline || !modePatched.has(name)) return false
-  modes.set(name, { ...baseline, keymap: baseline.keymap ?? new Keymap(`${name}-map`) })
+  const restored = { ...baseline, keymap: baseline.keymap ?? new Keymap(`${name}-map`) }
+  modes.set(name, restored)
   modePatched.delete(name)
+  syncModeMethods(restored)
   registerCatalogEntry({ kind: "mode", name, patched: false })
   return true
 }
@@ -118,8 +142,10 @@ export function modeLineage(name: string): Mode[] {
 }
 
 export function modeFeature<T extends keyof Mode>(name: string, feature: T): NonNullable<Mode[T]> | undefined {
+  const generic = MODE_GENERICS[feature as ModeGenericField]
+  const methods = generic ? getGeneric(generic)?.methods() : undefined
   for (const mode of modeLineage(name)) {
-    const value = mode[feature]
+    const value = methods ? methods.get(mode.name) : mode[feature]
     if (value != null) return value as NonNullable<Mode[T]>
   }
   return undefined

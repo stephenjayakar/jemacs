@@ -2,7 +2,7 @@ import type { Hover } from "vscode-languageserver-types"
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { LspWorkspace } from "../../src/lsp/workspace"
-import { defineMinorMode } from "../../src/modes/minor-mode"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { modeLineage } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { lspMakeHoverParams, lspMakeTextDocumentIdentifier } from "../../src/lsp/lsp-protocol"
@@ -90,25 +90,27 @@ export async function eldocPrintCurrentSymbolInfo(editor: Editor): Promise<strin
   return line
 }
 
-let idleTimer: Timer | null = null
+const idleTimers = new WeakMap<Editor, Timer>()
 
 export function eldocScheduleTimer(editor: Editor): Timer {
-  if (idleTimer) cancelTimer(idleTimer)
+  const prev = idleTimers.get(editor)
+  if (prev) cancelTimer(prev)
   const secs = getCustom<number>("eldoc-idle-delay") ?? 0.3
-  idleTimer = runWithIdleTimer(secs, true, () => void eldocPrintCurrentSymbolInfo(editor))
-  return idleTimer
+  const timer = runWithIdleTimer(secs, true, () => void eldocPrintCurrentSymbolInfo(editor))
+  idleTimers.set(editor, timer)
+  return timer
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("eldoc-idle-delay", "number", 0.3,
     "Seconds of idle time before ElDoc shows documentation in the echo area.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "eldoc-mode",
     lighter: " ElDoc",
     onDisable: (_ed, buffer) => buffer?.locals.delete(ELDOC_LAST_MESSAGE),
   })
-  defineMinorMode({ name: "global-eldoc-mode", lighter: "", global: true })
+  ctx.minorMode({ name: "global-eldoc-mode", lighter: "", global: true })
 
   editor.command("eldoc-mode", ({ editor, buffer, prefixArgument }) => {
     if (prefixArgument != null && prefixArgument > 0) editor.enableMinorMode("eldoc-mode", { buffer })
@@ -132,4 +134,9 @@ export function install(editor: Editor): void {
 
   editor.enableMinorMode("global-eldoc-mode")
   eldocScheduleTimer(editor)
+  ctx.onDispose(() => {
+    const t = idleTimers.get(editor)
+    if (t) cancelTimer(t)
+    idleTimers.delete(editor)
+  })
 }

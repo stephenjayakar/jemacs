@@ -1,7 +1,8 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("back-to-indentation", ({ buffer }) => {
     backToIndentation(buffer)
   }, "Move point to the first non-whitespace character on this line.")

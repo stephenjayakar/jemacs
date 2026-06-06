@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { CompletionCandidate } from "../../src/modes/mode"
 import { modeFeature } from "../../src/modes/mode"
@@ -91,7 +92,7 @@ function matchDelim(text: string, from: number, dir: 1 | -1): number | null {
   return null
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("forward-sexp", ({ buffer, editor, prefixArgument }) => {
     if (!forwardSexp(buffer, prefixArgument ?? 1)) {
       editor.message("No next sexp")

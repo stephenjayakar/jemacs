@@ -3,6 +3,8 @@ import { mkdtemp, rm, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "../plugins/helper"
+import { install as installAutoSave } from "../../plugins/auto-save"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 
 // t-sweep-90da64: openFile/doAutoSave/recoverThisFile messages interpolate raw
 // buffer.name, which is ambiguous when two buffers share a basename. They live
@@ -10,6 +12,7 @@ import { makeEditor } from "../plugins/helper"
 // available and should be used instead.
 test("auto-save messages use uniquified bufferDisplayName, not raw buffer.name", async () => {
   const root = await mkdtemp(join(tmpdir(), "jemacs-dispname-"))
+  let ctx: PluginContext | undefined
   try {
     const a = join(root, "a"), b = join(root, "b")
     await Bun.write(join(a, "same.txt"), "alpha")
@@ -20,6 +23,7 @@ test("auto-save messages use uniquified bufferDisplayName, not raw buffer.name",
     await Bun.write(join(b, "#same.txt#"), "bravo-autosaved")
 
     const editor = makeEditor()
+    installAutoSave(editor, ctx = createPluginContext(editor))
     const messages: string[] = []
     editor.events.on("message", ({ text }) => { messages.push(text) })
 
@@ -44,6 +48,7 @@ test("auto-save messages use uniquified bufferDisplayName, not raw buffer.name",
     expect(recovered).toBeDefined()
     expect(recovered).toContain(display)
   } finally {
+    ctx?.dispose()
     await rm(root, { recursive: true, force: true })
   }
 })

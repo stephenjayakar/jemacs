@@ -90,7 +90,7 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
     if (!path) return
     revertAllDefinitions(editor)
     const mod = await evaluator.loadModule(path)
-    if (typeof mod.install === "function") await mod.install(editor)
+    if (typeof mod.install === "function") await evaluator.loadPlugin(path)
     else if (typeof mod.installDefaultConfig === "function") mod.installDefaultConfig(editor)
     else if (typeof mod.installDefaultCommands === "function") mod.installDefaultCommands(editor)
     else await evaluator.eval(await readBufferFile(path), path)

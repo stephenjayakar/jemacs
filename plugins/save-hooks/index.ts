@@ -1,7 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { addAdvice } from "../../src/runtime/advice"
-import { addHook } from "../../src/kernel/hooks"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
+import type { CommandAdvice } from "../../src/runtime/advice"
 import { defcustom } from "../../src/runtime/custom"
 
 const deleteTrailingLines = defcustom(
@@ -41,7 +41,7 @@ export function deleteTrailingWhitespace(buffer: BufferModel, start?: number, en
   buffer.point = Math.max(0, Math.min(oldPoint - removed, buffer.text.length))
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.command("delete-trailing-whitespace", ({ buffer }) => {
     const useRegion = buffer.markActive && buffer.mark != null && buffer.mark !== buffer.point
     const [start, end] = useRegion
@@ -50,7 +50,7 @@ export function install(editor: Editor): void {
     deleteTrailingWhitespace(buffer, start, end)
   }, "Delete trailing whitespace at the end of each line in the region, or the whole buffer.")
 
-  addAdvice("save-buffer", {
+  const advice: CommandAdvice = {
     before: async ({ editor, buffer }) => {
       try {
         await editor.runHook("before-save-hook", buffer)
@@ -61,9 +61,8 @@ export function install(editor: Editor): void {
     after: async ({ editor, buffer }) => {
       await editor.runHook("after-save-hook", buffer)
     },
-  })
+  }
 
-  addHook("before-save-hook", ({ buffer }) => {
-    deleteTrailingWhitespace(buffer)
-  })
+  ctx.advice("save-buffer", advice)
+  ctx.hook("before-save-hook", ({ buffer }) => deleteTrailingWhitespace(buffer))
 }

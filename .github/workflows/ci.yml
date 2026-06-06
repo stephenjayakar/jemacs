@@ -11,7 +11,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: sudo apt-get update && sudo apt-get install -y tmux ripgrep
       - run: bun install --frozen-lockfile
       - name: typecheck
         run: bun run check || true   # known preexisting tsc errors; TODO.md tracks them

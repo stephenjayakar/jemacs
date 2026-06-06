@@ -6,14 +6,14 @@ import { runtimeBun } from "../platform/runtime"
 import { getLoadPath } from "./load-path"
 import * as JemacsRuntime from "./jemacs-runtime"
 import { prepareEvalForm } from "./definitions"
-import { createPluginContext, type PluginContext } from "./plugin-context"
+import { trackedContext, type PluginContext } from "./plugin-context"
+
+export type InstallFn = (editor: Editor, ctx: PluginContext) => unknown | Promise<unknown>
 
 // Date.now() can repeat across back-to-back reloads; pair it with a counter.
 let importSeq = 0
 
 export class Evaluator {
-  private readonly contexts = new Map<string, PluginContext>()
-
   constructor(private readonly editor: Editor) {}
 
   async eval(code: string, filename = "jemacs-eval.js"): Promise<unknown> {
@@ -84,14 +84,20 @@ export class Evaluator {
 
   async loadPlugin(path: string): Promise<unknown> {
     const resolved = this.resolveOnLoadPath(path) ?? resolve(path)
-    this.contexts.get(resolved)?.dispose()
     const mod = await this.loadModule(resolved)
     if (typeof mod.install !== "function") {
-      throw new Error(`Plugin ${path} does not export install(editor)`)
+      throw new Error(`Plugin ${path} does not export install(editor, ctx)`)
     }
-    const ctx = createPluginContext(this.editor)
-    this.contexts.set(resolved, ctx)
-    return await (mod.install as (e: Editor, c: PluginContext) => unknown)(this.editor, ctx)
+    return await this.installPlugin(resolved, mod.install as InstallFn)
+  }
+
+  /** Run an install fn with a tracked context keyed by `key`. Disposes any
+   *  prior registration first, so re-install never accumulates hooks/advice.
+   *  Boot paths (lisp/, plugins/builtin) call this with statically-imported
+   *  modules; loadPlugin calls it with the resolved file path as the key. */
+  async installPlugin(key: string, install: InstallFn): Promise<unknown> {
+    const ctx = trackedContext(this.editor, key)
+    return await install(this.editor, ctx)
   }
 
   private resolveOnLoadPath(path: string): string | null {

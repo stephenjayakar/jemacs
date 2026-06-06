@@ -1,7 +1,9 @@
 import type { CommandContext } from "../src/kernel/command"
 import type { Editor } from "../src/kernel/editor"
+import type { PluginContext } from "../src/runtime/plugin-context"
 import type { BufferModel } from "../src/kernel/buffer"
 import type { TextSpan } from "../src/modes/mode"
+import { defvar } from "../src/runtime/custom"
 import { isPrintable } from "../src/kernel/keymap"
 import { scrollDownCommand, scrollUpCommand } from "../src/display/scroll"
 import { pythonBeginningOfDefun, pythonEndOfDefun } from "../src/modes/python"
@@ -10,7 +12,7 @@ import { readKey } from "./misc"
 
 const KILL_COMMANDS = new Set(["kill-line", "kill-word", "backward-kill-word", "kill-region"])
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx?: PluginContext): void {
   editor.command("forward-char", ({ buffer, prefixArgument }) => buffer.move(prefixArgument ?? 1), "Move point forward one character.")
   editor.command("backward-char", ({ buffer, prefixArgument }) => buffer.move(-(prefixArgument ?? 1)), "Move point backward one character.")
   editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")
@@ -80,28 +82,32 @@ export function install(editor: Editor): void {
 
   // ---- kill ring / basic editing -----------------------------------------
 
-  let killRing = ""
-  let killRingHistory: string[] = []
+  // defvar holds the per-editor map so the ring outlives a hot-reload of this
+  // module; WeakMap keying keeps separate Editor instances (tests) isolated.
+  // The yank cursor and last-yank span are transient and reset to head on reload.
+  const rings = defvar("kill-ring", new WeakMap<Editor, string[]>(), "Per-editor kill ring storage.").value
+  let killRing = rings.get(editor)
+  if (!killRing) rings.set(editor, killRing = [])
   let yankRingIndex = 0
   let lastYankStart: number | null = null
   let lastYankEnd: number | null = null
   let lastCommandName: string | null = null
 
-  editor.events.on("changed", ({ reason }) => {
+  const offChanged = editor.events.on("changed", ({ reason }) => {
     if (reason.startsWith("command:")) lastCommandName = reason.slice("command:".length)
   })
+  ctx?.onDispose(offChanged)
   const lastCommandWasKill = () => lastCommandName != null && KILL_COMMANDS.has(lastCommandName)
 
   const pushKill = (text: string, append = false, before = false) => {
     if (!text) return
-    if (append && killRingHistory.length) {
-      killRing = killRingHistory[0] = before ? text + killRingHistory[0]! : killRingHistory[0]! + text
+    if (append && killRing.length) {
+      killRing[0] = before ? text + killRing[0]! : killRing[0]! + text
       yankRingIndex = 0
       return
     }
-    killRing = text
-    killRingHistory.unshift(text)
-    if (killRingHistory.length > 60) killRingHistory.length = 60
+    killRing.unshift(text)
+    if (killRing.length > 60) killRing.length = 60
     yankRingIndex = 0
   }
 
@@ -112,10 +118,9 @@ export function install(editor: Editor): void {
   }
 
   const yankPop = (buffer: BufferModel) => {
-    if (!killRingHistory.length) return
-    yankRingIndex = (yankRingIndex + 1) % killRingHistory.length
-    const text = killRingHistory[yankRingIndex]!
-    killRing = text
+    if (!killRing.length) return
+    yankRingIndex = (yankRingIndex + 1) % killRing.length
+    const text = killRing[yankRingIndex]!
     if (lastYankStart != null && lastYankEnd != null) {
       buffer.replaceRange(lastYankStart, lastYankEnd, text)
       lastYankEnd = lastYankStart + text.length
@@ -237,7 +242,7 @@ export function install(editor: Editor): void {
   }, "Copy the active region, or the current line when no region is active.")
 
   editor.command("yank", ({ buffer }) => {
-    const text = killRing
+    const text = killRing[yankRingIndex]
     if (!text) return
     buffer.insert(text)
     recordYank(buffer, text)
@@ -259,7 +264,7 @@ export function install(editor: Editor): void {
   }, "Kill the text in the rectangle defined by point and mark.")
 
   editor.command("yank-rectangle", ({ buffer, editor }) => {
-    const text = killRing
+    const text = killRing[yankRingIndex]
     if (!text) return
     yankRectangle(buffer, text)
     editor.message("Yanked rectangle")
@@ -285,9 +290,18 @@ export function install(editor: Editor): void {
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
 
-  let qrBuffer: BufferModel | null = null
-  let qrCurrent: TextSpan[] = []
-  editor.addOverlaySource(b => (b === qrBuffer ? qrCurrent : []))
+  // Kernel has no removeOverlaySource yet, so register the source once per
+  // Editor (defvar/WeakMap, like kill-ring) and have each install reuse the
+  // same state object — reloads then mutate it instead of stacking closures.
+  type QrState = { buffer: BufferModel | null; spans: TextSpan[] }
+  const qrStates = defvar("query-replace--overlay-state", new WeakMap<Editor, QrState>(),
+    "Per-editor query-replace overlay state; guards one-time addOverlaySource registration.").value
+  let qr = qrStates.get(editor)
+  if (!qr) {
+    qrStates.set(editor, qr = { buffer: null, spans: [] })
+    editor.addOverlaySource(b => (b === qr!.buffer ? qr!.spans : []))
+  }
+  ctx?.onDispose(() => { qr!.buffer = null; qr!.spans = [] })
   editor.command("query-replace", async ({ buffer, editor, args }) => {
     const from = args[0] ?? await editor.prompt("Query replace: ", "", "query-replace")
     if (!from) return
@@ -296,14 +310,14 @@ export function install(editor: Editor): void {
     let index = buffer.point
     let count = 0
     let all = false
-    qrBuffer = buffer
+    qr!.buffer = buffer
     const trail: Array<{ at: number; replaced: boolean }> = []
     try {
     while (index <= buffer.text.length) {
       const at = buffer.text.indexOf(from, index)
       if (at === -1) break
       buffer.point = at
-      qrCurrent = [{ start: at, end: at + from.length, face: "isearch" }]
+      qr!.spans = [{ start: at, end: at + from.length, face: "isearch" }]
       const key = all ? "y" : await readKey(editor, `Query replacing ${from} with ${to}: (y n q ! . ^) `)
       if (key === null || key === "q" || key === "enter" || key === "esc") break
       if (key === "y" || key === "space" || key === "!" || key === ".") {
@@ -325,8 +339,8 @@ export function install(editor: Editor): void {
       // any other key: re-prompt at the same match
     }
     } finally {
-      qrCurrent = []
-      qrBuffer = null
+      qr!.spans = []
+      qr!.buffer = null
     }
     editor.message(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`)
   }, "Replace occurrences with confirmation.")

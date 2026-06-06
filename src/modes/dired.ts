@@ -151,8 +151,14 @@ export function diredMarkAll(buffer: BufferModel): void {
   renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
 }
 
-export function diredMarkFilesRegexp(buffer: BufferModel, regexp: string, mark: DiredMark): number {
-  const re = new RegExp(regexp)
+export function diredMarkFilesRegexp(buffer: BufferModel, regexp: string, mark: DiredMark, editor?: Editor): number {
+  let re: RegExp
+  try {
+    re = new RegExp(regexp)
+  } catch (err) {
+    editor?.message(`Invalid regexp: ${(err as SyntaxError).message}`)
+    return 0
+  }
   const marks = diredMarks.get(buffer) ?? new Map()
   let count = 0
   for (const entry of diredEntryLines.get(buffer) ?? []) {

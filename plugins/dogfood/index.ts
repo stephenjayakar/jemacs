@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { keyToken, type KeyEventLike } from "../../src/kernel/keymap"
 
 const LOG = join(homedir(), ".jemacs", "cmdlog.tsv")
@@ -14,7 +15,7 @@ function row(editor: Editor, command: string, key: KeyEventLike | null): string 
   return `${Date.now()}\t${command}\t${buf.mode}\t${buf.name}\t${tok}\t${raw}\n`
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   void mkdir(dirname(LOG), { recursive: true }).catch(() => {})
   let pending: string[] = []
   let flush: ReturnType<typeof setTimeout> | null = null

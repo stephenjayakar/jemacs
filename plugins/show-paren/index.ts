@@ -1,6 +1,6 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { defineMinorMode } from "../../src/modes/minor-mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
 const OPENERS = "([{"
@@ -106,11 +106,11 @@ function refresh(editor: Editor): void {
   else buffer.locals.delete(SHOW_PAREN_LOCAL)
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("show-paren-when-point-inside-paren", "boolean", false,
     "If non-nil, show parens when point is just inside one.")
 
-  defineMinorMode({
+  ctx.minorMode({
     name: "show-paren-mode",
     lighter: "",
     global: true,

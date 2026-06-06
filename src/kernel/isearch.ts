@@ -1,5 +1,4 @@
 import type { BufferModel } from "./buffer"
-import type { TextSpan } from "../modes/mode"
 
 export type IsearchState = {
   bufferId: string
@@ -10,6 +9,9 @@ export type IsearchState = {
 }
 
 export type IsearchMatch = { start: number; end: number }
+
+/** Structural subset of the display-layer TextSpan; kernel stays independent of modes/. */
+export type IsearchSpan = { start: number; end: number; face: "isearch" | "lazyHighlight" }
 
 let regexpMode = false
 
@@ -93,7 +95,7 @@ export function findBackward(text: string, needle: string, before: number, regex
   return idx >= 0 ? idx : null
 }
 
-export function isearchMatchSpan(buffer: BufferModel, state: IsearchState): TextSpan | null {
+export function isearchMatchSpan(buffer: BufferModel, state: IsearchState): IsearchSpan | null {
   if (!state.string || buffer.id !== state.bufferId) return null
   const start = buffer.point
   const caseFold = isearchNoUpperCaseP(state.string, state.regexp ?? false)
@@ -121,12 +123,12 @@ export function isearchLazyHighlightSpans(
   lo = 0,
   hi = buffer.text.length,
   cap = 200,
-): TextSpan[] {
+): IsearchSpan[] {
   if (!state.string || buffer.id !== state.bufferId) return []
   const caseFold = isearchNoUpperCaseP(state.string, state.regexp ?? false)
   const haystack = caseFold && !state.regexp ? buffer.text.slice(lo, hi).toLowerCase() : buffer.text.slice(lo, hi)
   const needle = caseFold && !state.regexp ? state.string.toLowerCase() : state.string
-  const spans: TextSpan[] = []
+  const spans: IsearchSpan[] = []
   let from = 0
   while (spans.length < cap) {
     let m: IsearchMatch | null

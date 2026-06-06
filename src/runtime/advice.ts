@@ -6,6 +6,10 @@ import { captureCallerSource } from "./source"
 export type CommandAdvice = {
   before?: (ctx: CommandContext) => void | Promise<void>
   after?: (ctx: CommandContext) => void | Promise<void>
+  /** Wraps the advised command; call `inner` to invoke it (or skip it). */
+  around?: (inner: CommandFn, ctx: CommandContext) => unknown | Promise<unknown>
+  /** Replaces the advised command outright; original is restored on removeAdvice. */
+  override?: CommandFn
 }
 
 type TrackedAdvice = {
@@ -30,6 +34,19 @@ export function addAdvice(commandName: string, advice: CommandAdvice, source?: S
   adviceByCommand.set(commandName, list)
   registerCatalogEntry({ kind: "advice", name: commandName, detail: id, source: loc, doc: `Advice on ${commandName}` })
   return id
+}
+
+export function removeAdvice(id: string): boolean {
+  const entry = tracked.get(id)
+  if (!entry) return false
+  const list = adviceByCommand.get(entry.commandName)
+  if (list) {
+    const index = list.indexOf(entry.advice)
+    if (index >= 0) list.splice(index, 1)
+    if (list.length === 0) adviceByCommand.delete(entry.commandName)
+  }
+  tracked.delete(id)
+  return true
 }
 
 export function clearAdvice(commandName?: string): void {
@@ -64,8 +81,20 @@ export function getTrackedAdvice(id: string): TrackedAdvice | undefined {
 
 export async function invokeWithAdvice(commandName: string, fn: CommandFn, ctx: CommandContext): Promise<unknown> {
   const list = adviceByCommand.get(commandName) ?? []
-  for (const hook of list) await hook.before?.(ctx)
-  const result = await fn(ctx)
-  for (let i = list.length - 1; i >= 0; i--) await list[i].after?.(ctx)
-  return result
+  // Compose nadvice-style: first-added advice is outermost, so fold from the
+  // tail inward. before/after wrap as a pair, preserving the prior FIFO/LIFO order.
+  let composed: CommandFn = fn
+  for (let i = list.length - 1; i >= 0; i--) {
+    const hook = list[i]
+    const inner = composed
+    if (hook.override) composed = hook.override
+    else if (hook.around) composed = (c) => hook.around!(inner, c)
+    else composed = async (c) => {
+      await hook.before?.(c)
+      const result = await inner(c)
+      await hook.after?.(c)
+      return result
+    }
+  }
+  return composed(ctx)
 }

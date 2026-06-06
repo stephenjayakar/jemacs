@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { TextSpan } from "../../src/modes/mode"
 import { listWindowLeaves, type WindowId } from "../../src/kernel/window"
@@ -97,7 +98,7 @@ function jump(editor: Editor, t: AvyTarget): void {
   editor.currentBuffer.point = t.point
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.addOverlaySource(avySpans)
 
   editor.command("avy-goto-char", async ({ editor }) => {

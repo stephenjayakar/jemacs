@@ -2,9 +2,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
-import { addHook } from "../../src/kernel/hooks"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { defcustom, getCustom } from "../../src/runtime/custom"
-import { defineMinorMode } from "../../src/modes/minor-mode"
 
 // ---------------------------------------------------------------------------
 // Timers (run-at-time / run-with-idle-timer / cancel-timer)
@@ -207,9 +206,9 @@ export async function recentfLoadList(): Promise<void> {
 // install
 // ---------------------------------------------------------------------------
 
-let autosaveTimer: Timer | null = null
+const autosaveTimers = new WeakMap<Editor, Timer>()
 
-export async function install(editor: Editor): Promise<void> {
+export async function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): Promise<void> {
   defcustom("savehist-file", "string", join(homedir(), ".jemacs", "history.json"), "File where minibuffer histories are persisted.")
   defcustom("savehist-autosave-interval", "number", 300, "Seconds of idle time before autosaving history.")
   defcustom("recentf-save-file", "string", join(homedir(), ".jemacs", "recentf.json"), "File where the recent file list is persisted.")
@@ -217,17 +216,23 @@ export async function install(editor: Editor): Promise<void> {
 
   editor.events.on("changed", () => notifyActivity())
 
-  defineMinorMode({ name: "savehist-mode", global: true, lighter: "" })
-  defineMinorMode({ name: "recentf-mode", global: true, lighter: "" })
+  ctx.minorMode({ name: "savehist-mode", global: true, lighter: "" })
+  ctx.minorMode({ name: "recentf-mode", global: true, lighter: "" })
 
-  addHook("find-file-hook", ({ editor, buffer }) => {
+  ctx.hook("find-file-hook", ({ editor, buffer }) => {
     if (!editor.globalMinorModes.has("recentf-mode")) return
     if (buffer.path) recentfPush(buffer.path)
   })
 
-  addHook("kill-emacs-hook", async ({ editor }) => {
+  ctx.hook("kill-emacs-hook", async ({ editor }) => {
     if (editor.globalMinorModes.has("savehist-mode")) await savehistSave(editor)
     if (editor.globalMinorModes.has("recentf-mode")) await recentfSaveList()
+  })
+
+  ctx.onDispose(() => {
+    const t = autosaveTimers.get(editor)
+    if (t) cancelTimer(t)
+    autosaveTimers.delete(editor)
   })
 
   editor.command("savehist-save", async ({ editor }) => {
@@ -278,9 +283,9 @@ export async function install(editor: Editor): Promise<void> {
   editor.enableMinorMode("recentf-mode")
 
   const idleSecs = getCustom<number>("savehist-autosave-interval") ?? 300
-  autosaveTimer?.cancel()
-  autosaveTimer = runWithIdleTimer(idleSecs, true, () => {
+  autosaveTimers.get(editor)?.cancel()
+  autosaveTimers.set(editor, runWithIdleTimer(idleSecs, true, () => {
     if (editor.globalMinorModes.has("savehist-mode")) void savehistSave(editor)
     if (editor.globalMinorModes.has("recentf-mode")) void recentfSaveList()
-  })
+  }))
 }

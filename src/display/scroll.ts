@@ -169,13 +169,10 @@ function visibleLinesAtStart(
   return visibleLineCountForBudget(startLine, bodyBudget, lineCount, visualRows)
 }
 
-function maxStartLine(bodyBudget: number, lineCount: number, visualRows?: readonly number[]): number {
-  if (lineCount === 0) return 0
-  if (!visualRows?.length) return Math.max(0, lineCount - bodyBudget)
-  for (let start = lineCount - 1; start >= 0; start--) {
-    if (start + visibleLineCountForBudget(start, bodyBudget, lineCount, visualRows) >= lineCount) return start
-  }
-  return 0
+// Emacs lets C-v advance until the last line is alone at the top; only signal
+// end-of-buffer when already there, don't pre-clamp the step.
+function maxStartLine(_bodyBudget: number, lineCount: number, _visualRows?: readonly number[]): number {
+  return Math.max(0, lineCount - 1)
 }
 
 function setBufferPointToLine(buffer: BufferModel, lineIndex: number, col: number): void {
