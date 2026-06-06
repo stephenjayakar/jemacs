@@ -309,16 +309,45 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("S-x h", "magit-reset-hard")
   statusMap.bind("c c", "magit-commit")
   statusMap.bind("c a", "magit-commit-amend")
-  statusMap.bind("P p", "magit-push")
   statusMap.bind("S-p p", "magit-push")
   statusMap.bind("S-p u", "magit-push-upstream")
   statusMap.bind("l l", "magit-log")
   statusMap.bind("S-l l", "magit-log-refresh")
   statusMap.bind("b b", "magit-branch-checkout")
   statusMap.bind("b c", "magit-branch-create")
+  statusMap.bind("b n", "magit-branch-create")
+  statusMap.bind("b k", "magit-branch-delete")
+  statusMap.bind("b m", "magit-branch-rename")
   statusMap.bind("z z", "magit-stash")
   statusMap.bind("z p", "magit-stash-pop")
+  statusMap.bind("z a", "magit-stash-apply")
+  statusMap.bind("z k", "magit-stash-drop")
+  statusMap.bind("z l", "magit-stash-list")
   statusMap.bind("z s", "magit-stash-save")
+  statusMap.bind("m m", "magit-merge")
+  statusMap.bind("m a", "magit-merge-abort")
+  statusMap.bind("r r", "magit-rebase-continue")
+  statusMap.bind("r c", "magit-rebase-continue")
+  statusMap.bind("r s", "magit-rebase-skip")
+  statusMap.bind("r a", "magit-rebase-abort")
+  statusMap.bind("r e", "magit-rebase")
+  statusMap.bind("S-a a", "magit-cherry-pick")
+  statusMap.bind("S-a s", "magit-cherry-pick-skip")
+  statusMap.bind("S-a S-a", "magit-cherry-pick-abort")
+  statusMap.bind("S-v v", "magit-revert")
+  statusMap.bind("S-v a", "magit-revert-abort")
+  statusMap.bind("t t", "magit-tag")
+  statusMap.bind("t k", "magit-tag-delete")
+  statusMap.bind("S-m a", "magit-remote-add")
+  statusMap.bind("S-m k", "magit-remote-remove")
+  statusMap.bind("S-m r", "magit-remote-rename")
+  statusMap.bind("c e", "magit-commit-extend")
+  statusMap.bind("c w", "magit-commit-reword")
+  statusMap.bind("d d", "magit-diff-working")
+  statusMap.bind("d u", "magit-diff-unstaged")
+  statusMap.bind("d s", "magit-diff-staged")
+  statusMap.bind("n", "next-line")
+  statusMap.bind("p", "previous-line")
   statusMap.bind("f p", "magit-fetch-from-pushremote")
   statusMap.bind("f u", "magit-fetch-from-upstream")
   statusMap.bind("f a", "magit-fetch-all")
@@ -807,7 +836,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Visit the file or commit at point.")
 
   editor.command("magit-dispatch", ({ editor }) => {
-    editor.message("Magit: g refresh  s stage  u unstage  S stage-all  U unstage-all  c c commit  P p push  F u pull  f u fetch  l l log  b b branch  z z stash  k discard  x reset-index  X h hard-reset  RET visit  TAB fold  q bury")
+    editor.message("Magit: g refresh  s/u stage  c c commit  c e extend  P p push  F u pull  f u fetch  l l log  d d diff  b b/c/k/m branch  m m merge  r e/a rebase  A a cherry-pick  V v revert  t t tag  M a remote  z z stash  k discard  x reset  RET visit  TAB fold  n/p move  q bury")
   }, "Show Magit command summary.")
 
   const jumpToSection = async (editor: Editor, buffer: BufferModel, title: string) => {
@@ -889,6 +918,211 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bury-buffer", async ({ editor }) => {
     await editor.run("magit-mode-bury-buffer")
   }, "Alias for magit-mode-bury-buffer.")
+
+  // --- Parity batch: merge, rebase, cherry-pick, revert, tag, remote, more ---
+
+  /** Run a git command in the magit buffer's repo, then refresh + message. */
+  const runGit = async (
+    editor: Editor,
+    buffer: BufferModel,
+    args: string[],
+    ok: string,
+    opts: { resetPoint?: boolean; confirm?: string } = {},
+  ): Promise<void> => {
+    const root = magitRoot(buffer)
+    if (!root) { editor.message("Not in a Magit buffer"); return }
+    if (opts.confirm) {
+      const ans = await editor.prompt(opts.confirm)
+      if (ans !== "y") { editor.message("Cancelled"); return }
+    }
+    const { err, code } = await git(args, root)
+    if (code !== 0) { editor.message(`git ${args[0]} failed: ${err.trim()}`); return }
+    await refresh(editor, root, opts.resetPoint ? 0 : undefined)
+    editor.message(ok)
+  }
+
+  const branchList = async (root: string, includeRemotes = false): Promise<string[]> => {
+    const args = includeRemotes
+      ? ["branch", "-a", "--format=%(refname:short)"]
+      : ["branch", "--list", "--format=%(refname:short)"]
+    const { out } = await git(args, root)
+    return out.split("\n").filter(Boolean)
+  }
+
+  editor.command("magit-merge", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const branch = args[0] ?? await editor.completingRead("Merge branch: ", { collection: await branchList(root, true), history: "magit-merge" })
+    if (!branch) return
+    await runGit(editor, buffer, ["merge", refname(branch)], `Merged ${branch}`, { resetPoint: true })
+  }, "Merge another branch into the current branch.")
+
+  editor.command("magit-merge-abort", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["merge", "--abort"], "Merge aborted", { resetPoint: true })
+  }, "Abort an in-progress merge.")
+
+  editor.command("magit-rebase", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const onto = args[0] ?? await editor.completingRead("Rebase onto: ", { collection: await branchList(root, true), history: "magit-rebase" })
+    if (!onto) return
+    await runGit(editor, buffer, ["rebase", refname(onto)], `Rebased onto ${onto}`, { resetPoint: true })
+  }, "Rebase the current branch onto another branch.")
+
+  editor.command("magit-rebase-continue", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["rebase", "--continue"], "Rebase continued", { resetPoint: true })
+  }, "Continue an in-progress rebase.")
+
+  editor.command("magit-rebase-skip", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["rebase", "--skip"], "Skipped commit", { resetPoint: true })
+  }, "Skip the current commit during a rebase.")
+
+  editor.command("magit-rebase-abort", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["rebase", "--abort"], "Rebase aborted", { resetPoint: true })
+  }, "Abort an in-progress rebase.")
+
+  editor.command("magit-cherry-pick", async ({ editor, buffer, args }) => {
+    const sha = args[0] ?? logShaAtPoint(buffer)
+    if (!sha) return editor.message("No commit at point")
+    await runGit(editor, buffer, ["cherry-pick", refname(sha)], `Cherry-picked ${sha}`, { resetPoint: true })
+  }, "Cherry-pick the commit at point.")
+
+  editor.command("magit-cherry-pick-skip", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["cherry-pick", "--skip"], "Skipped commit", { resetPoint: true })
+  }, "Skip the current commit during a cherry-pick.")
+
+  editor.command("magit-cherry-pick-abort", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["cherry-pick", "--abort"], "Cherry-pick aborted", { resetPoint: true })
+  }, "Abort an in-progress cherry-pick.")
+
+  editor.command("magit-revert", async ({ editor, buffer, args }) => {
+    const sha = args[0] ?? logShaAtPoint(buffer)
+    if (!sha) return editor.message("No commit at point")
+    await runGit(editor, buffer, ["revert", "--no-edit", refname(sha)], `Reverted ${sha}`, { resetPoint: true })
+  }, "Revert the commit at point.")
+
+  editor.command("magit-revert-abort", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["revert", "--abort"], "Revert aborted", { resetPoint: true })
+  }, "Abort an in-progress revert.")
+
+  editor.command("magit-tag", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const name = args[0] ?? await editor.prompt("Tag name: ", "", "magit-tag")
+    if (!name) return
+    const rev = args[1] ?? logShaAtPoint(buffer) ?? "HEAD"
+    await runGit(editor, buffer, ["tag", refname(name), refname(rev)], `Tagged ${name}`)
+  }, "Create a tag at the commit at point (or HEAD).")
+
+  editor.command("magit-tag-delete", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(["tag", "--list"], root)
+    const name = args[0] ?? await editor.completingRead("Delete tag: ", { collection: out.split("\n").filter(Boolean), history: "magit-tag" })
+    if (!name) return
+    await runGit(editor, buffer, ["tag", "-d", refname(name)], `Deleted tag ${name}`)
+  }, "Delete a tag.")
+
+  editor.command("magit-remote-add", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const name = args[0] ?? await editor.prompt("Remote name: ", "origin", "magit-remote")
+    if (!name) return
+    const url = args[1] ?? await editor.prompt(`URL for ${name}: `, "", "magit-remote-url")
+    if (!url) return
+    await runGit(editor, buffer, ["remote", "add", refname(name), url], `Added remote ${name}`)
+  }, "Add a remote.")
+
+  editor.command("magit-remote-remove", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(["remote"], root)
+    const name = args[0] ?? await editor.completingRead("Remove remote: ", { collection: out.split("\n").filter(Boolean), history: "magit-remote" })
+    if (!name) return
+    await runGit(editor, buffer, ["remote", "remove", refname(name)], `Removed remote ${name}`)
+  }, "Remove a remote.")
+
+  editor.command("magit-remote-rename", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(["remote"], root)
+    const old = args[0] ?? await editor.completingRead("Rename remote: ", { collection: out.split("\n").filter(Boolean), history: "magit-remote" })
+    if (!old) return
+    const next = args[1] ?? await editor.prompt(`Rename ${old} to: `, "", "magit-remote")
+    if (!next) return
+    await runGit(editor, buffer, ["remote", "rename", refname(old), refname(next)], `Renamed ${old} to ${next}`)
+  }, "Rename a remote.")
+
+  editor.command("magit-branch-delete", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const branch = args[0] ?? await editor.completingRead("Delete branch: ", { collection: await branchList(root), history: "magit-branch" })
+    if (!branch) return
+    await runGit(editor, buffer, ["branch", "-d", refname(branch)], `Deleted branch ${branch}`)
+  }, "Delete a branch.")
+
+  editor.command("magit-branch-rename", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const old = args[0] ?? await editor.completingRead("Rename branch: ", { collection: await branchList(root), history: "magit-branch" })
+    if (!old) return
+    const next = args[1] ?? await editor.prompt(`Rename ${old} to: `, "", "magit-branch")
+    if (!next) return
+    await runGit(editor, buffer, ["branch", "-m", refname(old), refname(next)], `Renamed ${old} to ${next}`, { resetPoint: true })
+  }, "Rename a branch.")
+
+  editor.command("magit-stash-apply", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["stash", "apply"], "Applied stash")
+  }, "Apply the most recent stash without dropping it.")
+
+  editor.command("magit-stash-drop", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["stash", "drop"], "Dropped stash", { confirm: "Drop stash@{0}? (y or n) " })
+  }, "Drop the most recent stash (with confirmation).")
+
+  editor.command("magit-stash-list", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(["stash", "list"], root)
+    const buf = editor.scratch("*magit-stash-list*", out || "(no stashes)\n", "magit-revision")
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.point = 0
+  }, "List stashes in a buffer.")
+
+  editor.command("magit-commit-extend", async ({ editor, buffer }) => {
+    await runGit(editor, buffer, ["commit", "--amend", "--no-edit"], "Extended commit", { resetPoint: true })
+  }, "Add staged changes to HEAD without editing the message.")
+
+  editor.command("magit-commit-reword", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(["log", "-1", "--pretty=%B"], root)
+    const msg = await editor.prompt("Reword commit: ", out.trim(), "magit-commit-reword")
+    if (msg == null || !msg.trim()) return editor.message("Reword cancelled")
+    await runGit(editor, buffer, ["commit", "--amend", "--only", "-m", msg], "Reworded commit", { resetPoint: true })
+  }, "Edit the message of HEAD without changing its tree.")
+
+  const openDiff = async (editor: Editor, buffer: BufferModel, gitArgs: string[], title: string) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out } = await git(gitArgs, root)
+    const buf = editor.scratch(`*magit-diff: ${title}*`, out || "(no changes)\n", "magit-revision")
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.point = 0
+  }
+
+  editor.command("magit-diff-working", async ({ editor, buffer }) => {
+    await openDiff(editor, buffer, ["diff", "HEAD"], "working tree")
+  }, "Show the diff of the working tree against HEAD.")
+
+  editor.command("magit-diff-unstaged", async ({ editor, buffer }) => {
+    await openDiff(editor, buffer, ["diff"], "unstaged")
+  }, "Show unstaged changes.")
+
+  editor.command("magit-diff-staged", async ({ editor, buffer }) => {
+    await openDiff(editor, buffer, ["diff", "--cached"], "staged")
+  }, "Show staged changes.")
 
   editor.key("C-x g", "magit-status")
   editor.key("C-c g", "magit-dispatch")

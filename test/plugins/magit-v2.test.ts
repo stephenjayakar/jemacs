@@ -60,7 +60,7 @@ test("install registers v2 commands, modes and bindings", () => {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
   const status = getMode("magit-status")
-  expect(status?.keymap?.get("P p")).toBe("magit-push")
+  expect(status?.keymap?.get("S-p p")).toBe("magit-push")
   expect(status?.keymap?.get("l l")).toBe("magit-log")
   expect(status?.keymap?.get("b b")).toBe("magit-branch-checkout")
   expect(status?.keymap?.get("b c")).toBe("magit-branch-create")
@@ -131,7 +131,7 @@ test("P p pushes to a bare remote with prompted defaults (origin, current branch
     prompts.push({ prompt, initial })
     return initial
   }
-  await keySeq(editor, "P", "p")
+  await keySeq(editor, "S-p", "p")
 
   expect(prompts[0]).toEqual({ prompt: "Push to remote: ", initial: "origin" })
   expect(prompts[1]).toEqual({ prompt: "Push branch: ", initial: "main" })
