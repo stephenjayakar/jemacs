@@ -1,8 +1,13 @@
-import { homedir } from "node:os"
 import type { Editor } from "../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
-import { listWindowLeaves, nextWindowId } from "../src/kernel/window"
+import { findWindowLeaf, listWindowLeaves, nextWindowId, scrollWindowLeaf } from "../src/kernel/window"
+import { pageScrollLines } from "../src/display/viewport"
+import { defvar } from "../src/runtime/custom"
 import { bufferListEntryAtPoint, showBufferList } from "../src/modes/buffer-list"
+import { directoryInitialValue, substituteInFileName } from "./files"
+
+const recenterCycle = defvar("recenter--cycle", new WeakMap<Editor, number>(),
+  "Per-editor C-l cycle state (center → top → bottom).").value
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const otherWindow = (editor: Editor, delta: number) => {
@@ -38,16 +43,36 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("previous-window-any-frame", ({ editor }) => otherWindow(editor, -1), "Select the previous window.")
 
   editor.command("recenter-top-bottom", ({ editor }) => {
-    editor.recenterTopBottom()
+    if (!editor.selectedWindowLeaf()) return
+    const page = pageScrollLines()
+    const lineIdx = editor.currentBuffer.lineCol().line - 1
+    const cycle = recenterCycle.get(editor) ?? 0
+    const start = cycle === 0 ? Math.max(0, lineIdx - Math.floor(page / 2))
+      : cycle === 1 ? lineIdx
+      : Math.max(0, lineIdx - page + 1)
+    editor.setSelectedWindowStartLine(start)
+    recenterCycle.set(editor, (cycle + 1) % 3)
     editor.message("Recenter")
   }, "Center point vertically in the window.")
 
+  const scrollOther = (editor: Editor, delta: number): boolean => {
+    if (listWindowLeaves(editor.windowLayout).length <= 1) return false
+    const otherId = nextWindowId(editor.windowLayout, editor.selectedWindowId, 1)
+    const leaf = findWindowLeaf(editor.windowLayout, otherId)
+    if (!leaf) return false
+    const buffer = editor.buffers.get(leaf.bufferId)
+    const maxStart = Math.max(0, (buffer ? buffer.text.split("\n").length : 1) - 1)
+    const lines = pageScrollLines() * delta
+    editor.mutateWindowLayout(layout => scrollWindowLeaf(layout, otherId, lines, maxStart), "scroll-other-window")
+    return true
+  }
+
   editor.command("scroll-other-window", ({ editor, prefixArgument }) => {
-    if (!editor.scrollOtherWindow(prefixArgument ?? 1)) editor.message("No other window to scroll")
+    if (!scrollOther(editor, prefixArgument ?? 1)) editor.message("No other window to scroll")
   }, "Scroll the next window forward without selecting it.")
 
   editor.command("scroll-other-window-down", ({ editor, prefixArgument }) => {
-    if (!editor.scrollOtherWindow(-(prefixArgument ?? 1))) editor.message("No other window to scroll")
+    if (!scrollOther(editor, -(prefixArgument ?? 1))) editor.message("No other window to scroll")
   }, "Scroll the next window backward without selecting it.")
 
   editor.command("switch-to-buffer-other-window", async ({ editor, args }) => {
@@ -127,7 +152,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Switch to the next buffer.")
 
   editor.command("previous-buffer", ({ editor }) => {
-    const b = editor.previousBuffer()
+    const b = cycleBuffer(editor, -1)
     editor.message(`Switched to ${editor.bufferDisplayName(b)}`)
   }, "Switch to the previous buffer.")
 
@@ -175,19 +200,4 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.key("s-{", "tab-bar-switch-to-prev-tab")
   editor.key("s-t", "tab-bar-new-tab")
   editor.key("s-w", "tab-bar-close-tab")
-}
-
-/** Emacs `substitute-in-file-name`: typing an absolute path or `~` after the
- *  prefilled directory restarts from there, so `/a/b//etc/x` → `/etc/x`.
- *  A leading `~` is expanded so node:path `resolve()` doesn't treat it as a
- *  literal directory component. */
-function substituteInFileName(input: string): string {
-  const restart = Math.max(input.lastIndexOf("//"), input.lastIndexOf("/~"))
-  const stripped = restart >= 0 ? input.slice(restart + 1) : input
-  if (stripped === "~" || stripped.startsWith("~/")) return homedir() + stripped.slice(1)
-  return stripped
-}
-
-function directoryInitialValue(directory: string): string {
-  return directory.endsWith("/") ? directory : `${directory}/`
 }

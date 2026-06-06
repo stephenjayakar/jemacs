@@ -206,7 +206,7 @@ export async function recentfLoadList(): Promise<void> {
 // install
 // ---------------------------------------------------------------------------
 
-let autosaveTimer: Timer | null = null
+const autosaveTimers = new WeakMap<Editor, Timer>()
 
 export async function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): Promise<void> {
   defcustom("savehist-file", "string", join(homedir(), ".jemacs", "history.json"), "File where minibuffer histories are persisted.")
@@ -230,8 +230,9 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
   })
 
   ctx.onDispose(() => {
-    if (autosaveTimer) cancelTimer(autosaveTimer)
-    autosaveTimer = null
+    const t = autosaveTimers.get(editor)
+    if (t) cancelTimer(t)
+    autosaveTimers.delete(editor)
   })
 
   editor.command("savehist-save", async ({ editor }) => {
@@ -282,9 +283,9 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
   editor.enableMinorMode("recentf-mode")
 
   const idleSecs = getCustom<number>("savehist-autosave-interval") ?? 300
-  autosaveTimer?.cancel()
-  autosaveTimer = runWithIdleTimer(idleSecs, true, () => {
+  autosaveTimers.get(editor)?.cancel()
+  autosaveTimers.set(editor, runWithIdleTimer(idleSecs, true, () => {
     if (editor.globalMinorModes.has("savehist-mode")) void savehistSave(editor)
     if (editor.globalMinorModes.has("recentf-mode")) void recentfSaveList()
-  })
+  }))
 }

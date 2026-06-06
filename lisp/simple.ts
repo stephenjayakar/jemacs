@@ -290,12 +290,18 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
 
-  let qrBuffer: BufferModel | null = null
-  let qrCurrent: TextSpan[] = []
-  editor.addOverlaySource(b => (b === qrBuffer ? qrCurrent : []))
-  // Kernel has no removeOverlaySource yet; neuter the closure on dispose so the
-  // lingering source stays inert until the structural task adds removal.
-  ctx?.onDispose(() => { qrBuffer = null; qrCurrent = [] })
+  // Kernel has no removeOverlaySource yet, so register the source once per
+  // Editor (defvar/WeakMap, like kill-ring) and have each install reuse the
+  // same state object — reloads then mutate it instead of stacking closures.
+  type QrState = { buffer: BufferModel | null; spans: TextSpan[] }
+  const qrStates = defvar("query-replace--overlay-state", new WeakMap<Editor, QrState>(),
+    "Per-editor query-replace overlay state; guards one-time addOverlaySource registration.").value
+  let qr = qrStates.get(editor)
+  if (!qr) {
+    qrStates.set(editor, qr = { buffer: null, spans: [] })
+    editor.addOverlaySource(b => (b === qr!.buffer ? qr!.spans : []))
+  }
+  ctx?.onDispose(() => { qr!.buffer = null; qr!.spans = [] })
   editor.command("query-replace", async ({ buffer, editor, args }) => {
     const from = args[0] ?? await editor.prompt("Query replace: ", "", "query-replace")
     if (!from) return
@@ -304,14 +310,14 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     let index = buffer.point
     let count = 0
     let all = false
-    qrBuffer = buffer
+    qr!.buffer = buffer
     const trail: Array<{ at: number; replaced: boolean }> = []
     try {
     while (index <= buffer.text.length) {
       const at = buffer.text.indexOf(from, index)
       if (at === -1) break
       buffer.point = at
-      qrCurrent = [{ start: at, end: at + from.length, face: "isearch" }]
+      qr!.spans = [{ start: at, end: at + from.length, face: "isearch" }]
       const key = all ? "y" : await readKey(editor, `Query replacing ${from} with ${to}: (y n q ! . ^) `)
       if (key === null || key === "q" || key === "enter" || key === "esc") break
       if (key === "y" || key === "space" || key === "!" || key === ".") {
@@ -333,8 +339,8 @@ export function install(editor: Editor, ctx?: PluginContext): void {
       // any other key: re-prompt at the same match
     }
     } finally {
-      qrCurrent = []
-      qrBuffer = null
+      qr!.spans = []
+      qr!.buffer = null
     }
     editor.message(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`)
   }, "Replace occurrences with confirmation.")

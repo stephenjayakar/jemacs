@@ -41,7 +41,7 @@ export function substituteInFileName(input: string): string {
   return stripped
 }
 
-function directoryInitialValue(directory: string): string {
+export function directoryInitialValue(directory: string): string {
   return directory.endsWith("/") ? directory : `${directory}/`
 }
 
@@ -102,14 +102,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       const ans = await readKey(editor, `Buffer ${editor.bufferDisplayName(buffer)} modified; kill anyway? (y or n) `)
       if (ans !== "y") { editor.message("Cancelled"); return }
     }
-    const text = await readFileText(path)
-    buffer.path = path
-    buffer.name = path.split("/").pop() ?? path
-    buffer.setText(text, false)
-    buffer.dirty = false
-    buffer.point = Math.min(buffer.point, buffer.text.length)
-    editor.enterMode(buffer, buffer.mode)
-    editor.message(`Now visiting ${path}`)
+    try {
+      const text = await readFileText(path)
+      buffer.path = path
+      buffer.name = path.split("/").pop() ?? path
+      buffer.setText(text, false)
+      buffer.dirty = false
+      buffer.point = Math.min(buffer.point, buffer.text.length)
+      editor.enterMode(buffer, buffer.mode)
+      editor.message(`Now visiting ${path}`)
+    } catch (err) {
+      editor.message((err as Error).message)
+    }
   }, "Replace this buffer with the contents of another file.")
 
   editor.command("kill-buffer", async ({ editor, args }) => {
@@ -152,17 +156,23 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const dirty = [...editor.buffers.values()].filter(b => b.dirty && b.path && b.kind === "file")
     let saveAll = false
     let saved = 0
+    const failed: string[] = []
     const runHook = editor.runHook.bind(editor)
     for (const b of dirty) {
+      const trySave = async (ctx: SaveContext) => {
+        try { await b.save(ctx); saved++ }
+        catch (err) { failed.push(`${b.path}: ${(err as Error).message}`) }
+      }
       // Buffers with buffer-save-without-query set save silently (files.el:6370).
-      if (b.locals.get("buffer-save-without-query")) { await b.save(saveCtx({ runHook, force: true })); saved++; continue }
+      if (b.locals.get("buffer-save-without-query")) { await trySave(saveCtx({ runHook, force: true })); continue }
       let answer = saveAll ? "y" : (await editor.prompt(`Save file ${b.path}? (y, n, !, ., q) `, "", "save-some-buffers"))?.trim()
       if (answer == null || answer === "q") break
       if (answer === "!") { saveAll = true; answer = "y" }
-      if (answer === "y" || answer === ".") { await b.save(saveCtx({ runHook })); saved++ }
+      if (answer === "y" || answer === ".") await trySave(saveCtx({ runHook }))
       if (answer === ".") break
     }
-    editor.message(dirty.length ? `Saved ${saved} of ${dirty.length} file(s)` : "(No files need saving)")
+    const summary = dirty.length ? `Saved ${saved} of ${dirty.length} file(s)` : "(No files need saving)"
+    editor.message(failed.length ? `${summary}; ${failed.length} failed: ${failed.join("; ")}` : summary)
   }, "Save some modified file-visiting buffers, asking about each one.")
 
   editor.command("save-buffers-kill-terminal", async ({ editor }) => {

@@ -9,7 +9,6 @@ import { enterMode, getMode, modeFeature, modeLineage, type CompletionCandidate,
 import { allMinorModes, getMinorMode, type MinorMode } from "../modes/minor-mode"
 import { makeDiredBuffer } from "../modes/dired"
 import { pointFromWindowClick, type WindowClickState } from "../display/click-to-point"
-import { pageScrollLines } from "../display/viewport"
 import type { Theme } from "../display/theme"
 import { composeTheme } from "../runtime/faces"
 import { defaultTheme } from "../themes"
@@ -27,7 +26,6 @@ import {
   nextWindowId,
   pickReusableWindow,
   removeBufferFromWindows,
-  scrollWindowLeaf,
   nextEligibleWindowId,
   setWindowLeafBuffer,
   setWindowLeafDedicated,
@@ -41,7 +39,6 @@ import { modeHookName, runHooks } from "./hooks"
 import type { LspManager } from "../lsp/manager"
 import { fileExists, readFileText, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
-import { defcustom, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
 import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
 import type { SourceLocation } from "../runtime/source"
@@ -96,11 +93,6 @@ export type KeyDispatchResult =
   | { status: "inserted" }
   | { status: "unmatched" }
 
-defcustom("auto-save-interval", "number", 30,
-  "Seconds of idle time between auto-saves of dirty file-visiting buffers.")
-defcustom("auto-save-keystroke-interval", "number", 300,
-  "Number of input events between auto-saves; checked in handleKey.")
-
 export class Editor {
   readonly buffers = new Map<string, BufferModel>()
   private readonly fontLockCache = new WeakMap<BufferModel, { text: string; spans: TextSpan[] }>()
@@ -130,7 +122,6 @@ export class Editor {
   readonly globalMinorModes = new Set<string>()
   lastKeyEvent: KeyEventLike | null = null
   quotedInsertNext = false
-  recenterCycle = 0
   macroRecording: string[] | null = null
   lastKbdMacro: string[] = []
   lsp: LspManager | null = null
@@ -142,8 +133,6 @@ export class Editor {
   completer: Completer | null = null
   /** Gutter predicate consulted by build-display-model; modes (linum) install the policy. */
   showLineNumbers: (buffer?: BufferModel) => boolean = () => false
-  /** Command currently executing (emacs `this-command`). */
-  thisCommand: string | null = null
   private readonly searchRing: string[] = []
   private minibufferDepth = 0
   private readonly displayNames = new Map<string, string>()
@@ -151,7 +140,6 @@ export class Editor {
   private readonly bufferRecency: string[] = []
   private _currentBufferId!: string
   private autoSaveTimer: ReturnType<typeof setInterval> | null = null
-  private autoSaveKeystrokes = 0
 
   get currentBufferId(): string { return this._currentBufferId }
   set currentBufferId(id: string) {
@@ -213,6 +201,20 @@ export class Editor {
   /** Kernel primitive: set the selected window's first visible line (recenter, jump-to-location). */
   setSelectedWindowStartLine(line: number): void {
     this.windowLayout = setWindowLeafStartLine(this.windowLayout, this.selectedWindowId, line)
+  }
+
+  /** Kernel primitive: apply a pure tree-mutation to the window layout with point persist/restore
+   *  bracketed around it. Re-selects a surviving leaf if `fn` deleted the selected one. lisp/ uses
+   *  this to build split/delete/balance commands without the kernel owning each wrapper. */
+  mutateWindowLayout(fn: (layout: WindowNode) => WindowNode, reason?: string): void {
+    this.persistSelectedWindowPoint()
+    this.windowLayout = fn(this._windowLayout)
+    if (!findWindowLeaf(this._windowLayout, this.selectedWindowId)) {
+      this.selectedWindowId = listWindowLeaves(this._windowLayout)[0]!.id
+    }
+    this.currentBufferId = findWindowLeaf(this._windowLayout, this.selectedWindowId)!.bufferId
+    this.restoreSelectedWindowPoint()
+    if (reason) void this.changed(reason)
   }
 
   private persistSelectedWindowPoint(): void {
@@ -302,21 +304,6 @@ export class Editor {
   setSelectedWindowDedicated(dedicated: boolean): void {
     this.windowLayout = setWindowLeafDedicated(this.windowLayout, this.selectedWindowId, dedicated)
     void this.changed("set-window-dedicated")
-  }
-
-  scrollOtherWindow(delta = 1): boolean {
-    const leaves = listWindowLeaves(this.windowLayout)
-    if (leaves.length <= 1) return false
-    const otherId = nextWindowId(this.windowLayout, this.selectedWindowId, 1)
-    const leaf = findWindowLeaf(this.windowLayout, otherId)
-    if (!leaf) return false
-    const buffer = this.buffers.get(leaf.bufferId)
-    const lineCount = buffer ? buffer.text.split("\n").length : 1
-    const maxStart = Math.max(0, lineCount - 1)
-    const lines = pageScrollLines() * delta
-    this.windowLayout = scrollWindowLeaf(this.windowLayout, otherId, lines, maxStart)
-    void this.changed("scroll-other-window")
-    return true
   }
 
   displayBufferInOtherWindow(idOrName: string): BufferModel {
@@ -426,51 +413,30 @@ export class Editor {
     return found
   }
 
-  previousBuffer(): BufferModel {
-    const values = [...this.buffers.values()].filter(b => b.kind !== "minibuffer")
-    const i = values.findIndex(b => b.id === this.currentBufferId)
-    const previous = values[(i - 1 + values.length) % values.length]!
-    this.setSelectedWindowBuffer(previous.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = previous.id
-    void this.changed("previous-buffer")
-    return previous
-  }
-
-  async openFile(path: string): Promise<BufferModel> {
-    const full = resolve(path)
+  /** Visit a path: reuse an existing buffer, else create one via `make`. The factory is what
+   *  decouples the kernel from modes/ — lisp/files.ts passes `makeDiredBuffer` for directories. */
+  async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string): Promise<BufferModel> {
     const existing = [...this.buffers.values()].find(b => b.path === full)
     if (existing) return this.switchToBuffer(existing.id)
-    const info = await stat(full).catch(() => null)
-    if (info?.isDirectory()) return this.openDirectory(full)
-    const buffer = await BufferModel.fromFile(full)
+    const buffer = await make(full)
     this.addBuffer(buffer)
     this.lsp?.attachBuffer(buffer)
     this.setSelectedWindowBuffer(buffer.id)
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
-    this.enterMode(buffer, buffer.mode)
-    await this.changed("open-file")
+    this.enterMode(buffer, mode ?? buffer.mode)
+    await this.changed("visit-path")
     await this.runHook("find-file-hook", buffer)
-    const autoSave = this.autoSavePath(buffer)
-    if (autoSave && await fileExists(autoSave)) {
-      const autoMtime = (await stat(autoSave).catch(() => null))?.mtimeMs ?? 0
-      if (!info || autoMtime > info.mtimeMs) {
-        this.message(`${this.bufferDisplayName(buffer)} has auto save data; consider M-x recover-this-file`)
-      }
-    }
     return buffer
   }
 
-  async openDirectory(path: string): Promise<BufferModel> {
+  async openFile(path: string): Promise<BufferModel> {
     const full = resolve(path)
-    const existing = [...this.buffers.values()].find(b => b.path === full && b.kind === "directory")
-    if (existing) return this.switchToBuffer(existing.id)
-    const buffer = await makeDiredBuffer(full)
-    this.addBuffer(buffer)
-    this.setSelectedWindowBuffer(buffer.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
-    this.enterMode(buffer, "dired")
-    await this.changed("open-directory")
-    return buffer
+    if ((await stat(full).catch(() => null))?.isDirectory()) return this.openDirectory(full)
+    return this.visitPath(full, BufferModel.fromFile)
+  }
+
+  async openDirectory(path: string): Promise<BufferModel> {
+    return this.visitPath(resolve(path), makeDiredBuffer, "dired")
   }
 
   scratch(name: string, text = "", mode = "text"): BufferModel {
@@ -588,7 +554,6 @@ export class Editor {
     if (typeof spec.interactive === "string" && !runArgs.length) {
       runArgs = await readInteractiveArgs(this, spec.interactive)
     }
-    this.thisCommand = name
     const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, keyEvent }
     const result = await invokeWithAdvice(name, spec.fn, ctx)
     await this.runHook("post-command-hook", this.activeBuffer)
@@ -597,15 +562,6 @@ export class Editor {
   }
 
   async handleKey(key: KeyEventLike): Promise<KeyDispatchResult> {
-    const result = await this.dispatchKey(key)
-    if ((result.status === "command" || result.status === "inserted")
-      && ++this.autoSaveKeystrokes >= (getCustom<number>("auto-save-keystroke-interval") ?? 300)) {
-      void this.doAutoSave()
-    }
-    return result
-  }
-
-  private async dispatchKey(key: KeyEventLike): Promise<KeyDispatchResult> {
     this.lastKeyEvent = key
 
     if (this.isearch) {
@@ -773,41 +729,39 @@ export class Editor {
     void this.changed("theme")
   }
 
-  splitWindowBelow(): void {
-    this.persistSelectedWindowPoint()
-    const buffer = this.currentBuffer
-    const startLine = this.lineAtPoint(buffer.point)
-    const result = splitWindowLeaf(this.windowLayout, this.selectedWindowId, "vertical", buffer.id, buffer.point)
-    this.windowLayout = setWindowLeafStartLine(result.layout, result.newWindowId, startLine)
-    this.selectedWindowId = result.newWindowId
-    this.restoreSelectedWindowPoint()
-    void this.changed("split-window-below")
-  }
+  splitWindowBelow(): void { this.splitSelectedWindow("vertical") }
+  splitWindowRight(): void { this.splitSelectedWindow("horizontal") }
 
-  splitWindowRight(): void {
-    this.persistSelectedWindowPoint()
+  private splitSelectedWindow(orientation: "vertical" | "horizontal"): void {
     const buffer = this.currentBuffer
     const startLine = this.lineAtPoint(buffer.point)
-    const result = splitWindowLeaf(this.windowLayout, this.selectedWindowId, "horizontal", buffer.id, buffer.point)
-    this.windowLayout = setWindowLeafStartLine(result.layout, result.newWindowId, startLine)
-    this.selectedWindowId = result.newWindowId
-    this.restoreSelectedWindowPoint()
-    void this.changed("split-window-right")
+    let newId = this.selectedWindowId
+    this.mutateWindowLayout(layout => {
+      const r = splitWindowLeaf(layout, this.selectedWindowId, orientation, buffer.id, buffer.point)
+      newId = r.newWindowId
+      return setWindowLeafStartLine(r.layout, newId, startLine)
+    })
+    this.selectedWindowId = newId
+    void this.changed(`split-window-${orientation === "vertical" ? "below" : "right"}`)
   }
 
   deleteOtherWindows(): void {
     if (listWindowLeaves(this.windowLayout).length <= 1) return
-    this.persistSelectedWindowPoint()
-    this.windowLayout = deleteOtherWindowLeaves(this.windowLayout, this.selectedWindowId)
-    this.restoreSelectedWindowPoint()
-    void this.changed("delete-other-windows")
+    this.mutateWindowLayout(layout => deleteOtherWindowLeaves(layout, this.selectedWindowId), "delete-other-windows")
   }
 
   balanceWindows(): void {
-    this.persistSelectedWindowPoint()
-    this.windowLayout = balanceWindowTree(this.windowLayout)
-    this.restoreSelectedWindowPoint()
-    void this.changed("balance-windows")
+    this.mutateWindowLayout(balanceWindowTree, "balance-windows")
+  }
+
+  deleteWindow(): void {
+    if (listWindowLeaves(this.windowLayout).length <= 1) return
+    const next = nextWindowId(this.windowLayout, this.selectedWindowId, 1)
+    this.mutateWindowLayout(layout => {
+      const result = deleteWindowLeaf(layout, this.selectedWindowId) ?? layout
+      this.selectedWindowId = findWindowLeaf(result, next) ? next : listWindowLeaves(result)[0]!.id
+      return result
+    }, "delete-window")
   }
 
   killBuffer(idOrName?: string): BufferModel | null {
@@ -847,8 +801,7 @@ export class Editor {
 
   startAutoSave(): void {
     if (this.autoSaveTimer) return
-    const seconds = getCustom<number>("auto-save-interval") ?? 30
-    this.autoSaveTimer = setInterval(() => void this.doAutoSave(), seconds * 1000)
+    this.autoSaveTimer = setInterval(() => void this.doAutoSave(), 30_000)
   }
 
   stopAutoSave(): void {
@@ -856,9 +809,8 @@ export class Editor {
     this.autoSaveTimer = null
   }
 
-  /** Write `#file#` for every dirty file-visiting buffer; called by timer and keystroke threshold. */
+  /** Write `#file#` for every dirty file-visiting buffer. */
   async doAutoSave(): Promise<number> {
-    this.autoSaveKeystrokes = 0
     let written = 0
     for (const buffer of this.buffers.values()) {
       if (!buffer.dirty) continue
@@ -903,34 +855,6 @@ export class Editor {
     buffer.setText(recovered, true)
     this.message(`Recovered ${this.bufferDisplayName(buffer)} from auto-save file`)
     return true
-  }
-
-  recenterTopBottom(): void {
-    const leaf = this.selectedWindowLeaf()
-    if (!leaf) return
-    const buffer = this.currentBuffer
-    const page = pageScrollLines()
-    const lineIdx = buffer.lineCol().line - 1
-    const targetStart =
-      this.recenterCycle === 0 ? Math.max(0, lineIdx - Math.floor(page / 2))
-      : this.recenterCycle === 1 ? lineIdx
-      : Math.max(0, lineIdx - page + 1)
-    this.windowLayout = setWindowLeafStartLine(this.windowLayout, leaf.id, targetStart)
-    this.recenterCycle = (this.recenterCycle + 1) % 3
-    void this.changed("recenter-top-bottom")
-  }
-
-  deleteWindow(): void {
-    if (listWindowLeaves(this.windowLayout).length <= 1) return
-    this.persistSelectedWindowPoint()
-    const next = nextWindowId(this.windowLayout, this.selectedWindowId, 1)
-    const layout = deleteWindowLeaf(this.windowLayout, this.selectedWindowId)
-    if (!layout) return
-    this.windowLayout = layout
-    this.selectedWindowId = findWindowLeaf(layout, next) ? next : listWindowLeaves(layout)[0]!.id
-    this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
-    this.restoreSelectedWindowPoint()
-    void this.changed("delete-window")
   }
 
   private consumePrefixArgument(): number | null {
@@ -1239,7 +1163,6 @@ export class Editor {
 
   quit(): void {
     this.running = false
-    this.stopAutoSave()
     void this.changed("quit")
   }
 

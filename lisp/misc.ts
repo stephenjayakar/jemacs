@@ -107,7 +107,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("apropos-command", async ({ editor, args }) => {
     const pattern = args[0] ?? await editor.prompt("Apropos: ", "", "apropos")
     if (!pattern) return
-    const re = new RegExp(pattern, "i")
+    let re: RegExp
+    try {
+      re = new RegExp(pattern, "i")
+    } catch (err) {
+      editor.message(`Invalid regexp: ${(err as SyntaxError).message}`)
+      return
+    }
     const lines = editor.commands.entries()
       .filter(c => re.test(c.name) || re.test(c.description ?? ""))
       .map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)

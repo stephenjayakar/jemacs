@@ -3,6 +3,8 @@ import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "../plugins/helper"
+import { install as installAutoSave } from "../../plugins/auto-save"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { Editor } from "../../src/kernel/editor"
 
 // t-ec98fca4: kill-buffer falls back to *scratch* (insertion-order head) instead
@@ -11,13 +13,16 @@ import type { Editor } from "../../src/kernel/editor"
 
 let dir: string
 let editor: Editor
+let ctx: PluginContext
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "jemacs-t-ec98fca4-"))
   editor = makeEditor()
+  installAutoSave(editor, ctx = createPluginContext(editor))
 })
 
 afterEach(async () => {
+  ctx.dispose()
   editor.stopAutoSave()
   await rm(dir, { recursive: true, force: true })
 })

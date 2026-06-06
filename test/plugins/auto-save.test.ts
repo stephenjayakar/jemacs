@@ -7,20 +7,24 @@ import { install } from "../../plugins/auto-save"
 import { setCustom } from "../../src/runtime/custom"
 import { clearHooks } from "../../src/kernel/hooks"
 import { clearAdvice } from "../../src/runtime/advice"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { fileExists, readFileText } from "../../src/platform/runtime"
 import type { Editor } from "../../src/kernel/editor"
 
 let dir: string
 let editor: Editor
+let ctx: PluginContext | undefined
 
 beforeEach(async () => {
   clearHooks()
   clearAdvice()
   dir = await mkdtemp(join(tmpdir(), "jemacs-autosave-"))
   editor = makeEditor()
+  ctx = undefined
 })
 
 afterEach(async () => {
+  ctx?.dispose()
   editor.stopAutoSave()
   clearHooks()
   clearAdvice()
@@ -85,6 +89,7 @@ describe("auto-save", () => {
 
   test("keystroke threshold triggers auto-save via handleKey", async () => {
     setCustom("auto-save-keystroke-interval", 3)
+    install(editor, ctx = createPluginContext(editor))
     const path = join(dir, "k.txt")
     await writeFile(path, "")
     await editor.openFile(path)
@@ -98,7 +103,7 @@ describe("auto-save", () => {
   })
 
   test("after-save-hook deletes #file# on successful save", async () => {
-    install(editor)
+    install(editor, ctx = createPluginContext(editor))
     // Reinstall save-hooks advice since clearHooks/clearAdvice ran after makeEditor.
     const { install: installSaveHooks } = await import("../../plugins/save-hooks")
     installSaveHooks(editor)
@@ -154,14 +159,13 @@ describe("auto-save", () => {
 
   test("startAutoSave timer fires doAutoSave", async () => {
     setCustom("auto-save-interval", 0.02)
+    install(editor, ctx = createPluginContext(editor))
     const path = join(dir, "t.txt")
     await writeFile(path, "")
     const buf = await editor.openFile(path)
     buf.insert("hi")
-    editor.startAutoSave()
     const ok = await waitFor(() => fileExists(join(dir, "#t.txt#")), 500)
     expect(ok).toBe(true)
-    editor.stopAutoSave()
   })
 
   test("autoSavePath is null for non-file buffers", () => {

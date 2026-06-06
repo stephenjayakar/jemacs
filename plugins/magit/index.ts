@@ -621,8 +621,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await refresh(editor, root, next ? lineToPoint(status.text, next.startLine) : buffer.point)
   }, "Toggle folding of the diff body for the file at point.")
 
-  editor.command("magit-bury-buffer", ({ editor }) => {
-    editor.previousBuffer()
+  editor.command("magit-bury-buffer", async ({ editor }) => {
+    await editor.run("previous-buffer")
   }, "Bury the Magit status buffer.")
 
   editor.key("C-x g", "magit-status")

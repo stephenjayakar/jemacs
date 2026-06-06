@@ -121,9 +121,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("compile-goto-error", async ({ editor, buffer }) => {
     const dir = (buffer.locals.get("default-directory") as string | undefined) ?? process.cwd()
-    const lineIndex = buffer.lineCol().line - 1
-    const stored = buffer.locals.get("next-error-locations") as ErrorLocation[] | undefined
-    let loc = stored?.[lineIndex]
+    const line = buffer.lineCol().line
+    // Buffers like *compilation* have header/noise lines, so buffer-line ≠ locations index;
+    // producers store a Map keyed by buffer line. Array is the legacy dense (no-header) shape.
+    const stored = buffer.locals.get("next-error-locations") as
+      | Map<number, ErrorLocation>
+      | ErrorLocation[]
+      | undefined
+    let loc = stored instanceof Map ? stored.get(line) : stored?.[line - 1]
     if (!loc) {
       const { text } = buffer.lineBoundsAt()
       const m = GREP_LINE.exec(text)
@@ -166,7 +171,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const buf = editor.scratch("*grep*", text || "No matches\n", "grep")
     buf.kind = "grep"
     buf.locals.set("default-directory", cwd)
-    buf.locals.set("next-error-locations", locations)
+    const byLine = new Map<number, ErrorLocation>()
+    let li = 0, i = 0
+    for (const raw of text.split("\n")) {
+      li++
+      if (GREP_LINE.test(raw)) byLine.set(li, locations[i++]!)
+    }
+    buf.locals.set("next-error-locations", byLine)
     editor.message(locations.length ? `Found ${locations.length} matches` : "No matches")
   }, "Search the project with ripgrep and populate the location list.")
 
