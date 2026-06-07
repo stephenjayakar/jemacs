@@ -168,6 +168,27 @@ describe("vertico-exit-input", () => {
   })
 })
 
+describe("vertico refresh after minibuffer edits", () => {
+  test("forward deletion recomputes candidates like vertico post-command update", async () => {
+    const { editor, result } = await open(["alpha", "beta"])
+
+    await editor.handleKey({ name: "a", sequence: "a" })
+    expect(display(editor)).toContain("1/1")
+    expect(display(editor)).toContain("> alpha")
+    expect(display(editor)).not.toContain("beta")
+
+    await editor.run("backward-char")
+    await editor.run("delete-char")
+    expect(editor.minibufferInput()).toBe("")
+    expect(display(editor)).toContain("1/2")
+    expect(display(editor)).toContain("> beta")
+    expect(display(editor)).toContain("alpha")
+
+    editor.minibufferCancel()
+    await result
+  })
+})
+
 describe("vertico-save", () => {
   test("populates *Vertico Completions* with current candidates", async () => {
     const { editor, result } = await open(["alpha", "gamma", "delta"])

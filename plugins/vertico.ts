@@ -11,6 +11,12 @@ type VerticoState = {
   groups: string[]
   displayCandidates: string[]
   exitInput: boolean
+  input: VerticoInput | null
+}
+
+type VerticoInput = {
+  text: string
+  point: number
 }
 
 const states = new WeakMap<Editor, VerticoState>()
@@ -52,6 +58,12 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   if (installedEditors.has(editor)) return
   installedEditors.add(editor)
+
+  ctx.hook("post-command-hook", async ({ editor: ed }) => {
+    if (!ed.minibuffer || !ed.isMinorModeEnabled("vertico-mode") || !isCompletionPrompt(ed)) return
+    const state = states.get(ed)
+    if (!sameInput(state?.input ?? null, currentInput(ed))) await verticoRefresh(ed)
+  })
 
   editor.command("vertico-mode", ({ editor, prefixArgument }) => {
     if (prefixArgument === 1) editor.enableMinorMode("vertico-mode")
@@ -114,17 +126,19 @@ async function verticoRefresh(editor: Editor): Promise<void> {
     editor.minibufferCompletionDisplay = null
     return
   }
-  const input = editor.activeBuffer.text
+  const inputState = currentInput(editor)
+  const input = inputState.text
   const fileCompletion = request.completion === "file"
   const candidates = request.completion === "file"
     ? await fileCompletionCandidates(input, request.fileCompletionDirectory ?? process.cwd())
     : request.collection ?? []
-  if (editor.minibuffer !== request) return
+  if (editor.minibuffer !== request || !sameInput(inputState, currentInput(editor))) return
   const state = ensureState(editor)
   state.candidates = sortCandidates(filterCandidates(editor, candidates, input, fileCompletion))
   state.displayCandidates = state.candidates.map(candidate => displayCandidate(candidate, input, fileCompletion))
   state.groups = state.candidates.map(candidate => candidateGroup(candidate, fileCompletion))
   state.exitInput = false
+  state.input = inputState
   const preselectPrompt = shouldPreselectPrompt(editor, input, fileCompletion)
   if (state.candidates.length === 0) state.index = promptAllowed(editor) ? -1 : 0
   else if (preselectPrompt) state.index = -1
@@ -255,10 +269,19 @@ function showVerticoCompletions(editor: Editor, state: VerticoState): void {
 function ensureState(editor: Editor): VerticoState {
   let state = states.get(editor)
   if (!state) {
-    state = { candidates: [], index: firstCandidateIndex(editor), scroll: 0, groups: [], displayCandidates: [], exitInput: false }
+    state = { candidates: [], index: firstCandidateIndex(editor), scroll: 0, groups: [], displayCandidates: [], exitInput: false, input: null }
     states.set(editor, state)
   }
   return state
+}
+
+function currentInput(editor: Editor): VerticoInput {
+  const text = editor.minibufferInput()
+  return { text, point: Math.min(editor.activeBuffer.point, text.length) }
+}
+
+function sameInput(a: VerticoInput | null, b: VerticoInput): boolean {
+  return !!a && a.text === b.text && a.point === b.point
 }
 
 function filterCandidates(editor: Editor, candidates: string[], input: string, fileCompletion: boolean): string[] {
