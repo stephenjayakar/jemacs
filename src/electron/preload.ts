@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld("jemacs", {
     ipcRenderer.on("jemacs:display", listener)
     return () => ipcRenderer.removeListener("jemacs:display", listener)
   },
+  onTerminalData(handler: (payload: unknown) => void): () => void {
+    const listener = (_event: unknown, payload: unknown) => handler(payload)
+    ipcRenderer.on("jemacs:terminal-data", listener)
+    return () => ipcRenderer.removeListener("jemacs:terminal-data", listener)
+  },
   sendInput(payload: unknown): void {
     ipcRenderer.send("jemacs:input", payload)
   },

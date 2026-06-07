@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import type { SerializedDisplayModel, SerializedThemedText, SerializedWindowNode } from "./serialize"
+import type { SerializedDisplayModel, SerializedPane, SerializedThemedText, SerializedWindowNode } from "./serialize"
 import type { TerminalCell, TerminalSurfaceModel } from "./terminal-surface"
 
 export type SerializedChunk = SerializedThemedText["chunks"][number]
@@ -54,10 +54,14 @@ export function renderThemedText(
 }
 
 export type DomFrameMouseHandler = (windowId: string, row: number, col: number) => void
+export type DomTerminalRenderer = {
+  mount(body: HTMLElement, pane: SerializedPane, theme?: SerializedDisplayModel["theme"]): boolean
+}
 
 export function renderWindows(
   node: SerializedWindowNode,
   onMouse?: DomFrameMouseHandler,
+  terminalRenderer?: DomTerminalRenderer,
   grow = 1,
   theme?: SerializedDisplayModel["theme"],
 ): HTMLElement {
@@ -90,7 +94,7 @@ export function renderWindows(
     if (node.pane.terminalSurface) {
       body.style.setProperty("--jemacs-terminal-row-px", `${rowPx}px`)
       body.style.setProperty("--jemacs-terminal-col-px", `${colPx}px`)
-      renderTerminalSurface(body, node.pane.terminalSurface)
+      if (!terminalRenderer?.mount(body, node.pane, theme)) renderTerminalSurface(body, node.pane.terminalSurface)
     }
     else renderThemedText(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
     body.addEventListener("mousedown", event => sendMouse(event, body))
@@ -112,7 +116,10 @@ export function renderWindows(
   split.className = node.direction === "vertical" ? "split-col" : "split-row"
   split.style.flexGrow = String(Math.max(0.05, grow))
   const firstRatio = node.firstRatio ?? 0.5
-  split.append(renderWindows(node.first, onMouse, firstRatio, theme), renderWindows(node.second, onMouse, 1 - firstRatio, theme))
+  split.append(
+    renderWindows(node.first, onMouse, terminalRenderer, firstRatio, theme),
+    renderWindows(node.second, onMouse, terminalRenderer, 1 - firstRatio, theme),
+  )
   return split
 }
 
@@ -155,13 +162,14 @@ export function presentDomFrame(
   targets: DomFrameTargets,
   model: SerializedDisplayModel,
   onMouse?: DomFrameMouseHandler,
+  terminalRenderer?: DomTerminalRenderer,
 ): void {
   applyThemeSurfaces(targets, model)
   const defaultFace = model.theme.faces.default
   const titleFace = model.theme.faces.title ?? defaultFace
   const defaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
   renderThemedText(targets.title, model.title, { defaultFontPx: defaultPx })
-  targets.windows.replaceChildren(renderWindows(model.windows, onMouse, 1, model.theme))
+  targets.windows.replaceChildren(renderWindows(model.windows, onMouse, terminalRenderer, 1, model.theme))
   if (targets.minibufferCompletions) {
     renderThemedText(targets.minibufferCompletions, model.minibufferCompletions, { defaultFontPx: defaultPx })
     targets.minibufferCompletions.style.display = model.minibufferCompletionLines > 0 ? "" : "none"

@@ -9,6 +9,10 @@ html, body { margin: 0; height: 100%; font-size: 14px; background: #1e1e1e; colo
 .window-pane.selected { border-color: #264f78; }
 .window-body { flex: 1; overflow: auto; padding: 4px 8px; white-space: pre; line-height: 1.35; }
 .window-body.terminal-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
+.window-body.xterm-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
+.xterm-pane { width: 100%; height: 100%; overflow: hidden; }
+.xterm-pane .xterm { height: 100%; padding: 0; }
+.xterm-pane .xterm-viewport { overflow-y: hidden !important; }
 .terminal-row { height: var(--jemacs-terminal-row-px, 18px); line-height: var(--jemacs-terminal-row-px, 18px); white-space: pre; }
 .terminal-row span { display: inline-block; width: var(--jemacs-terminal-col-px, 9px); height: var(--jemacs-terminal-row-px, 18px); line-height: var(--jemacs-terminal-row-px, 18px); overflow: hidden; }
 .terminal-cursor { color: #1e1e1e; background: #d4d4d4; }

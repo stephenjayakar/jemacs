@@ -410,6 +410,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     attachSession(buffer, session)
     updateTerminalSurface(buffer, session)
     pty.onData(chunk => {
+      void editor.events.emit("terminalData", { bufferId: buffer.id, data: chunk })
       feed(session, buffer, chunk)
       // Anchor the redraw to the (async) mirror instead of voiding it; the
       // next chunk's feed() then waits for this changed() to settle too.

@@ -6,6 +6,7 @@ import type {
   InputHandler,
   NormalizedInput,
   ResizeHandler,
+  TerminalData,
   UiHost,
 } from "../display/protocol"
 import { contentAreaLines, defaultTerminalRows, type ViewportSize } from "../display/viewport"
@@ -23,6 +24,7 @@ export class ElectronHost implements UiHost {
     osc52: false,
     perFaceFonts: true,
     terminalSurfaces: true,
+    terminalRawStreams: true,
   }
 
   private window: BrowserWindow | null = null
@@ -81,6 +83,11 @@ export class ElectronHost implements UiHost {
   present(model: DisplayModel): void {
     this.lastDisplay = serializeDisplayModel(model)
     this.pushDisplay(model.hostLabel)
+  }
+
+  sendTerminalData(payload: TerminalData): void {
+    if (!this.window?.webContents || !this.rendererReady) return
+    this.window.webContents.send("jemacs:terminal-data", payload)
   }
 
   private pushDisplay(title?: string): void {

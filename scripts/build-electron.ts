@@ -70,6 +70,7 @@ if (!preview.success) throw new Error(preview.logs.join("\n"))
 
 await cp(path.join(root, "src/electron/renderer.html"), path.join(out, "renderer.html"))
 await cp(path.join(root, "src/electron/renderer.css"), path.join(out, "renderer.css"))
+await cp(path.join(root, "node_modules/@xterm/xterm/css/xterm.css"), path.join(out, "xterm.css"))
 await cp(path.join(root, "src/electron/gui-preview.html"), path.join(out, "gui-preview.html"))
 await cp(path.join(root, "src/electron/bootstrap.mjs"), path.join(out, "bootstrap.mjs"))
 await cp(path.join(root, "src/electron/ts-loader-hook.mjs"), path.join(out, "ts-loader-hook.mjs"))

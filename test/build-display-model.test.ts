@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { buildDisplayModel } from "../src/display/build-display-model"
+import { TERMINAL_SURFACE_LOCAL, type TerminalSurfaceModel } from "../src/display/terminal-surface"
 import { themedTextPlain } from "../src/display/themed-text"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig } from "../src/config"
@@ -43,6 +44,39 @@ test("buildDisplayModel uses theme from editor", () => {
   editor.setTheme(defaultTheme)
   expect(buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24 } }).theme.name)
     .toBe(defaultTheme.name)
+})
+
+test("buildDisplayModel sends terminal metadata only when host consumes raw streams", () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  const buffer = editor.scratch("terminal", "", "text")
+  const surface: TerminalSurfaceModel = {
+    kind: "terminal",
+    rows: 20,
+    cols: 80,
+    cursorRow: 0,
+    cursorCol: 0,
+    cells: [[{ text: "x", fg: "#ff0000" }]],
+  }
+  buffer.locals.set(TERMINAL_SURFACE_LOCAL, surface)
+
+  const model = buildDisplayModel(editor, {
+    lastMessage: "",
+    viewport: { rows: 24, cols: 80 },
+    hostCapabilities: {
+      unit: "pixels",
+      mouse: true,
+      clipboard: true,
+      osc52: false,
+      terminalSurfaces: true,
+      terminalRawStreams: true,
+    },
+  })
+  const leaf = model.windows.kind === "leaf" ? model.windows.pane : null
+  expect(leaf?.terminalSurface).toMatchObject({ rows: 20, cols: 80, cursorRow: 0, cursorCol: 0 })
+  expect(leaf?.terminalSurface?.cells).toEqual([])
+  expect(themedTextPlain(leaf!.body)).toBe("")
 })
 
 test("buildDisplayModel body chunks include customized default face font attrs", () => {

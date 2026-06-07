@@ -66,6 +66,13 @@ export type HostCapabilities = {
   perFaceFonts?: boolean
   /** When true, the host has a terminal-grid path instead of only plain text. */
   terminalSurfaces?: boolean
+  /** When true, terminal panes can render raw PTY streams and only need surface metadata. */
+  terminalRawStreams?: boolean
+}
+
+export type TerminalData = {
+  bufferId: string
+  data: string
 }
 
 export type NormalizedInput =
@@ -83,6 +90,7 @@ export interface UiHost {
   start(): Promise<void>
   destroy(): void
   present(model: DisplayModel): void
+  sendTerminalData?(payload: TerminalData): void
   getViewport(): ViewportSize
   onInput(handler: InputHandler): void
   onResize(handler: ResizeHandler): void

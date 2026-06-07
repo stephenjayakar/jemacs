@@ -24,5 +24,6 @@ function terminalCtor(): TerminalCtor {
 
 export function makeXTerm(rows: number, cols: number): Terminal {
   const TerminalClass = terminalCtor()
-  return new TerminalClass({ rows, cols, allowProposedApi: true, scrollback: 10_000 })
+  const options = { rows, cols, allowProposedApi: true, scrollback: 10_000 } as ITerminalOptions & { rows: number; cols: number }
+  return new TerminalClass(options)
 }

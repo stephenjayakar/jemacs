@@ -212,6 +212,7 @@ export class JTermSession {
    *  a setTimeout internally) — we don't await it; the onParsed callback
    *  fires on a later microtask. */
   private feedChunk(chunk: string): void {
+    void this.editor.events.emit("terminalData", { bufferId: this.buffer.id, data: chunk })
     this.replyToTerminalQueries(chunk)
     this.pendingChunks.push(chunk)
     if (this.feedScheduled) return

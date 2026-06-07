@@ -75,6 +75,9 @@ export async function runJemacsCore(editor: Editor, host: UiHost): Promise<Jemac
 
   host.onInput(binding.onInput)
   host.onResize(() => binding.present())
+  editor.events.on("terminalData", payload => {
+    host.sendTerminalData?.(payload)
+  })
 
   let scheduled = false
   editor.events.on("changed", () => {

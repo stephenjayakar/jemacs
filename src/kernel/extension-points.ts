@@ -39,6 +39,7 @@ export type TextSpan = {
   start: number
   end: number
   face: FaceName
+  style?: FaceStyle
 }
 
 export type CompletionCandidate = {

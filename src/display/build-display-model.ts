@@ -179,13 +179,14 @@ function buildLeafPane(
   const terminalSurface = terminalSurfaceFor(buffer, maxLines, availableCols)
   if (terminalSurface) {
     const modelineText = terminalModelineText(editor, buffer, dirty, leaf.dedicated)
+    const surface = hostCapabilities?.terminalRawStreams ? terminalSurfaceMetadata(terminalSurface) : terminalSurface
     return {
       id: leaf.id,
       bufferId: leaf.bufferId,
       selected,
       dedicated: leaf.dedicated,
-      body: terminalSurfaceToThemedText(terminalSurface),
-      terminalSurface,
+      body: hostCapabilities?.terminalRawStreams ? plainThemedText("") : terminalSurfaceToThemedText(terminalSurface),
+      terminalSurface: surface,
       modeline: applyTheme(modelineText, [{
         start: 0,
         end: modelineText.length,
@@ -302,6 +303,17 @@ function terminalSurfaceFor(buffer: BufferModel, rows: number, cols?: number): T
   if (surface.rows !== rows) return undefined
   if (cols != null && surface.cols !== cols) return undefined
   return surface
+}
+
+function terminalSurfaceMetadata(surface: TerminalSurfaceModel): TerminalSurfaceModel {
+  return {
+    kind: "terminal",
+    rows: surface.rows,
+    cols: surface.cols,
+    cursorRow: surface.cursorRow,
+    cursorCol: surface.cursorCol,
+    cells: [],
+  }
 }
 
 function syncWindowBodyGeometry(editor: Editor, buffer: BufferModel, rows: number, cols?: number): void {

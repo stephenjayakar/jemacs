@@ -6,13 +6,10 @@
       "name": "jemacs-opentui",
       "dependencies": {
         "@opentui/core": "^0.3.0",
-        "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
+        "@xterm/addon-webgl": "^0.19.0",
         "@xterm/headless": "^6.0.0",
+        "@xterm/xterm": "^6.0.0",
         "tree-sitter": "^0.25.0",
-        "tree-sitter-html": "^0.23.2",
-        "tree-sitter-java": "^0.23.5",
-        "tree-sitter-javascript": "^0.25.0",
-        "tree-sitter-python": "^0.25.0",
         "vscode-languageserver-protocol": "3.17.5",
         "vscode-languageserver-types": "3.17.5",
       },
@@ -21,6 +18,13 @@
         "electron": "^35.0.0",
         "typescript": "^5.9.0",
         "typescript-language-server": "^4.3.4",
+      },
+      "optionalDependencies": {
+        "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
+        "tree-sitter-html": "^0.23.2",
+        "tree-sitter-java": "^0.23.5",
+        "tree-sitter-javascript": "^0.25.0",
+        "tree-sitter-python": "^0.25.0",
       },
     },
     "packages/host-electron": {
@@ -46,8 +50,8 @@
   "trustedDependencies": [
     "tree-sitter-java",
     "@tree-sitter-grammars/tree-sitter-markdown",
-    "tree-sitter",
     "tree-sitter-python",
+    "tree-sitter",
     "tree-sitter-html",
     "tree-sitter-javascript",
   ],
@@ -94,7 +98,11 @@
 
     "@types/yauzl": ["@types/yauzl@2.10.3", "", { "dependencies": { "@types/node": "*" } }, "sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q=="],
 
+    "@xterm/addon-webgl": ["@xterm/addon-webgl@0.19.0", "", {}, "sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A=="],
+
     "@xterm/headless": ["@xterm/headless@6.0.0", "", {}, "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw=="],
+
+    "@xterm/xterm": ["@xterm/xterm@6.0.0", "", {}, "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg=="],
 
     "ansi-regex": ["ansi-regex@6.2.2", "", {}, "sha512-Bq3SmSpyFHaWjPk8If9yc6svM8c56dB5BAtW4Qbw5jHTwwXXcTLoRMkpDJp6VL0XzlWaCHTXrkFURMYmD0sLqg=="],
 
