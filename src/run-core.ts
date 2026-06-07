@@ -35,8 +35,17 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
       if (input.type === "key") {
         await editor.handleKey(input.key)
       } else if (input.type === "paste") {
-        editor.activeBuffer.insert(input.text)
-        await editor.changed("paste")
+        // Plugins (e.g. tui-term) can install a per-buffer paste handler via
+        // `buffer.locals.set("paste-handler", fn)`; returning truthy means the
+        // handler consumed the paste and the default buffer.insert is skipped.
+        const buf = editor.activeBuffer
+        const handler = buf.locals.get("paste-handler") as ((text: string) => unknown) | undefined
+        if (handler) {
+          await handler(input.text)
+        } else {
+          buf.insert(input.text)
+          await editor.changed("paste")
+        }
       } else if (input.type === "mouse") {
         const pane = findPaneInModel(lastModel.windows, input.windowId)
         const leaf = findWindowLeaf(editor.windowLayout, input.windowId)

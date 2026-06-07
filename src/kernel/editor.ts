@@ -815,6 +815,7 @@ export class Editor {
       if (tab.bufferId === target.id) tab.bufferId = fallbackId
     })
     if (this.currentBufferId === target.id) this.switchToBuffer(fallbackId)
+    void this.runHook("kill-buffer-hook", target)
     void this.changed("kill-buffer")
     return target
   }
