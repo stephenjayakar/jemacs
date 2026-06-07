@@ -17,6 +17,8 @@ export { surfaceChanged } from "./renderer"
 
 const PASTE_HANDLER_LOCAL = "paste-handler"
 const TUI_TERM_SESSION_LOCAL = "tui-term-session"
+const JTERM_MODE = "jterm-mode"
+const JTERM_MODE_MAP = "jterm-mode-map"
 
 /** Per-buffer WeakMap of session → editor. Kept independent of term-v2's
  *  `sessions` map so both plugins can coexist. */
@@ -45,7 +47,7 @@ async function spawnTerminalBuffer(editor: Editor, opts: {
   cwd?: string
   env?: Record<string, string>
 }): Promise<BufferModel> {
-  const buffer = editor.scratch(opts.name, "", "tui-term")
+  const buffer = editor.scratch(opts.name, "", JTERM_MODE)
   const { rows, cols } = bodyDims(buffer)
   const session = await spawnSession(editor, buffer, opts.argv, {
     cwd: opts.cwd,
@@ -72,9 +74,9 @@ async function spawnTerminalBuffer(editor: Editor, opts: {
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   // Idempotent re-install: keep an already-registered keymap so a second
   // install() (tests, plugin reload) preserves any extra bindings.
-  const tuiTermMap = getMode("tui-term")?.keymap ?? new Keymap("tui-term-map")
+  const tuiTermMap = getMode(JTERM_MODE)?.keymap ?? new Keymap(JTERM_MODE_MAP)
   defineMode({
-    name: "tui-term",
+    name: JTERM_MODE,
     parent: "text",
     keymap: tuiTermMap,
   })
@@ -86,17 +88,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   for (const k of [...lower, ...lower.map(c => `S-${c}`), ..."0123456789", ...punct,
                    "space", "enter", "backspace", "tab", "up", "down", "left", "right",
                    "home", "end", "pageup", "pagedown", "insert", "delete"]) {
-    editor.defineKey("tui-term-map", k, "tui-term-send-raw")
+    editor.defineKey(JTERM_MODE_MAP, k, "tui-term-send-raw")
   }
-  editor.defineKey("tui-term-map", "C-c C-c", "tui-term-interrupt")
-  editor.defineKey("tui-term-map", "C-c C-k", "tui-term-kill")
-  editor.defineKey("tui-term-map", "C-c C-s", "tui-term-send-string")
-  editor.defineKey("tui-term-map", "C-c C-j", "tui-term-copy-mode")
-  editor.defineKey("tui-term-map", "C-c C-w", "tui-term-copy-mode")
-  editor.defineKey("tui-term-map", "C-c C-t", "tui-term-char-mode")
-  editor.defineKey("tui-term-map", "C-c C-y", "tui-term-yank")
-  editor.defineKey("tui-term-map", "C-c C-l", "tui-term-clear")
-  editor.defineKey("tui-term-map", "C-c C-r", "tui-term-reset")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-c", "tui-term-interrupt")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-k", "tui-term-kill")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-s", "tui-term-send-string")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-j", "tui-term-copy-mode")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-w", "tui-term-copy-mode")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-t", "tui-term-char-mode")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-y", "tui-term-yank")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-l", "tui-term-clear")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-r", "tui-term-reset")
 
   // Top-level entry points. We bind the most common ones to the global map
   // so users can M-x tui-term or just hit the key.

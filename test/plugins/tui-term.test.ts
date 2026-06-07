@@ -48,7 +48,7 @@ function feedAsync(s: TuiTermSession, _b: BufferModel, chunk: string): Promise<v
 }
 
 describe("tui-term: install wiring", () => {
-  test("registers Emacs-style commands and the tui-term mode keymap", () => {
+  test("registers Emacs-style commands and the jterm-mode keymap", () => {
     const editor = makeEditor()
     install(editor)
 
@@ -71,7 +71,7 @@ describe("tui-term: install wiring", () => {
     expect(editor.commands.get("tui-term-yank")).toBeDefined()
 
     // Mode is registered
-    const map = getMode("tui-term")?.keymap
+    const map = getMode("jterm-mode")?.keymap
     expect(map).toBeDefined()
     expect(map?.get("a")).toBe("tui-term-send-raw")
     expect(map?.get("C-c C-c")).toBe("tui-term-interrupt")
@@ -93,7 +93,7 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("char-mode sets read-only + raw keymap + paste-handler", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     const session = new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term")
     sessions.set(buffer, session)
@@ -108,7 +108,7 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("copy-mode clears read-only + raw keymap + paste-handler + surface", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     const session = new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term")
     sessions.set(buffer, session)
@@ -127,7 +127,7 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("keyboard-quit tears down the char-mode override", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     sessions.set(buffer, new TuiTermSession(editor, buffer, fakePty(), makeXTerm(4, 20), 4, 20, "tui-term"))
 
     await editor.run("tui-term-char-mode")
@@ -147,13 +147,29 @@ describe("tui-term: char-mode / copy-mode", () => {
     expect(buffer.readOnly).toBe(false)
     expect(editor.overridingTerminalLocalMap).toBeNull()
   })
+
+  test("real handleKey path sends typed keys to the pty in char-mode", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const pty = fakePty()
+    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+
+    await editor.run("tui-term-char-mode")
+    await editor.handleKey({ name: "l", sequence: "l" })
+    await editor.handleKey({ name: "s", sequence: "s" })
+    await editor.handleKey({ name: "return" })
+    await Promise.resolve()
+
+    expect(pty.sent).toBe("ls\r")
+  })
 })
 
 describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
   test("paste-handler installed by char-mode writes to the pty", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
 
@@ -169,7 +185,7 @@ describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
   test("paste-handler is a no-op (no insert) — the buffer is read-only", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
 
@@ -184,7 +200,7 @@ describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
   test("disabling bracketed-paste sends raw bytes", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
 
@@ -201,7 +217,7 @@ describe("tui-term: kill-emacs-hook and kill-buffer-hook", () => {
   test("kill-emacs-hook kills all live PTY processes", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     let killed = false
     pty.kill = () => { killed = true }
@@ -216,7 +232,7 @@ describe("tui-term: kill-emacs-hook and kill-buffer-hook", () => {
   test("kill-buffer-hook disposes the session for the killed buffer", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const pty = fakePty()
     let killed = false
     pty.kill = () => { killed = true }
@@ -310,13 +326,26 @@ describe("tui-term: VT parsing via @xterm/headless", () => {
     await feedAsync(session, buffer, "\x1b[2;2HXX")
     expect(buffer.text.split("\n")[1]).toBe("BXXBB")
   })
-  test("char-mode installs a surface with the correct shape", async () => {
+  test("normal shell output stays on the text mirror in char-mode", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "tui-term")
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
     const session = new TuiTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "tui-term")
     sessions.set(buffer, session)
     await feedAsync(session, buffer, "hi\r\nthere\r\n$ ")
+    await editor.run("tui-term-char-mode")
+    expect(buffer.locals.get(TERMINAL_SURFACE_LOCAL)).toBeUndefined()
+    expect(buffer.text).toContain("hi")
+    expect(buffer.text).toContain("there")
+  })
+
+  test("alternate-screen TUI output installs a terminal surface", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const session = new TuiTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "tui-term")
+    sessions.set(buffer, session)
+    await feedAsync(session, buffer, "\x1b[?1049hALT")
     await editor.run("tui-term-char-mode")
     const surface = buffer.locals.get(TERMINAL_SURFACE_LOCAL)
     expect(surface).toMatchObject({ kind: "terminal", rows: 3, cols: 6 })
