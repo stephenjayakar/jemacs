@@ -953,7 +953,7 @@ function installMarkdownCommands(editor: Editor): void {
       markdownOutdentLine(buffer)
       return
     }
-    if (buffer.point > line.start) buffer.deleteBackward()
+    if (buffer.point > 0) buffer.deleteBackward()
   }, "Outdent when only whitespace precedes point, else delete backward.")
 
   editor.command("markdown-indent-region", ({ buffer }) => {

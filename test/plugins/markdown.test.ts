@@ -262,3 +262,15 @@ describe("clear-whitespace-and-newline-and-indent", () => {
     expect(buffer.text).toBe("line with spaces\n")
   })
 })
+
+describe("markdown-outdent-or-delete", () => {
+  test("backspace on an empty line joins with the previous line", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "one\n\ntwo\n", "markdown")
+    buffer.point = "one\n".length
+    await keySeq(editor, "backspace")
+    expect(buffer.text).toBe("one\ntwo\n")
+    expect(buffer.point).toBe("one".length)
+  })
+})
