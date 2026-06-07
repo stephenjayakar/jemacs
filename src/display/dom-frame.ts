@@ -87,7 +87,11 @@ export function renderWindows(
     const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
     body.style.fontSize = `${bodyDefaultPx * textScale}px`
     body.style.lineHeight = String(DOM_FRAME_LINE_HEIGHT_RATIO)
-    if (node.pane.terminalSurface) renderTerminalSurface(body, node.pane.terminalSurface)
+    if (node.pane.terminalSurface) {
+      body.style.setProperty("--jemacs-terminal-row-px", `${rowPx}px`)
+      body.style.setProperty("--jemacs-terminal-col-px", `${colPx}px`)
+      renderTerminalSurface(body, node.pane.terminalSurface)
+    }
     else renderThemedText(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
     body.addEventListener("mousedown", event => sendMouse(event, body))
     pane.addEventListener("mousedown", event => {

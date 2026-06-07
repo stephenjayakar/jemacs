@@ -79,7 +79,7 @@ async function loadPtyModule(): Promise<PtyModule> {
 
 /** Per-buffer session. Owns the PTY, the headless xterm, the surface
  *  renderer, the write-coalescer, and the kill/resize lifecycle. */
-export class TuiTermSession {
+export class JTermSession {
   readonly pty: Pty
   readonly xt: XTermInstance
   readonly renderer: SurfaceRenderer
@@ -87,7 +87,7 @@ export class TuiTermSession {
   cols: number
   alive = true
   exitCode: number | null = null
-  /** True between tui-term-char-mode and tui-term-copy-mode. Controls whether
+  /** True between jterm-char-mode and jterm-copy-mode. Controls whether
    *  the buffer is read-only and whether the raw keymap is the override. */
   charMode = false
 
@@ -356,7 +356,7 @@ export async function spawnSession(
     cols: number
     label: string
   },
-): Promise<TuiTermSession> {
+): Promise<JTermSession> {
   const cwd = opts.cwd ?? editor.currentBuffer.directory?.() ?? process.cwd()
   const { spawnPty } = await loadPtyModule()
   const pty = spawnPty(argv, {
@@ -366,7 +366,7 @@ export async function spawnSession(
     env: { ...process.env, TERM: "xterm-256color", ...opts.env },
   })
   const xt = makeXTerm(opts.rows, opts.cols)
-  const session = new TuiTermSession(editor, buffer, pty, xt, opts.rows, opts.cols, opts.label)
+  const session = new JTermSession(editor, buffer, pty, xt, opts.rows, opts.cols, opts.label)
   session.wireHandlers()
   session.prime()
   return session

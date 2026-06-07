@@ -2,12 +2,13 @@ import { expect, test, describe, beforeEach } from "bun:test"
 import { BufferModel } from "../../src/kernel/buffer"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
 import { getMode } from "../../src/modes/mode"
+import { setCustom } from "../../src/runtime/custom"
 import {
   install,
   makeXTerm,
   sessions,
-  tuiTermRawMap,
-  TuiTermSession,
+  jtermRawMap,
+  JTermSession,
   sessionFor,
   surfaceChanged,
 } from "../../plugins/tui-term"
@@ -34,73 +35,76 @@ function fakePty(): Pty & { sent: string; chunks: string[]; resizes: Array<[numb
   }
 }
 
-function makeSession(rows = 4, cols = 20): { session: TuiTermSession; buffer: BufferModel; pty: ReturnType<typeof fakePty> } {
+function makeSession(rows = 4, cols = 20): { session: JTermSession; buffer: BufferModel; pty: ReturnType<typeof fakePty> } {
   const editor = makeEditor()
-  const buffer = new BufferModel({ name: "*tui-term*", kind: "scratch" })
+  const buffer = new BufferModel({ name: "*jterm*", kind: "scratch" })
   const pty = fakePty()
   const xt = makeXTerm(rows, cols)
-  const session = new TuiTermSession(editor, buffer, pty, xt, rows, cols, "tui-term")
+  const session = new JTermSession(editor, buffer, pty, xt, rows, cols, "jterm")
   return { session, buffer, pty }
 }
 
-function feedAsync(s: TuiTermSession, _b: BufferModel, chunk: string): Promise<void> {
+function feedAsync(s: JTermSession, _b: BufferModel, chunk: string): Promise<void> {
   return s.feed(chunk)
 }
 
-describe("tui-term: install wiring", () => {
+describe("jterm: install wiring", () => {
   test("registers Emacs-style commands and the jterm-mode keymap", () => {
     const editor = makeEditor()
     install(editor)
 
     // Top-level entry points
-    expect(editor.commands.get("tui-term")).toBeDefined()
-    expect(editor.commands.get("tui-term-run-command")).toBeDefined()
+    expect(editor.commands.get("jterm")).toBeDefined()
+    expect(editor.commands.get("jterm-run-command")).toBeDefined()
     expect(editor.commands.get("opencode")).toBeDefined()
 
     // char-mode / copy-mode toggle
-    expect(editor.commands.get("tui-term-char-mode")).toBeDefined()
-    expect(editor.commands.get("tui-term-copy-mode")).toBeDefined()
+    expect(editor.commands.get("jterm-char-mode")).toBeDefined()
+    expect(editor.commands.get("jterm-copy-mode")).toBeDefined()
 
     // send / interrupt / kill / clear / reset
-    expect(editor.commands.get("tui-term-send-raw")).toBeDefined()
-    expect(editor.commands.get("tui-term-send-string")).toBeDefined()
-    expect(editor.commands.get("tui-term-interrupt")).toBeDefined()
-    expect(editor.commands.get("tui-term-kill")).toBeDefined()
-    expect(editor.commands.get("tui-term-clear")).toBeDefined()
-    expect(editor.commands.get("tui-term-reset")).toBeDefined()
-    expect(editor.commands.get("tui-term-yank")).toBeDefined()
+    expect(editor.commands.get("jterm-send-raw")).toBeDefined()
+    expect(editor.commands.get("jterm-send-string")).toBeDefined()
+    expect(editor.commands.get("jterm-interrupt")).toBeDefined()
+    expect(editor.commands.get("jterm-kill")).toBeDefined()
+    expect(editor.commands.get("jterm-clear")).toBeDefined()
+    expect(editor.commands.get("jterm-reset")).toBeDefined()
+    expect(editor.commands.get("jterm-yank")).toBeDefined()
+    expect(editor.commands.get("tui-term")).toBeUndefined()
+    expect(editor.commands.get("tui-term-send-raw")).toBeUndefined()
+    expect(editor.commands.get("tui-term-char-mode")).toBeUndefined()
 
     // Mode is registered
     const map = getMode("jterm-mode")?.keymap
     expect(map).toBeDefined()
-    expect(map?.get("a")).toBe("tui-term-send-raw")
-    expect(map?.get("C-c C-c")).toBe("tui-term-interrupt")
-    expect(map?.get("C-c C-j")).toBe("tui-term-copy-mode")
-    expect(map?.get("C-c C-l")).toBe("tui-term-clear")
+    expect(map?.get("a")).toBe("jterm-send-raw")
+    expect(map?.get("C-c C-c")).toBe("jterm-interrupt")
+    expect(map?.get("C-c C-j")).toBe("jterm-copy-mode")
+    expect(map?.get("C-c C-l")).toBe("jterm-clear")
   })
 
   test("does not collide with the vterm plugin's commands", () => {
-    // The two plugins are independent. vterm binds term-send-raw; tui-term
-    // binds tui-term-send-raw. Both should coexist.
+    // The two plugins are independent. vterm binds term-send-raw; jterm
+    // binds jterm-send-raw. Both should coexist.
     const editor = makeEditor()
     install(editor)
-    expect(editor.commands.get("tui-term-send-raw")).toBeDefined()
-    expect(editor.commands.get("tui-term-interrupt")).toBeDefined()
+    expect(editor.commands.get("jterm-send-raw")).toBeDefined()
+    expect(editor.commands.get("jterm-interrupt")).toBeDefined()
   })
 })
 
-describe("tui-term: char-mode / copy-mode", () => {
+describe("jterm: char-mode / copy-mode", () => {
   test("char-mode sets read-only + raw keymap + paste-handler", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    const session = new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term")
+    const session = new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm")
     sessions.set(buffer, session)
 
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     expect(buffer.readOnly).toBe(true)
-    expect(editor.overridingTerminalLocalMap).toBe(tuiTermRawMap)
+    expect(editor.overridingTerminalLocalMap).toBe(jtermRawMap)
     expect(buffer.locals.has("paste-handler")).toBe(true)
     expect(session.charMode).toBe(true)
   })
@@ -108,15 +112,15 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("copy-mode clears read-only + raw keymap + paste-handler + surface", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    const session = new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term")
+    const session = new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm")
     sessions.set(buffer, session)
 
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     expect(buffer.readOnly).toBe(true)
 
-    await editor.run("tui-term-copy-mode")
+    await editor.run("jterm-copy-mode")
     expect(buffer.readOnly).toBe(false)
     expect(editor.overridingTerminalLocalMap).toBeNull()
     expect(buffer.locals.has("paste-handler")).toBe(false)
@@ -127,11 +131,11 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("keyboard-quit tears down the char-mode override", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
-    sessions.set(buffer, new TuiTermSession(editor, buffer, fakePty(), makeXTerm(4, 20), 4, 20, "tui-term"))
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
+    sessions.set(buffer, new JTermSession(editor, buffer, fakePty(), makeXTerm(4, 20), 4, 20, "jterm"))
 
-    await editor.run("tui-term-char-mode")
-    expect(editor.overridingTerminalLocalMap).toBe(tuiTermRawMap)
+    await editor.run("jterm-char-mode")
+    expect(editor.overridingTerminalLocalMap).toBe(jtermRawMap)
 
     await editor.run("keyboard-quit")
     expect(editor.overridingTerminalLocalMap).toBeNull()
@@ -142,7 +146,7 @@ describe("tui-term: char-mode / copy-mode", () => {
     install(editor)
     const buffer = editor.scratch("*unrelated*", "", "text")
     editor.switchToBuffer(buffer.id)
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     // No session attached → command short-circuits with a message.
     expect(buffer.readOnly).toBe(false)
     expect(editor.overridingTerminalLocalMap).toBeNull()
@@ -151,11 +155,11 @@ describe("tui-term: char-mode / copy-mode", () => {
   test("real handleKey path sends typed keys to the pty in char-mode", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     await editor.handleKey({ name: "l", sequence: "l" })
     await editor.handleKey({ name: "s", sequence: "s" })
     await editor.handleKey({ name: "return" })
@@ -165,15 +169,15 @@ describe("tui-term: char-mode / copy-mode", () => {
   })
 })
 
-describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
+describe("jterm: paste routing via buffer.locals['paste-handler']", () => {
   test("paste-handler installed by char-mode writes to the pty", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     const handler = buffer.locals.get("paste-handler") as (text: string) => void
     handler("hello world")
     await Promise.resolve()
@@ -185,11 +189,11 @@ describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
   test("paste-handler is a no-op (no insert) — the buffer is read-only", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     const handler = buffer.locals.get("paste-handler") as (text: string) => void
     handler("ignore me")
     await Promise.resolve()
@@ -200,28 +204,32 @@ describe("tui-term: paste routing via buffer.locals['paste-handler']", () => {
   test("disabling bracketed-paste sends raw bytes", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
-    await editor.run("tui-term-char-mode")
-    editor.locals.set("tui-term-bracketed-paste", false)
-    const handler = buffer.locals.get("paste-handler") as (text: string) => void
-    handler("ls -la")
-    await Promise.resolve()
-    expect(pty.chunks[0]).toBe("ls -la")
+    await editor.run("jterm-char-mode")
+    setCustom("jterm-bracketed-paste", false)
+    try {
+      const handler = buffer.locals.get("paste-handler") as (text: string) => void
+      handler("ls -la")
+      await Promise.resolve()
+      expect(pty.chunks[0]).toBe("ls -la")
+    } finally {
+      setCustom("jterm-bracketed-paste", true)
+    }
   })
 })
 
-describe("tui-term: kill-emacs-hook and kill-buffer-hook", () => {
+describe("jterm: kill-emacs-hook and kill-buffer-hook", () => {
   test("kill-emacs-hook kills all live PTY processes", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
     let killed = false
     pty.kill = () => { killed = true }
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
     // kill-emacs-hook fires from editor.quit(); runHook("kill-emacs-hook") is
     // the same path the test harness can take.
@@ -232,11 +240,11 @@ describe("tui-term: kill-emacs-hook and kill-buffer-hook", () => {
   test("kill-buffer-hook disposes the session for the killed buffer", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
     const pty = fakePty()
     let killed = false
     pty.kill = () => { killed = true }
-    sessions.set(buffer, new TuiTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "tui-term"))
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
 
     editor.killBuffer(buffer.id)
     expect(killed).toBe(true)
@@ -244,7 +252,7 @@ describe("tui-term: kill-emacs-hook and kill-buffer-hook", () => {
   })
 })
 
-describe("tui-term: keyToPtyBytes (kept from term-v2 + extended)", () => {
+describe("jterm: keyToPtyBytes (kept from term-v2 + extended)", () => {
   test("printable chars pass through via sequence", () => {
     expect(keyToPtyBytes({ name: "a", sequence: "a" })).toBe("a")
     expect(keyToPtyBytes({ name: "/", sequence: "/" })).toBe("/")
@@ -274,7 +282,7 @@ describe("tui-term: keyToPtyBytes (kept from term-v2 + extended)", () => {
   })
 })
 
-describe("tui-term: surfaceChanged (cell-level diff)", () => {
+describe("jterm: surfaceChanged (cell-level diff)", () => {
   test("identical surfaces compare equal", () => {
     const s = {
       kind: "terminal" as const,
@@ -307,7 +315,7 @@ describe("tui-term: surfaceChanged (cell-level diff)", () => {
   })
 })
 
-describe("tui-term: VT parsing via @xterm/headless", () => {
+describe("jterm: VT parsing via @xterm/headless", () => {
   test("plain output with CRLF renders as lines; point follows cursor", async () => {
     const { session, buffer } = makeSession()
     await feedAsync(session, buffer, "hello\r\nworld\r\n$ ")
@@ -329,11 +337,11 @@ describe("tui-term: VT parsing via @xterm/headless", () => {
   test("normal shell output stays on the text mirror in char-mode", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
-    const session = new TuiTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "tui-term")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
+    const session = new JTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "jterm")
     sessions.set(buffer, session)
     await feedAsync(session, buffer, "hi\r\nthere\r\n$ ")
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     expect(buffer.locals.get(TERMINAL_SURFACE_LOCAL)).toBeUndefined()
     expect(buffer.text).toContain("hi")
     expect(buffer.text).toContain("there")
@@ -342,17 +350,17 @@ describe("tui-term: VT parsing via @xterm/headless", () => {
   test("alternate-screen TUI output installs a terminal surface", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("*tui-term*", "", "jterm-mode")
-    const session = new TuiTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "tui-term")
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
+    const session = new JTermSession(editor, buffer, fakePty(), makeXTerm(3, 6), 3, 6, "jterm")
     sessions.set(buffer, session)
     await feedAsync(session, buffer, "\x1b[?1049hALT")
-    await editor.run("tui-term-char-mode")
+    await editor.run("jterm-char-mode")
     const surface = buffer.locals.get(TERMINAL_SURFACE_LOCAL)
     expect(surface).toMatchObject({ kind: "terminal", rows: 3, cols: 6 })
   })
 })
 
-describe("tui-term: writeRaw microtask batching", () => {
+describe("jterm: writeRaw microtask batching", () => {
   test("same-tick writes coalesce into one pty.write on the next microtask", async () => {
     const { session, pty } = makeSession()
     session.writeRaw("h")
