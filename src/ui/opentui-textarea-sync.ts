@@ -55,6 +55,29 @@ function chunkHasStyle(chunk: ThemedChunk): boolean {
   return Boolean(chunk.fg || chunk.bg || chunk.bold || chunk.italic || chunk.underline)
 }
 
+function newlineOffsets(text: string): number[] {
+  const offsets: number[] = []
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    offsets.push(index)
+  }
+  return offsets
+}
+
+function countNewlinesBefore(offsets: number[], offset: number): number {
+  let lo = 0
+  let hi = offsets.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (offsets[mid] < offset) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+function toNativeHighlightOffset(offsets: number[], offset: number): number {
+  return offset - countNewlinesBefore(offsets, offset)
+}
+
 /** Sync full-buffer text, point, and font-lock highlights into a TextareaRenderable. */
 export function syncTextareaFromSpans(
   textarea: TextareaRenderable,
@@ -67,13 +90,14 @@ export function syncTextareaFromSpans(
   editBuffer.setSyntaxStyle(syntax)
 
   const themed = applyTheme(options.text, options.spans, options.theme)
+  const lineBreaks = newlineOffsets(options.text)
   let offset = 0
   for (const chunk of themed.chunks) {
     const end = offset + chunk.text.length
     if (chunkHasStyle(chunk)) {
       editBuffer.addHighlightByCharRange({
-        start: offset,
-        end,
+        start: toNativeHighlightOffset(lineBreaks, offset),
+        end: toNativeHighlightOffset(lineBreaks, end),
         styleId: styleIdForChunk(syntax, chunk),
       })
     }
