@@ -1,0 +1,16 @@
+export {
+  install,
+  attachSession,
+  feed,
+  keyToPtyBytes,
+  makeXTerm,
+  renderTerminal,
+  renderTerminalSurface,
+  resizeSession,
+  sessionFor,
+  sessions,
+  termRawMap,
+  termSpans,
+  writeRaw,
+  type TermSession,
+} from "../term-v2"

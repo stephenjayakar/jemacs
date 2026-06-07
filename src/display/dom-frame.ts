@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import type { SerializedDisplayModel, SerializedThemedText, SerializedWindowNode } from "./serialize"
+import type { TerminalCell, TerminalSurfaceModel } from "./terminal-surface"
 
 export type SerializedChunk = SerializedThemedText["chunks"][number]
 
@@ -86,7 +87,8 @@ export function renderWindows(
     const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
     body.style.fontSize = `${bodyDefaultPx * textScale}px`
     body.style.lineHeight = String(DOM_FRAME_LINE_HEIGHT_RATIO)
-    renderThemedText(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
+    if (node.pane.terminalSurface) renderTerminalSurface(body, node.pane.terminalSurface)
+    else renderThemedText(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
     body.addEventListener("mousedown", event => sendMouse(event, body))
     pane.addEventListener("mousedown", event => {
       if (event.target === pane) sendMouse(event, body)
@@ -108,6 +110,33 @@ export function renderWindows(
   const firstRatio = node.firstRatio ?? 0.5
   split.append(renderWindows(node.first, onMouse, firstRatio, theme), renderWindows(node.second, onMouse, 1 - firstRatio, theme))
   return split
+}
+
+function renderTerminalSurface(el: HTMLElement, surface: TerminalSurfaceModel): void {
+  el.replaceChildren()
+  el.classList.add("terminal-surface")
+  for (let y = 0; y < surface.rows; y++) {
+    const rowEl = document.createElement("div")
+    rowEl.className = "terminal-row"
+    const row = surface.cells[y] ?? []
+    for (let x = 0; x < surface.cols; x++) {
+      const cell = row[x] ?? { text: " " }
+      const span = document.createElement("span")
+      span.textContent = cell.text || " "
+      applyTerminalCell(span, cell)
+      if (y === surface.cursorRow && x === surface.cursorCol) span.classList.add("terminal-cursor")
+      rowEl.appendChild(span)
+    }
+    el.appendChild(rowEl)
+  }
+}
+
+function applyTerminalCell(el: HTMLElement, cell: TerminalCell): void {
+  if (cell.fg) el.style.color = cell.fg
+  if (cell.bg) el.style.backgroundColor = cell.bg
+  if (cell.bold) el.style.fontWeight = "bold"
+  if (cell.italic) el.style.fontStyle = "italic"
+  if (cell.underline) el.style.textDecoration = "underline"
 }
 
 export type DomFrameTargets = {

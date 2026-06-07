@@ -14,6 +14,7 @@ import { visibleStyledTextFromStart } from "./buffer-view"
 import type { DisplayModel, WindowDisplayNode } from "./protocol"
 import { bufferHighlightSpans } from "./buffer-highlights"
 import { applyTheme } from "./theme"
+import { TERMINAL_SURFACE_LOCAL, terminalSurfaceToThemedText, type TerminalSurfaceModel } from "./terminal-surface"
 import { plainThemedText, type ThemedChunk, type ThemedText } from "./themed-text"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { setEditorDisplayContext } from "./scroll"
@@ -159,6 +160,7 @@ function buildLeafPane(
       selected,
       dedicated: leaf.dedicated,
       body: plainThemedText(""),
+      terminalSurface: undefined,
       modeline: applyTheme(" (empty)", [], editor.theme),
       clickState: { startLine: 0, gutterPrefixLen: 0 },
       bodyLineBudget: maxLines,
@@ -172,6 +174,31 @@ function buildLeafPane(
   const point = selected ? buffer.point : leaf.point
   const dirty = buffer.dirty ? "*" : ""
   const { line, col } = pointLineCol(buffer.text, point)
+  syncWindowBodyGeometry(editor, buffer, maxLines, availableCols)
+
+  const terminalSurface = terminalSurfaceFor(buffer, maxLines, availableCols)
+  if (terminalSurface) {
+    const modelineText = terminalModelineText(editor, buffer, dirty, leaf.dedicated)
+    return {
+      id: leaf.id,
+      bufferId: leaf.bufferId,
+      selected,
+      dedicated: leaf.dedicated,
+      body: terminalSurfaceToThemedText(terminalSurface),
+      terminalSurface,
+      modeline: applyTheme(modelineText, [{
+        start: 0,
+        end: modelineText.length,
+        face: selected ? "modeLine" : "modeLineInactive",
+      }], editor.theme),
+      clickState: { startLine: 0, gutterPrefixLen: 0 },
+      bodyLineBudget: maxLines,
+      syncText: buffer.text,
+      syncPoint: point,
+      syncSpans: [],
+      textScale: textScaleFactor(buffer),
+    }
+  }
 
   const spans = [...editor.fontLock(buffer)]
   const useVisualWeights = hostCapabilities?.perFaceFonts === true
@@ -251,6 +278,7 @@ function buildLeafPane(
     selected,
     dedicated: leaf.dedicated,
     body,
+    terminalSurface: undefined,
     modeline,
     clickState,
     bodyLineBudget: maxLines,
@@ -259,6 +287,32 @@ function buildLeafPane(
     syncSpans,
     textScale: textScaleFactor(buffer),
   }
+}
+
+function terminalModelineText(editor: Editor, buffer: BufferModel, dirty: string, dedicated: boolean): string {
+  const misc = (getCustom<Array<(b: BufferModel) => string>>("mode-line-misc-info") ?? [])
+    .map(f => f(buffer)).join("")
+  const lighters = editor.minorModeLighters(buffer) + textScaleLighter(buffer) + misc
+  return ` ${buffer.mode}${lighters}  ${editor.bufferDisplayName(buffer)}${dirty}${dedicated ? " [D]" : ""}  terminal`
+}
+
+function terminalSurfaceFor(buffer: BufferModel, rows: number, cols?: number): TerminalSurfaceModel | undefined {
+  const surface = buffer.locals.get(TERMINAL_SURFACE_LOCAL) as TerminalSurfaceModel | undefined
+  if (!surface) return undefined
+  if (surface.rows !== rows) return undefined
+  if (cols != null && surface.cols !== cols) return undefined
+  return surface
+}
+
+function syncWindowBodyGeometry(editor: Editor, buffer: BufferModel, rows: number, cols?: number): void {
+  const safeRows = Math.max(1, rows)
+  const safeCols = Math.max(1, cols ?? editor.lastViewport?.cols ?? 80)
+  const oldRows = buffer.locals.get("window-body-rows")
+  const oldCols = buffer.locals.get("window-body-cols")
+  if (oldRows === safeRows && oldCols === safeCols) return
+  buffer.locals.set("window-body-rows", safeRows)
+  buffer.locals.set("window-body-cols", safeCols)
+  void editor.runHook("window-configuration-change-hook", buffer)
 }
 
 function splitLineBudget(availableLines: number, direction: "horizontal" | "vertical", firstRatio = 0.5): { first: number; second: number } {
