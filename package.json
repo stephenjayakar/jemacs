@@ -1,7 +1,6 @@
 {
-  "name": "jemacs-opentui",
-  "version": "0.1.0",
-  "private": true,
+  "name": "jemacs",
+  "version": "0.0.1",
   "workspaces": [
     "packages/*"
   ],

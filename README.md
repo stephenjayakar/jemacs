@@ -1,5 +1,7 @@
 # Jemacs OpenTUI
 
+_Pronounced "jee-macs"_.
+
 A self-editable Emacs-like editor where JavaScript replaces Emacs Lisp and **pluggable frontends** render the UI: **OpenTUI** (terminal) and **Electron** (GUI).
 
 This is a work-in-progress and doesn't have a major release yet. Lots of rough edges and have generally implemented the feature set that I need for work instead of all of Emacs's functionality.
