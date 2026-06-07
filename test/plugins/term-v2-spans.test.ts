@@ -8,7 +8,6 @@ import {
   renderTerminal,
   makeXTerm,
   termSpans,
-  ANSI_FACES,
   TERM_SPANS_LOCAL,
   type TermSession,
 } from "../../plugins/term-v2"
@@ -41,17 +40,20 @@ describe("term-v2: SGR → TextSpan", () => {
     expect(text).toBe("plain red green tail")
     // Exactly the two coloured words are spanned; default text is left bare.
     expect(spans).toEqual([
-      { start: 6, end: 9, face: ANSI_FACES[1] },   // "red"
-      { start: 10, end: 15, face: ANSI_FACES[2] }, // "green"
+      { start: 6, end: 9, face: "default", style: { fg: "#cd3131" } },   // "red"
+      { start: 10, end: 15, face: "default", style: { fg: "#0dbc79" } }, // "green"
     ])
   })
 
-  test("adjacent same-colour cells coalesce; bright variants map to base face", async () => {
+  test("adjacent same-colour cells coalesce; bright variants keep exact colours", async () => {
     const xt = makeXTerm(5, 40)
     await writeAsync(xt, "\x1b[34mblue\x1b[94mBLUE\x1b[0m")
     const { text, spans } = renderTerminal(xt)
     expect(text).toBe("blueBLUE")
-    expect(spans).toEqual([{ start: 0, end: 8, face: ANSI_FACES[4] }])
+    expect(spans).toEqual([
+      { start: 0, end: 4, face: "default", style: { fg: "#2472c8" } },
+      { start: 4, end: 8, face: "default", style: { fg: "#3b8eea" } },
+    ])
   })
 
   test("bold-only and bg-only map to keyword/region faces", async () => {
@@ -60,8 +62,8 @@ describe("term-v2: SGR → TextSpan", () => {
     const { text, spans } = renderTerminal(xt)
     expect(text).toBe("bold bg")
     expect(spans).toEqual([
-      { start: 0, end: 4, face: "keyword" },
-      { start: 5, end: 7, face: "region" },
+      { start: 0, end: 4, face: "default", style: { bold: true } },
+      { start: 5, end: 7, face: "default", style: { bg: "#2472c8" } },
     ])
   })
 
@@ -73,7 +75,7 @@ describe("term-v2: SGR → TextSpan", () => {
     expect(spans).toHaveLength(1)
     const sp = spans[0]!
     expect(text.slice(sp.start, sp.end)).toBe("ERR")
-    expect(sp.face).toBe(ANSI_FACES[1])
+    expect(sp.style?.fg).toBe("#cd3131")
   })
 
   test("feed() stashes spans in buffer.locals[term-spans]", async () => {
@@ -82,7 +84,7 @@ describe("term-v2: SGR → TextSpan", () => {
     await feedAsync(session, buffer, "$ \x1b[32mok\x1b[0m\r\n")
     expect(buffer.text).toBe("$ ok\n")
     const spans = termSpans(buffer)
-    expect(spans).toEqual([{ start: 2, end: 4, face: ANSI_FACES[2] }])
+    expect(spans).toEqual([{ start: 2, end: 4, face: "default", style: { fg: "#0dbc79" } }])
     expect(buffer.locals.get(TERM_SPANS_LOCAL)).toBe(spans)
   })
 
@@ -93,15 +95,15 @@ describe("term-v2: SGR → TextSpan", () => {
     await feedAsync(session, buffer, "\x1b[31mred\x1b[0m\r\n")
     const fontLock = modeFeature("term", "fontLock")
     expect(fontLock).toBeDefined()
-    expect(fontLock!(buffer)).toEqual([{ start: 0, end: 3, face: ANSI_FACES[1] }])
-    expect(editor.fontLock(buffer)).toEqual([{ start: 0, end: 3, face: ANSI_FACES[1] }])
+    expect(fontLock!(buffer)).toEqual([{ start: 0, end: 3, face: "default", style: { fg: "#cd3131" } }])
+    expect(editor.fontLock(buffer)).toEqual([{ start: 0, end: 3, face: "default", style: { fg: "#cd3131" } }])
   })
 
   test("256-colour / truecolor fall back to a visible face", async () => {
     const xt = makeXTerm(5, 40)
     await writeAsync(xt, "\x1b[38;5;208mhi\x1b[0m \x1b[38;2;10;20;30mrgb\x1b[0m")
     const { spans } = renderTerminal(xt)
-    expect(spans.map(s => s.face)).toEqual(["builtin", "builtin"])
+    expect(spans.map(s => s.style?.fg)).toEqual(["#ff8700", "#0a141e"])
   })
 
   // Cell index ≠ UTF-16 offset: a CJK ideograph occupies two cells (width-2 +
@@ -117,7 +119,7 @@ describe("term-v2: SGR → TextSpan", () => {
     expect(spans).toHaveLength(1)
     // 日本 spans cells 1..5 but UTF-16 offsets 1..3.
     expect(text.slice(spans[0]!.start, spans[0]!.end)).toBe("日本")
-    expect(spans[0]).toEqual({ start: 1, end: 3, face: ANSI_FACES[1] })
+    expect(spans[0]).toEqual({ start: 1, end: 3, face: "default", style: { fg: "#cd3131" } })
   })
 
   test("span offsets are UTF-16, not cell indices — emoji surrogate pairs", async () => {
@@ -128,7 +130,7 @@ describe("term-v2: SGR → TextSpan", () => {
     expect(spans).toHaveLength(1)
     // Each 👋 is one cell but two UTF-16 units (surrogate pair).
     expect(text.slice(spans[0]!.start, spans[0]!.end)).toBe("👋👋")
-    expect(spans[0]).toEqual({ start: 1, end: 5, face: ANSI_FACES[2] })
+    expect(spans[0]).toEqual({ start: 1, end: 5, face: "default", style: { fg: "#0dbc79" } })
   })
 
   test("point maps cursorX (cell index) to a UTF-16 offset — surrogate pair", async () => {

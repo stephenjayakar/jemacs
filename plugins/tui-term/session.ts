@@ -3,9 +3,12 @@ import type { BufferModel } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
 import type { Pty } from "../term/pty"
 import type { KeyEventLike } from "../../src/kernel/keymap"
+import type { FaceStyle } from "../../src/display/theme"
+import type { FaceName, TextSpan } from "../../src/modes/mode"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
 import { SurfaceRenderer } from "./renderer"
 import { buildSurface } from "./surface"
+import { rgbHex, xtermPaletteHex } from "./ansi-faces"
 import { keyToPtyBytes } from "./key-encode"
 
 const require = createRequire(import.meta.url)
@@ -33,6 +36,7 @@ type XBufferLine = { translateToString(trim?: boolean): string; getCell(x: numbe
 type XBufferCell = {
   getWidth(): number
   getChars(): string
+  isAttributeDefault(): boolean
   isBold(): boolean
   isItalic(): boolean
   isUnderline(): boolean
@@ -45,6 +49,14 @@ type XBufferCell = {
   getFgColor(): number
   getBgColor(): number
 }
+
+export const JTERM_SPANS_LOCAL = "jterm-spans"
+
+export function jtermSpans(buffer: BufferModel): TextSpan[] {
+  return (buffer.locals.get(JTERM_SPANS_LOCAL) as TextSpan[] | undefined) ?? []
+}
+
+type TerminalRunStyle = { face: FaceName; style: FaceStyle }
 
 function resolveTerminalCtor(): TerminalCtor {
   const mod = require("@xterm/headless") as { Terminal?: TerminalCtor; default?: TerminalCtor }
@@ -260,9 +272,10 @@ export class JTermSession {
     //    codes rewrote earlier cells (cursor positioning, erase-line, etc.).
     const mirror = this.xt.buffer.active.length > 0
       ? buildMirror(this.xt)
-      : { text: "", point: 0 }
+      : { text: "", point: 0, spans: [] }
     const text = mirror.text
     let textChanged = false
+    const previousSpans = jtermSpans(this.buffer)
     if (text.startsWith(this.lastRenderedText)) {
       const tail = text.slice(this.lastRenderedText.length)
       if (tail) {
@@ -275,6 +288,8 @@ export class JTermSession {
     }
     this.lastRenderedText = text
     this.buffer.point = mirror.point
+    const spansChanged = !textSpansEqual(previousSpans, mirror.spans)
+    if (spansChanged) this.buffer.locals.set(JTERM_SPANS_LOCAL, mirror.spans)
 
     // 2. Cell-grid surface: only use it for alternate-screen TUIs. Normal
     // shell output (prompts, `ls`, command history) is better represented by
@@ -287,7 +302,7 @@ export class JTermSession {
       this.renderer.updateSurface(surface)
     } else {
       this.renderer.invalidate()
-      if (textChanged) void this.editor.changed(`${this.label}-output`)
+      if (textChanged || spansChanged) void this.editor.changed(`${this.label}-output`)
     }
   }
 }
@@ -297,33 +312,33 @@ export class JTermSession {
  *  blank rows before drawing the prompt; if kept verbatim, ordinary command
  *  output (`ls`) is pushed above the visible window. Drop only the contiguous
  *  blank repaint run immediately before the cursor row. */
-function buildMirror(xt: XTermInstance): { text: string; point: number } {
+function buildMirror(xt: XTermInstance): { text: string; point: number; spans: TextSpan[] } {
   const buf = xt.buffer.active
-  const lines: string[] = []
+  const rows: Array<{ text: string; spans: TextSpan[] }> = []
   let lastNonEmpty = -1
   const cursorRow = buf.baseY + buf.cursorY
   for (let y = 0; y < buf.length; y++) {
     const line = buf.getLine(y)
     const s = lineTextForMirror(buf, line, y, cursorRow)
-    lines.push(s)
+    rows.push({ text: s, spans: lineSpansForMirror(buf, line, s) })
     if (s.length > 0) lastNonEmpty = y
   }
   const keep = Math.max(lastNonEmpty, buf.baseY + buf.cursorY, 0) + 1
-  lines.length = keep
+  rows.length = keep
 
-  let adjustedCursorRow = Math.min(cursorRow, lines.length - 1)
+  let adjustedCursorRow = Math.min(cursorRow, rows.length - 1)
   let blank = adjustedCursorRow - 1
-  while (blank >= 0 && lines[blank] === "") blank--
+  while (blank >= 0 && rows[blank]?.text === "") blank--
   const blanksToDrop = adjustedCursorRow - blank - 1
   if (blanksToDrop > 0) {
-    lines.splice(blank + 1, blanksToDrop)
+    rows.splice(blank + 1, blanksToDrop)
     adjustedCursorRow -= blanksToDrop
   }
 
   let point = 0
-  for (let y = 0; y < adjustedCursorRow; y++) point += (lines[y]?.length ?? 0) + 1
+  for (let y = 0; y < adjustedCursorRow; y++) point += (rows[y]?.text.length ?? 0) + 1
   const cursorLine = buf.getLine(cursorRow)
-  if (!cursorLine) return { text: lines.join("\n"), point }
+  if (!cursorLine) return finalizeMirror(rows, point)
   let cx = 0
   const scratch = buf.getNullCell()
   for (let x = 0; x < buf.cursorX; x++) {
@@ -331,7 +346,17 @@ function buildMirror(xt: XTermInstance): { text: string; point: number } {
     if (scratch.getWidth() === 0) continue
     cx += scratch.getChars().length || 1
   }
-  return { text: lines.join("\n"), point: point + cx }
+  return finalizeMirror(rows, point + cx)
+}
+
+function finalizeMirror(rows: Array<{ text: string; spans: TextSpan[] }>, point: number): { text: string; point: number; spans: TextSpan[] } {
+  const spans: TextSpan[] = []
+  let offset = 0
+  for (const row of rows) {
+    for (const span of row.spans) spans.push({ ...span, start: offset + span.start, end: offset + span.end })
+    offset += row.text.length + 1
+  }
+  return { text: rows.map(row => row.text).join("\n"), point, spans }
 }
 
 function lineTextForMirror(buf: XBuffer, line: XBufferLine | undefined, y: number, cursorRow: number): string {
@@ -340,6 +365,91 @@ function lineTextForMirror(buf: XBuffer, line: XBufferLine | undefined, y: numbe
   const raw = line.translateToString(false)
   const visible = line.translateToString(true).trimEnd()
   return raw.slice(0, Math.max(buf.cursorX, visible.length))
+}
+
+function lineSpansForMirror(buf: XBuffer, line: XBufferLine | undefined, text: string): TextSpan[] {
+  if (!line || text.length === 0) return []
+  const spans: TextSpan[] = []
+  const scratch = buf.getNullCell()
+  let col = 0
+  let runStyle: TerminalRunStyle | null = null
+  let runStart = 0
+  for (let x = 0; col < text.length; x++) {
+    if (!line.getCell(x, scratch)) break
+    if (scratch.getWidth() === 0) continue
+    const style = cellStyle(scratch)
+    if (!sameRunStyle(style, runStyle)) {
+      if (runStyle) spans.push(spanForRun(runStart, Math.min(col, text.length), runStyle))
+      runStyle = style
+      runStart = col
+    }
+    col += scratch.getChars().length || 1
+  }
+  if (runStyle) spans.push(spanForRun(runStart, Math.min(col, text.length), runStyle))
+  return spans
+}
+
+function cellStyle(cell: XBufferCell): TerminalRunStyle | null {
+  if (cell.isAttributeDefault()) return null
+  const style: FaceStyle = {}
+  if (cell.isBold()) style.bold = true
+  if (cell.isItalic()) style.italic = true
+  if (cell.isUnderline()) style.underline = true
+  if (!cell.isFgDefault()) {
+    const fg = cellColor(cell, "fg")
+    if (fg) style.fg = fg
+  }
+  if (!cell.isBgDefault()) {
+    const bg = cellColor(cell, "bg")
+    if (bg) style.bg = bg
+  }
+  if (!style.fg && !style.bg && !style.bold && !style.italic && !style.underline) return null
+  return { face: "default", style }
+}
+
+function cellColor(cell: XBufferCell, part: "fg" | "bg"): string | undefined {
+  const isDefault = part === "fg" ? cell.isFgDefault() : cell.isBgDefault()
+  if (isDefault) return undefined
+  const isRgb = part === "fg" ? cell.isFgRGB() : cell.isBgRGB()
+  const isPalette = part === "fg" ? cell.isFgPalette() : cell.isBgPalette()
+  const value = part === "fg" ? cell.getFgColor() : cell.getBgColor()
+  if (isRgb) return rgbHex(value)
+  if (isPalette) return xtermPaletteHex(value)
+  return undefined
+}
+
+function sameRunStyle(a: TerminalRunStyle | null, b: TerminalRunStyle | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.face === b.face
+    && a.style.fg === b.style.fg
+    && a.style.bg === b.style.bg
+    && !!a.style.bold === !!b.style.bold
+    && !!a.style.italic === !!b.style.italic
+    && !!a.style.underline === !!b.style.underline
+}
+
+function spanForRun(start: number, end: number, run: TerminalRunStyle): TextSpan {
+  return { start, end, face: run.face, style: run.style }
+}
+
+function textSpansEqual(a: TextSpan[], b: TextSpan[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i]!
+    const right = b[i]!
+    if (left.start !== right.start || left.end !== right.end || left.face !== right.face) return false
+    if (!sameFaceStyle(left.style, right.style)) return false
+  }
+  return true
+}
+
+function sameFaceStyle(a?: FaceStyle, b?: FaceStyle): boolean {
+  return a?.fg === b?.fg
+    && a?.bg === b?.bg
+    && !!a?.bold === !!b?.bold
+    && !!a?.italic === !!b?.italic
+    && !!a?.underline === !!b?.underline
 }
 
 export type { XTermInstance }

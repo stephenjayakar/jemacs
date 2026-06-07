@@ -1,6 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
+import type { FaceStyle } from "../../src/display/theme"
 import type { FaceName, TextSpan } from "../../src/modes/mode"
 import { defineMode, getMode } from "../../src/modes/mode"
 import { Keymap, normalizeSequence, type KeyEventLike } from "../../src/kernel/keymap"
@@ -131,18 +132,40 @@ export function termSpans(buffer: BufferModel): TextSpan[] {
   return (buffer.locals.get(TERM_SPANS_LOCAL) as TextSpan[] | undefined) ?? []
 }
 
-/** Reduce a cell's SGR attributes to a single FaceName, or null for default. */
-function cellFace(c: IBufferCell): FaceName | null {
+type TerminalRunStyle = { face: FaceName; style: FaceStyle }
+
+/** Reduce a cell's SGR attributes to a display style, or null for default. */
+function cellStyle(c: IBufferCell): TerminalRunStyle | null {
   if (c.isAttributeDefault()) return null
+  const style: FaceStyle = {}
+  if (c.isBold()) style.bold = true
+  if (c.isItalic()) style.italic = true
+  if (c.isUnderline()) style.underline = true
   if (!c.isFgDefault()) {
-    // Palette indices 0-15 map via ANSI_FACES; 256-colour and RGB fall back to a
-    // visible non-default face so the run is at least distinguishable.
-    const idx = c.isFgPalette() ? c.getFgColor() : -1
-    return ANSI_FACES[idx] ?? "builtin"
+    const fg = cellColor(c, "fg")
+    if (fg) style.fg = fg
   }
-  if (!c.isBgDefault()) return "region"
-  if (c.isBold()) return "keyword"
-  return null
+  if (!c.isBgDefault()) {
+    const bg = cellColor(c, "bg")
+    if (bg) style.bg = bg
+  }
+  if (!style.fg && !style.bg && !style.bold && !style.italic && !style.underline) return null
+  return { face: "default", style }
+}
+
+function sameRunStyle(a: TerminalRunStyle | null, b: TerminalRunStyle | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.face === b.face
+    && a.style.fg === b.style.fg
+    && a.style.bg === b.style.bg
+    && !!a.style.bold === !!b.style.bold
+    && !!a.style.italic === !!b.style.italic
+    && !!a.style.underline === !!b.style.underline
+}
+
+function spanForRun(start: number, end: number, run: TerminalRunStyle): TextSpan {
+  return { start, end, face: run.face, style: run.style }
 }
 
 /** Snapshot xterm's active buffer (scrollback + viewport) as text, a cursor
@@ -164,22 +187,22 @@ export function renderTerminal(xt: XTerm): { text: string; point: number; spans:
     // cell index): width-0 trailers contribute nothing, empty width-1 cells are
     // a single space in translateToString.
     let col = 0
-    let runFace: FaceName | null = null
+    let runStyle: TerminalRunStyle | null = null
     let runStart = 0
     const lineEnd = lineStart + s.length
     for (let x = 0; line && col < s.length; x++) {
       if (!line.getCell(x, cell)) break
       const w = cell.getWidth()
       if (w === 0) continue
-      const face = cellFace(cell)
-      if (face !== runFace) {
-        if (runFace) spans.push({ start: lineStart + runStart, end: Math.min(lineStart + col, lineEnd), face: runFace })
-        runFace = face
+      const style = cellStyle(cell)
+      if (!sameRunStyle(style, runStyle)) {
+        if (runStyle) spans.push(spanForRun(lineStart + runStart, Math.min(lineStart + col, lineEnd), runStyle))
+        runStyle = style
         runStart = col
       }
       col += cell.getChars().length || 1
     }
-    if (runFace) spans.push({ start: lineStart + runStart, end: Math.min(lineStart + col, lineEnd), face: runFace })
+    if (runStyle) spans.push(spanForRun(lineStart + runStart, Math.min(lineStart + col, lineEnd), runStyle))
     lineStart += s.length + 1
   }
   // Drop blank viewport rows past both the last output and the cursor.

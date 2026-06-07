@@ -1,8 +1,9 @@
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { applyTheme } from "../display/theme"
-import type { Theme } from "../display/theme"
+import type { FaceStyle, Theme } from "../display/theme"
 import type { ThemedChunk } from "../display/themed-text"
 import type { TextSpan } from "../modes/mode"
+import { resolveFace } from "../runtime/faces"
 
 const syntaxByTheme = new WeakMap<Theme, SyntaxStyle>()
 const styleIdByChunkKey = new WeakMap<SyntaxStyle, Map<string, number>>()
@@ -51,31 +52,18 @@ function styleIdForChunk(syntax: SyntaxStyle, chunk: ThemedChunk): number {
   return id
 }
 
-function chunkHasStyle(chunk: ThemedChunk): boolean {
-  return Boolean(chunk.fg || chunk.bg || chunk.bold || chunk.italic || chunk.underline)
+function chunkHasNonDefaultStyle(chunk: ThemedChunk, defaultStyle: FaceStyle | undefined): boolean {
+  return chunk.fg !== defaultStyle?.fg
+    || chunk.bg !== defaultStyle?.bg
+    || !!chunk.bold !== !!defaultStyle?.bold
+    || !!chunk.italic !== !!defaultStyle?.italic
+    || !!chunk.underline !== !!defaultStyle?.underline
 }
 
-function newlineOffsets(text: string): number[] {
-  const offsets: number[] = []
-  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
-    offsets.push(index)
-  }
-  return offsets
-}
-
-function countNewlinesBefore(offsets: number[], offset: number): number {
-  let lo = 0
-  let hi = offsets.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (offsets[mid] < offset) lo = mid + 1
-    else hi = mid
-  }
-  return lo
-}
-
-function toNativeHighlightOffset(offsets: number[], offset: number): number {
-  return offset - countNewlinesBefore(offsets, offset)
+function nativeLength(text: string): number {
+  let length = text.length
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) length--
+  return length
 }
 
 /** Sync full-buffer text, point, and font-lock highlights into a TextareaRenderable. */
@@ -86,22 +74,30 @@ export function syncTextareaFromSpans(
   const { editBuffer } = textarea
   editBuffer.setText(options.text)
   editBuffer.clearAllHighlights()
+  const defaultStyle = resolveFace("default", options.theme)
+  if (defaultStyle?.fg) {
+    textarea.textColor = defaultStyle.fg
+    textarea.focusedTextColor = defaultStyle.fg
+  }
+  if (defaultStyle?.bg) {
+    textarea.backgroundColor = defaultStyle.bg
+    textarea.focusedBackgroundColor = defaultStyle.bg
+  }
   const syntax = syntaxForTheme(options.theme)
   editBuffer.setSyntaxStyle(syntax)
 
   const themed = applyTheme(options.text, options.spans, options.theme)
-  const lineBreaks = newlineOffsets(options.text)
-  let offset = 0
+  let nativeOffset = 0
   for (const chunk of themed.chunks) {
-    const end = offset + chunk.text.length
-    if (chunkHasStyle(chunk)) {
+    const nativeEnd = nativeOffset + nativeLength(chunk.text)
+    if (chunkHasNonDefaultStyle(chunk, defaultStyle)) {
       editBuffer.addHighlightByCharRange({
-        start: toNativeHighlightOffset(lineBreaks, offset),
-        end: toNativeHighlightOffset(lineBreaks, end),
+        start: nativeOffset,
+        end: nativeEnd,
         styleId: styleIdForChunk(syntax, chunk),
       })
     }
-    offset = end
+    nativeOffset = nativeEnd
   }
 
   textarea.cursorOffset = options.point

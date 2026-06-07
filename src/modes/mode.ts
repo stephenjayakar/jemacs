@@ -1,4 +1,5 @@
 import type { BufferModel } from "../kernel/buffer"
+import type { FaceStyle } from "../display/theme-types"
 import { Keymap } from "../kernel/keymap"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
@@ -33,6 +34,7 @@ export type TextSpan = {
   start: number
   end: number
   face: FaceName
+  style?: FaceStyle
 }
 
 export type CompletionCandidate = {

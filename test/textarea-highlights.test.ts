@@ -25,7 +25,6 @@ test("TextareaRenderable sync keeps multiline font-lock highlights aligned", asy
     const body = renderer.root.findDescendantById(`window-body:${editor.selectedWindowId}`) as TextareaRenderable
     expect(body.editBuffer.getLineHighlights(1).map(({ start, end }) => ({ start, end }))).toEqual([
       { start: 0, end: 8 },
-      { start: 8, end: 16 },
     ])
     host.destroy()
   } finally {

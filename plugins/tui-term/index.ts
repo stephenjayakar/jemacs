@@ -5,12 +5,13 @@ import { defineMode, getMode } from "../../src/modes/mode"
 import { Keymap, type KeyEventLike } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
-import { JTermSession, spawnSession } from "./session"
+import { JTermSession, jtermSpans, spawnSession } from "./session"
 import { jtermRawMap } from "./keymap-adapter"
 import { keyToPtyBytes } from "./key-encode"
 
 export { keyToPtyBytes } from "./key-encode"
 export { JTermSession, spawnSession, makeXTerm } from "./session"
+export { jtermSpans } from "./session"
 export type { XTermInstance } from "./session"
 export { JTermRawMap, jtermRawMap } from "./keymap-adapter"
 export { surfaceChanged } from "./renderer"
@@ -79,6 +80,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     name: JTERM_MODE,
     parent: "text",
     keymap: jtermMap,
+    fontLock: jtermSpans,
   })
 
   // Char-mode: every printable key goes raw; C-c is the prefix. The exact

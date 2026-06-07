@@ -9,6 +9,7 @@ import {
   sessions,
   jtermRawMap,
   JTermSession,
+  jtermSpans,
   sessionFor,
   surfaceChanged,
 } from "../../plugins/tui-term"
@@ -327,6 +328,10 @@ describe("jterm: VT parsing via @xterm/headless", () => {
     await feedAsync(session, buffer, "plain \x1b[31mred\x1b[0m \x1b[1;32mbold-green\x1b[0m\r\n")
     expect(buffer.text).toBe("plain red bold-green\n")
     expect(buffer.text).not.toContain("\x1b")
+    expect(jtermSpans(buffer)).toEqual([
+      { start: 6, end: 9, face: "default", style: { fg: "#cd3131" } },
+      { start: 10, end: 20, face: "default", style: { fg: "#0dbc79", bold: true } },
+    ])
   })
   test("absolute cursor positioning overwrites grid cells", async () => {
     const { session, buffer } = makeSession()
