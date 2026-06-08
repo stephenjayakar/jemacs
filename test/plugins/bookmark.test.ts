@@ -86,9 +86,12 @@ test("bookmark-import-from-emacs writes bookmark-file", async () => {
   expect(Object.keys(loaded).sort()).toEqual(["stephen.el", "vibe"])
 })
 
-test("C-x r m / C-x r b are bound", async () => {
+test("bookmark commands use Emacs names and keys", async () => {
   const editor = makeEditor()
   await install(editor)
   expect(editor.keymaps.lookup("C-x r m")).toMatchObject({ status: "matched", command: "bookmark-set" })
   expect(editor.keymaps.lookup("C-x r b")).toMatchObject({ status: "matched", command: "bookmark-jump" })
+  expect(editor.keymaps.lookup("C-x r l")).toMatchObject({ status: "matched", command: "bookmark-bmenu-list" })
+  expect(editor.commands.get("list-bookmarks")).toBeDefined()
+  expect(editor.commands.get("bookmark-list")).toBeDefined()
 })

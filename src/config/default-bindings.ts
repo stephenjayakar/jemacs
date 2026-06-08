@@ -34,7 +34,7 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-x 4 C-f", "find-file-other-window")
   editor.key("C-x 4 f", "find-file-other-window")
   editor.key("C-x 4 b", "switch-to-buffer-other-window")
-  editor.key("C-x 4 C-o", "display-buffer-other-window")
+  editor.key("C-x 4 C-o", "display-buffer")
   editor.key("C-M-v", "scroll-other-window")
   editor.key("M-C-v", "scroll-other-window-down")
   editor.key("C-space", "set-mark-command")
@@ -79,7 +79,7 @@ function bindGlobalKeys(editor: Editor): void {
   // GNU Emacs: C-tab → other-window; C-S-tab → (other-window -1). Also accept common terminal names.
   for (const key of ["C-tab"]) editor.key(key, "other-window")
   for (const key of ["C-S-tab", "C-S-iso-lefttab", "C-iso-lefttab", "C-backtab"]) {
-    editor.key(key, "other-window-backward")
+    editor.key(key, "previous-window-any-frame")
   }
   editor.key("C-M-tab", "tab-bar-switch-to-next-tab")
   editor.key("C-M-S-tab", "tab-bar-switch-to-prev-tab")
@@ -100,6 +100,8 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-l", "recenter-top-bottom")
   editor.key("M-<", "beginning-of-buffer")
   editor.key("M->", "end-of-buffer")
+  editor.key("C-M-a", "beginning-of-defun")
+  editor.key("C-M-e", "end-of-defun")
   // GNU bindings.el + macOS ns-win.el: Home/End jump to buffer extremes; Page Up/Down scroll.
   for (const key of ["home", "kp-home", "C-home", "begin"]) editor.key(key, "beginning-of-buffer")
   for (const key of ["end", "kp-end", "C-end"]) editor.key(key, "end-of-buffer")

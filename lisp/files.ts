@@ -20,6 +20,7 @@ import {
   diredMarkAll,
   diredMarkEntry,
   diredMarkFilesRegexp,
+  diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
   diredUnmarkBackward,
@@ -142,9 +143,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (killed) editor.message(`Killed buffer ${display}`)
   }, "Kill the current buffer or a specified buffer.")
 
-  editor.command("revert-buffer", async ({ buffer, editor, args }) => {
+  const revertBuffer = async ({ buffer, editor, args }: CommandContext) => {
     if (!buffer.path) {
       editor.message("Current buffer is not visiting a file")
+      return
+    }
+    if (buffer.kind === "directory") {
+      await refreshDiredBuffer(buffer)
+      editor.message(`Reverted ${buffer.path}`)
       return
     }
     // Emacs gates on confirmation when modified (files.el:7102); auto-revert passes noconfirm to bypass.
@@ -155,7 +161,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await buffer.revert()
     buffer.point = Math.min(buffer.point, buffer.text.length)
     editor.message(`Reverted ${editor.bufferDisplayName(buffer)}`)
-  }, "Reload the current file from disk, confirming first if the buffer is modified.")
+  }
+  editor.command("revert-buffer", revertBuffer, "Reload the current file or directory from disk, confirming first if the buffer is modified.")
 
   editor.command("save-some-buffers", async ({ editor }) => {
     const dirty = [...editor.buffers.values()].filter(b => b.dirty && b.path && b.kind === "file")
@@ -202,10 +209,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!path) return
     await editor.openDirectory(substituteInFileName(path))
   }, "Open a directory in Dired.")
-  editor.command("dired-revert", async ({ buffer, editor }) => {
+  const diredRevert = async ({ buffer, editor }: CommandContext) => {
     await refreshDiredBuffer(buffer)
     editor.message(`Reverted ${buffer.path}`)
-  }, "Refresh the current Dired buffer.")
+  }
+  editor.command("dired-revert", diredRevert, "Refresh the current Dired buffer.")
   editor.command("dired-find-file", async ({ buffer, editor }) => {
     const entry = diredEntryAtPoint(buffer)
     if (!entry) return
@@ -221,10 +229,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("dired-unmark", ({ buffer }) => {
     diredUnmarkEntry(buffer, diredEntryAtPoint(buffer))
   }, "Unmark the current Dired line.")
-  editor.command("dired-unmark-all", ({ buffer, editor }) => {
+  const diredUnmarkAllMarks = ({ buffer, editor }: CommandContext) => {
     diredUnmarkAll(buffer)
     editor.message("Unmarked all")
-  }, "Remove all marks and deletion flags in Dired.")
+  }
+  editor.command("dired-unmark-all-marks", diredUnmarkAllMarks, "Remove all marks and deletion flags in Dired.")
+  editor.command("dired-unmark-all", diredUnmarkAllMarks, "Compatibility alias for dired-unmark-all-marks.")
+  editor.command("dired-toggle-marks", ({ buffer }) => {
+    diredToggleMarks(buffer)
+  }, "Toggle Dired marks throughout the current buffer.")
   editor.command("dired-toggle-mark", ({ buffer }) => {
     diredToggleMark(buffer, diredEntryAtPoint(buffer))
   }, "Toggle the mark on the current Dired line.")

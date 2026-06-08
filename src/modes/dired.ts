@@ -25,13 +25,13 @@ export const NAME_OFFSET = 22
 export function installDiredMode(): void {
   const keymap = new Keymap("dired-map")
   keymap.bind("enter", "dired-find-file")
-  keymap.bind("g", "dired-revert")
+  keymap.bind("g", "revert-buffer")
   keymap.bind("^", "dired-up-directory")
   keymap.bind("q", "quit-window")
   keymap.bind("m", "dired-mark")
   keymap.bind("u", "dired-unmark")
-  keymap.bind("S-u", "dired-unmark-all")
-  keymap.bind("t", "dired-toggle-mark")
+  keymap.bind("S-u", "dired-unmark-all-marks")
+  keymap.bind("t", "dired-toggle-marks")
   keymap.bind("% .", "dired-mark-all")
   keymap.bind("% m", "dired-mark-files-regexp")
   keymap.bind("% d", "dired-flag-files-regexp")
@@ -140,6 +140,17 @@ export function diredToggleMark(buffer: BufferModel, entry: DiredEntry | undefin
   const marks = diredMarks.get(buffer)
   if (marks?.get(entry.path) === "marked") diredUnmarkEntry(buffer, entry)
   else diredMarkEntry(buffer, entry, "marked")
+}
+
+export function diredToggleMarks(buffer: BufferModel): void {
+  const marks = diredMarks.get(buffer) ?? new Map()
+  for (const entry of diredEntryLines.get(buffer) ?? []) {
+    if (diredSpecialEntry(entry)) continue
+    if (marks.get(entry.path) === "marked") marks.delete(entry.path)
+    else if (!marks.has(entry.path)) marks.set(entry.path, "marked")
+  }
+  diredMarks.set(buffer, marks)
+  renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
 }
 
 export function diredMarkAll(buffer: BufferModel): void {

@@ -154,7 +154,7 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     await jumpToBookmark(editor, record, name)
   }, "Jump to a previously set bookmark.")
 
-  editor.command("bookmark-list", ({ editor }) => {
+  const listBookmarks = ({ editor }: { editor: Editor }) => {
     const table = tableFor(editor)
     const names = bookmarkNames(table)
     if (!names.length) {
@@ -166,7 +166,10 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
       return `${String(i + 1).padStart(3)}  ${name} — ${rec.filename}${rec.position ? ` @${rec.position + 1}` : ""}`
     })
     editor.scratch("*Bookmarks*", lines.join("\n"), "text")
-  }, "Display a list of all bookmarks.")
+  }
+  editor.command("bookmark-bmenu-list", listBookmarks, "Display a list of all bookmarks.")
+  editor.command("list-bookmarks", listBookmarks, "Display a list of all bookmarks.")
+  editor.command("bookmark-list", listBookmarks, "Compatibility alias for bookmark-bmenu-list.")
 
   editor.command("bookmark-delete", async ({ editor, args }) => {
     const table = tableFor(editor)
@@ -211,6 +214,6 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
 
   editor.key("C-x r m", "bookmark-set")
   editor.key("C-x r b", "bookmark-jump")
-  editor.key("C-x r l", "bookmark-list")
+  editor.key("C-x r l", "bookmark-bmenu-list")
   editor.key("C-x r d", "bookmark-delete")
 }

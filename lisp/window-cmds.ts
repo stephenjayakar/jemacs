@@ -37,10 +37,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("split-window-below", ({ editor }) => editor.splitWindowBelow(), "Split the selected window below.")
   editor.command("split-window-right", ({ editor }) => editor.splitWindowRight(), "Split the selected window to the right.")
 
+  const previousWindow = ({ editor }: { editor: Editor }) => otherWindow(editor, -1)
   editor.command("other-window", ({ editor }) => otherWindow(editor, 1), "Select another window.")
-  editor.command("other-window-backward", ({ editor }) => otherWindow(editor, -1), "Select the previous window in the cycle.")
+  editor.command("other-window-backward", previousWindow, "Compatibility alias for previous-window-any-frame.")
   editor.command("next-window-any-frame", ({ editor }) => otherWindow(editor, 1), "Select the next window.")
-  editor.command("previous-window-any-frame", ({ editor }) => otherWindow(editor, -1), "Select the previous window.")
+  editor.command("previous-window-any-frame", previousWindow, "Select the previous window.")
 
   editor.command("recenter-top-bottom", ({ editor }) => {
     if (!editor.selectedWindowLeaf()) return
@@ -99,7 +100,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`Now visiting ${editor.bufferDisplayName(buffer)} in other window`)
   }, "Find a file in another window.")
 
-  editor.command("display-buffer-other-window", async ({ editor, args }) => {
+  const displayBuffer = async ({ editor, args }: { editor: Editor; args: string[] }) => {
     const name = args[0] ?? await editor.completingRead("Display buffer in other window: ", {
       collection: [...editor.buffers.values()].map(b => editor.bufferDisplayName(b)),
       history: "buffer",
@@ -110,7 +111,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       ?? [...editor.buffers.values()].find(b => b.name === name || editor.bufferDisplayName(b) === name)
     const shown = editor.displayBufferInOtherWindow(target?.id ?? name)
     editor.message(`Displayed ${editor.bufferDisplayName(shown)} in other window`)
-  }, "Display a buffer in another window and select it.")
+  }
+  editor.command("display-buffer", displayBuffer, "Display a buffer in another window and select it.")
+  editor.command("display-buffer-other-window", displayBuffer, "Compatibility alias for display-buffer.")
 
   editor.command("toggle-window-dedicated", ({ editor }) => {
     const leaf = editor.selectedWindowLeaf()
@@ -184,7 +187,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   // GNU Emacs: C-tab → other-window; C-S-tab → (other-window -1). Also accept common terminal names.
   for (const key of ["C-tab"]) editor.key(key, "other-window")
   for (const key of ["C-S-tab", "C-S-iso-lefttab", "C-iso-lefttab", "C-backtab"]) {
-    editor.key(key, "other-window-backward")
+    editor.key(key, "previous-window-any-frame")
   }
   editor.key("C-l", "recenter-top-bottom")
   editor.key("C-M-v", "scroll-other-window")
@@ -192,7 +195,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.key("C-x 4 b", "switch-to-buffer-other-window")
   editor.key("C-x 4 C-f", "find-file-other-window")
   editor.key("C-x 4 f", "find-file-other-window")
-  editor.key("C-x 4 C-o", "display-buffer-other-window")
+  editor.key("C-x 4 C-o", "display-buffer")
   editor.key("C-x r w", "window-configuration-to-register")
   editor.key("C-M-tab", "tab-bar-switch-to-next-tab")
   editor.key("C-M-S-tab", "tab-bar-switch-to-prev-tab")

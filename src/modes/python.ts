@@ -19,8 +19,8 @@ const defunRegex = /^\s*(async\s+def|def|class)\s+([A-Za-z_]\w*)/gm
 
 export function installPythonMode(): void {
   const keymap = new Keymap("python-map")
-  keymap.bind("C-M-a", "python-beginning-of-defun")
-  keymap.bind("C-M-e", "python-end-of-defun")
+  keymap.bind("C-M-a", "beginning-of-defun")
+  keymap.bind("C-M-e", "end-of-defun")
   defineMode({
     name: "python",
     parent: "prog-mode",
@@ -131,4 +131,3 @@ function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
 }
-

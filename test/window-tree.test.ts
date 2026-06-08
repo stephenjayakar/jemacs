@@ -24,7 +24,7 @@ test("split→split→delete-middle preserves the outer siblings", async () => {
 
   // Selection is on C (the newest leaf); step back one to land on B.
   expect(editor.selectedWindowId).toBe(c)
-  await editor.run("other-window-backward")
+  await editor.run("previous-window-any-frame")
   expect(editor.selectedWindowId).toBe(b)
 
   await editor.run("delete-window")

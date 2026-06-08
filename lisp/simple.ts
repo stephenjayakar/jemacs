@@ -100,8 +100,24 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     buffer.markActive = true
   }, "Set mark at end and point at beginning of buffer.")
 
-  editor.command("python-beginning-of-defun", ({ buffer }) => pythonBeginningOfDefun(buffer), "Move to the beginning of the current Python def or class.")
-  editor.command("python-end-of-defun", ({ buffer }) => pythonEndOfDefun(buffer), "Move to the end of the current Python def or class.")
+  const beginningOfDefun = ({ buffer, editor }: CommandContext) => {
+    if (buffer.mode === "python") {
+      pythonBeginningOfDefun(buffer)
+      return
+    }
+    editor.message("No defun navigation for this mode")
+  }
+  const endOfDefun = ({ buffer, editor }: CommandContext) => {
+    if (buffer.mode === "python") {
+      pythonEndOfDefun(buffer)
+      return
+    }
+    editor.message("No defun navigation for this mode")
+  }
+  editor.command("beginning-of-defun", beginningOfDefun, "Move to the beginning of the current defun.")
+  editor.command("end-of-defun", endOfDefun, "Move to the end of the current defun.")
+  editor.command("python-beginning-of-defun", beginningOfDefun, "Compatibility alias for beginning-of-defun in Python buffers.")
+  editor.command("python-end-of-defun", endOfDefun, "Compatibility alias for end-of-defun in Python buffers.")
 
   // ---- kill ring / basic editing -----------------------------------------
 
@@ -227,7 +243,8 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   }, "Complete the symbol at point, or indent the current line.")
 
   editor.command("undo", ({ buffer }) => buffer.undo(), "Undo the last text edit.")
-  editor.command("redo", ({ buffer }) => buffer.redo(), "Redo the last undone text edit.")
+  editor.command("undo-redo", ({ buffer }) => buffer.redo(), "Redo the last undone text edit.")
+  editor.command("redo", ({ buffer }) => buffer.redo(), "Compatibility alias for undo-redo.")
 
   editor.command("kill-line", ({ buffer, prefixArgument }) => {
     const append = lastCommandWasKill()
@@ -382,6 +399,8 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.key("M-b", "backward-word")
   editor.key("M-<", "beginning-of-buffer")
   editor.key("M->", "end-of-buffer")
+  editor.key("C-M-a", "beginning-of-defun")
+  editor.key("C-M-e", "end-of-defun")
   for (const key of ["home", "kp-home", "C-home", "begin"]) editor.key(key, "beginning-of-buffer")
   for (const key of ["end", "kp-end", "C-end"]) editor.key(key, "end-of-buffer")
   for (const key of ["prior", "kp-prior", "pageup"]) editor.key(key, "scroll-down-command")

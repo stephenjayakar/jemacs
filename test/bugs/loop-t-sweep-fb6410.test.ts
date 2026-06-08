@@ -52,9 +52,10 @@ test("switch-to-buffer-other-window: collection lists display names and resolves
   expect(msg).toContain(editor.bufferDisplayName(b))
 })
 
-test("display-buffer-other-window: initialValue and message use display name", async () => {
+test("display-buffer: initialValue and message use display name", async () => {
   const { editor, a } = twoSameName()
   editor.switchToBuffer(a.id)
+  expect(editor.commands.get("display-buffer-other-window")).toBeDefined()
   let initial: string | undefined
   editor.completingRead = (_p, opts) => {
     initial = (opts as { initialValue?: string }).initialValue
@@ -62,7 +63,7 @@ test("display-buffer-other-window: initialValue and message use display name", a
   }
   let msg = ""
   editor.events.on("message", ({ text }) => { msg = text })
-  await editor.run("display-buffer-other-window")
+  await editor.run("display-buffer")
   expect(initial).toBe(editor.bufferDisplayName(a))
   expect(msg).toContain(editor.bufferDisplayName(a))
 })

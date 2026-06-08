@@ -12,6 +12,7 @@ import {
   diredMarkAll,
   diredMarkEntry,
   diredMarkFilesRegexp,
+  diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
   diredUnmarkEntry,
@@ -44,6 +45,12 @@ test("dired mark, unmark, toggle, and mark-all update the listing", async () => 
     expect(buffer.text).not.toContain("* -     ")
 
     diredMarkAll(buffer)
+    expect(buffer.text.match(/^\* /gm)?.length).toBeGreaterThanOrEqual(2)
+
+    diredToggleMarks(buffer)
+    expect(buffer.text).not.toMatch(/^\* /m)
+
+    diredToggleMarks(buffer)
     expect(buffer.text.match(/^\* /gm)?.length).toBeGreaterThanOrEqual(2)
 
     diredUnmarkAll(buffer)
@@ -123,7 +130,9 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("d")).toBe("dired-flag-file-deletion")
   expect(keymap?.get("S-d")).toBe("dired-do-delete")
   expect(keymap?.get("u")).toBe("dired-unmark")
-  expect(keymap?.get("S-u")).toBe("dired-unmark-all")
+  expect(keymap?.get("S-u")).toBe("dired-unmark-all-marks")
+  expect(keymap?.get("t")).toBe("dired-toggle-marks")
+  expect(keymap?.get("g")).toBe("revert-buffer")
   expect(keymap?.get("x")).toBe("dired-do-flagged-delete")
   expect(keymap?.get("% m")).toBe("dired-mark-files-regexp")
   expect(keymap?.get("% .")).toBe("dired-mark-all")

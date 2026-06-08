@@ -54,7 +54,7 @@ test("tab key encodings map to Emacs-style window cycle bindings", () => {
   expect(keyToken({ name: "tab", ctrl: true, shift: true, raw: "\x1b[57346;6u" })).toBe("C-S-tab")
 
   expect(editor.keymap.get("C-tab")).toBe("other-window")
-  expect(editor.keymap.get("C-S-tab")).toBe("other-window-backward")
+  expect(editor.keymap.get("C-S-tab")).toBe("previous-window-any-frame")
 
   const fed = editor.keymaps.feed({ name: "tab", ctrl: true })
   expect(fed.status).toBe("matched")
@@ -449,7 +449,8 @@ test("prog-mode and python-mode are installed with a real python major map", asy
 
   expect(getMode("prog-mode")?.keymap?.all()).toEqual([])
   expect(getMode("python")?.parent).toBe("prog-mode")
-  expect(getMode("python")?.keymap?.get("C-M-a")).toBe("python-beginning-of-defun")
+  expect(getMode("python")?.keymap?.get("C-M-a")).toBe("beginning-of-defun")
+  expect(getMode("python")?.keymap?.get("C-M-e")).toBe("end-of-defun")
   expect(modeLineage("python").map(m => m.name)).toEqual(["python", "prog-mode", "text"])
 
   const editor = new Editor()
@@ -474,10 +475,12 @@ test("python mode supports indentation, defun navigation, font-lock, and TAB com
   expect(buffer.text).toContain("    return ran")
 
   buffer.point = buffer.text.length
-  await editor.run("python-beginning-of-defun")
+  await editor.run("beginning-of-defun")
   expect(buffer.point).toBe(0)
-  await editor.run("python-end-of-defun")
+  await editor.run("end-of-defun")
   expect(buffer.point).toBe(buffer.text.length)
+  expect(editor.commands.get("python-beginning-of-defun")).toBeDefined()
+  expect(editor.commands.get("python-end-of-defun")).toBeDefined()
 
   const spans = editor.fontLock(buffer)
   expect(spans.some(span => span.face === "keyword" && buffer.text.slice(span.start, span.end) === "def")).toBe(true)
@@ -532,7 +535,7 @@ test("dired opens directories, follows entries, refreshes, and exposes dired key
   expect(editor.currentBuffer.text).toBe("hello")
 
   await editor.run("dired", ["/tmp"])
-  await editor.run("dired-revert")
+  await editor.run("revert-buffer")
   expect(editor.currentBuffer.text).toContain("jemacs-dired-file.txt")
 
   const cwd = process.cwd()
