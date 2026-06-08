@@ -7,6 +7,7 @@ import { setCustom } from "../../src/runtime/custom"
 import { spawnProcess } from "../../src/platform/runtime"
 import {
   install,
+  projectCurrent,
   projectFiles,
   projectRoot,
   readProjectList,
@@ -64,9 +65,12 @@ test("projectFiles lists git-tracked files relative to root", async () => {
 
 test("install registers commands and C-x p bindings", () => {
   const editor = ed()
-  for (const cmd of ["project-root", "project-find-file", "project-switch-project", "project-compile"]) {
+  for (const cmd of ["project-current", "project-root", "project-find-file", "project-switch-project", "project-compile"]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
+  expect(editor.commands.get("project-current")?.interactive).toBeUndefined()
+  expect(editor.commands.get("project-root")?.interactive).toBeUndefined()
+  expect(editor.commands.get("project-find-file")?.interactive).toBe(true)
   expect(editor.keymap.get("C-x p f")).toBe("project-find-file")
   expect(editor.keymap.get("C-x p p")).toBe("project-switch-project")
   expect(editor.keymap.get("C-x p c")).toBe("project-compile")
@@ -90,6 +94,29 @@ test("readProjectList tolerates missing or malformed file", async () => {
   expect(await readProjectList()).toEqual([])
 })
 
+test("project-current returns the current root quietly", async () => {
+  const editor = ed()
+  await editor.openFile(join(repo, "src", "a.ts"))
+  let messaged = false
+  editor.events.on("message", () => { messaged = true })
+
+  expect(await projectCurrent(editor)).toBe(resolve(repo))
+  expect(await editor.run("project-current")).toBe(resolve(repo))
+  expect(messaged).toBe(false)
+})
+
+test("project-current returns null quietly outside any repo", async () => {
+  const editor = ed()
+  const island = join(dir, "no-vc")
+  await mkdir(island, { recursive: true })
+  let messaged = false
+  editor.events.on("message", () => { messaged = true })
+
+  expect(await projectCurrent(editor, { directory: island })).toBeNull()
+  expect(await editor.run("project-current", [island])).toBeNull()
+  expect(messaged).toBe(false)
+})
+
 test("project-root echoes the discovered root from a buffer inside the repo", async () => {
   const editor = ed()
   await editor.openFile(join(repo, "src", "a.ts"))
@@ -98,6 +125,15 @@ test("project-root echoes the discovered root from a buffer inside the repo", as
   const result = await editor.run("project-root")
   expect(result).toBe(resolve(repo))
   expect(last).toBe(resolve(repo))
+})
+
+test("project-root returns an explicit project root without messaging", async () => {
+  const editor = ed()
+  let messaged = false
+  editor.events.on("message", () => { messaged = true })
+
+  expect(await editor.run("project-root", [repo])).toBe(resolve(repo))
+  expect(messaged).toBe(false)
 })
 
 test("project-find-file completes over git ls-files and opens the chosen file", async () => {

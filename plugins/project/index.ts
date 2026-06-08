@@ -62,9 +62,14 @@ export async function rememberProject(root: string): Promise<void> {
   await writeProjectList(list)
 }
 
-async function projectCurrent(editor: Editor, override?: string): Promise<string | null> {
-  const start = override ?? editor.currentBuffer.directory() ?? process.cwd()
-  const root = await projectRoot(start)
+export async function projectCurrent(editor: Editor, options: { directory?: string } = {}): Promise<string | null> {
+  const start = options.directory ?? editor.currentBuffer.directory() ?? process.cwd()
+  return projectRoot(start)
+}
+
+async function requireCurrentProject(editor: Editor, directory?: string): Promise<string | null> {
+  const start = directory ?? editor.currentBuffer.directory() ?? process.cwd()
+  const root = await projectCurrent(editor, { directory: start })
   if (!root) editor.message(`No project found for ${start}`)
   return root
 }
@@ -73,14 +78,19 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   defcustom("project-list-file", "string", join(homedir(), ".jemacs", "projects.json"),
     "File where the list of known project roots is persisted.")
 
-  editor.command("project-root", async ({ editor, args }) => {
-    const root = await projectCurrent(editor, args[0])
+  editor.commands.define("project-current", async ({ editor, args }) =>
+    projectCurrent(editor, { directory: args[0] }),
+  { description: "Return the current project root, or null when none is found." })
+
+  editor.commands.define("project-root", async ({ editor, args }) => {
+    if (args[0]) return resolve(args[0])
+    const root = await requireCurrentProject(editor)
     if (root) editor.message(root)
     return root
-  }, "Echo the root directory of the current project.")
+  }, { description: "Return the root directory of a project." })
 
   editor.command("project-find-file", async ({ editor, args }) => {
-    const root = await projectCurrent(editor, args[0])
+    const root = await requireCurrentProject(editor, args[0])
     if (!root) return
     await rememberProject(root)
     const files = await projectFiles(root)
@@ -111,7 +121,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Switch to a known project root and find a file in it.")
 
   editor.command("project-compile", async ({ editor, args }) => {
-    const root = await projectCurrent(editor)
+    const root = await requireCurrentProject(editor)
     if (!root) return
     const cmd = args[0] ?? await editor.prompt("Compile command: ", lastCompileCommand(editor), "compile-command")
     if (!cmd) return
