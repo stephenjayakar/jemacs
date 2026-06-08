@@ -2,6 +2,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import type { BufferModel } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { findProjectRoot } from "../../src/lsp/project-root"
 import { spawnProcess } from "../../src/platform/runtime"
@@ -107,6 +108,28 @@ async function requireCurrentProject(editor: Editor, directory?: string): Promis
   const root = await projectCurrent(editor, { directory: start })
   if (!root) editor.message(`No project found for ${start}`)
   return root
+}
+
+async function bufferProjectRoot(buffer: BufferModel): Promise<string | null> {
+  const localRoot = buffer.locals.get("magit-root")
+  const localDefaultDirectory = buffer.locals.get("default-directory")
+  const start = typeof localRoot === "string"
+    ? localRoot
+    : typeof localDefaultDirectory === "string"
+      ? localDefaultDirectory
+      : buffer.directory()
+  return start ? projectRoot(start) : null
+}
+
+export async function projectBuffers(editor: Editor, root: string): Promise<BufferModel[]> {
+  const expected = resolve(root)
+  const buffers: BufferModel[] = []
+  for (const buffer of editor.buffers.values()) {
+    if (buffer.kind === "minibuffer") continue
+    const found = await bufferProjectRoot(buffer)
+    if (found && resolve(found) === expected) buffers.push(buffer)
+  }
+  return buffers
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
@@ -220,6 +243,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.run("vc-dir", [root])
   }, "Run VC-Dir in the current project's root.")
 
+  editor.command("project-kill-buffers", async ({ editor, args }) => {
+    const noConfirm = args.includes("no-confirm") || args.includes("true")
+    const directory = args.find(arg => arg !== "no-confirm" && arg !== "true")
+    const root = await requireCurrentProject(editor, directory)
+    if (!root) return
+    const buffers = await projectBuffers(editor, root)
+    if (!buffers.length) {
+      editor.message("No project buffers to kill")
+      return
+    }
+    if (!noConfirm) {
+      const answer = await editor.prompt(`Kill ${buffers.length} project buffer(s)? (y or n) `, "n", "project-kill-buffers")
+      if (answer !== "y") {
+        editor.message("Cancelled")
+        return
+      }
+    }
+    let killed = 0
+    for (const buffer of buffers) if (editor.killBuffer(buffer.id)) killed++
+    editor.message(`Killed ${killed} project buffer(s)`)
+  }, "Kill the buffers belonging to the current project.")
+
   editor.command("project-compile", async ({ editor, args }) => {
     const root = await requireCurrentProject(editor)
     if (!root) return
@@ -236,5 +281,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.key("C-x p v", "project-vc-dir")
   editor.key("C-x p S-d", "project-dired")
   editor.key("C-x p c", "project-compile")
+  editor.key("C-x p k", "project-kill-buffers")
   editor.key("C-x v d", "vc-dir")
 }

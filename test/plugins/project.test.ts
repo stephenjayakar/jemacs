@@ -10,6 +10,7 @@ import {
   projectCurrent,
   projectDirectories,
   projectFiles,
+  projectBuffers,
   projectRoot,
   readProjectList,
   rememberProject,
@@ -77,7 +78,7 @@ test("projectDirectories lists tracked project directories relative to root", as
 
 test("install registers commands and C-x p bindings", () => {
   const editor = ed()
-  for (const cmd of ["project-current", "project-root", "project-find-file", "project-find-regexp", "project-find-dir", "project-switch-project", "project-dired", "project-vc-dir", "project-compile", "vc-dir"]) {
+  for (const cmd of ["project-current", "project-root", "project-find-file", "project-find-regexp", "project-find-dir", "project-switch-project", "project-dired", "project-vc-dir", "project-kill-buffers", "project-compile", "vc-dir"]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
   expect(editor.commands.get("project-current")?.interactive).toBeUndefined()
@@ -90,6 +91,7 @@ test("install registers commands and C-x p bindings", () => {
   expect(editor.keymap.get("C-x p v")).toBe("project-vc-dir")
   expect(editor.keymap.get("C-x p S-d")).toBe("project-dired")
   expect(editor.keymap.get("C-x p c")).toBe("project-compile")
+  expect(editor.keymap.get("C-x p k")).toBe("project-kill-buffers")
   expect(editor.keymap.get("C-x v d")).toBe("vc-dir")
 })
 
@@ -293,6 +295,58 @@ test("project-vc-dir runs VC status at the current project root", async () => {
 
   expect(seen).toBe(resolve(repo))
   expect((await readProjectList())[0]).toBe(resolve(repo))
+})
+
+test("projectBuffers includes file and project-local special buffers", async () => {
+  const editor = ed()
+  await editor.openFile(join(repo, "src", "a.ts"))
+  await editor.openFile(join(repo, "src", "deep", "b.ts"))
+  const grep = editor.scratch("*grep*", "", "grep")
+  grep.locals.set("default-directory", resolve(repo))
+  const magit = editor.scratch("*magit*", "", "magit-status")
+  magit.locals.set("magit-root", resolve(repo))
+  const other = editor.scratch("notes", "", "text")
+
+  const buffers = await projectBuffers(editor, resolve(repo))
+
+  expect(buffers.map(b => b.name).sort()).toEqual(["*grep*", "*magit*", "a.ts", "b.ts"])
+  expect(buffers).not.toContain(other)
+})
+
+test("project-kill-buffers kills buffers in the current project", async () => {
+  const editor = ed()
+  const outside = join(dir, "outside.txt")
+  await writeFile(outside, "outside\n")
+  await editor.openFile(join(repo, "src", "a.ts"))
+  await editor.openFile(join(repo, "src", "deep", "b.ts"))
+  await editor.openFile(outside)
+  const grep = editor.scratch("*grep*", "", "grep")
+  grep.locals.set("default-directory", resolve(repo))
+
+  await editor.run("project-kill-buffers", [repo, "no-confirm"])
+
+  expect([...editor.buffers.values()].some(b => b.path?.startsWith(resolve(repo)))).toBe(false)
+  expect([...editor.buffers.values()].some(b => b.name === "*grep*")).toBe(false)
+  expect([...editor.buffers.values()].some(b => b.path === resolve(outside))).toBe(true)
+})
+
+test("project-kill-buffers no-confirm argument uses the current project", async () => {
+  const editor = ed()
+  await editor.openFile(join(repo, "src", "a.ts"))
+
+  await editor.run("project-kill-buffers", ["no-confirm"])
+
+  expect([...editor.buffers.values()].some(b => b.path === resolve(repo, "src", "a.ts"))).toBe(false)
+})
+
+test("project-kill-buffers asks before killing interactively", async () => {
+  const editor = ed()
+  await editor.openFile(join(repo, "src", "a.ts"))
+  editor.prompt = () => Promise.resolve("n")
+
+  await editor.run("project-kill-buffers", [repo])
+
+  expect([...editor.buffers.values()].some(b => b.path === resolve(repo, "src", "a.ts"))).toBe(true)
 })
 
 test("project-switch-project honors customized project-switch-commands", async () => {
