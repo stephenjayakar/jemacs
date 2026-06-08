@@ -47,6 +47,18 @@ test("parseGrepOutput parses rg --line-number --column --no-heading", () => {
   ])
 })
 
+test("parseGrepOutput parses grep -nH output with an implicit column", () => {
+  const text = [
+    "src/foo.ts:12:const foo = 1",
+    "lib/bar.ts:3:export bar",
+  ].join("\n")
+  const locs = parseGrepOutput(text)
+  expect(locs).toEqual([
+    { file: "src/foo.ts", line: 12, col: 1, text: "const foo = 1" },
+    { file: "lib/bar.ts", line: 3, col: 1, text: "export bar" },
+  ])
+})
+
 test("install registers commands and M-g n / M-g p bindings", () => {
   const editor = makeEditor()
   install(editor)
@@ -54,6 +66,8 @@ test("install registers commands and M-g n / M-g p bindings", () => {
   expect(editor.commands.get("previous-error")).toBeDefined()
   expect(editor.commands.get("first-error")).toBeDefined()
   expect(editor.commands.get("compile-goto-error")).toBeDefined()
+  expect(editor.commands.get("grep")?.description).toContain("COMMAND-ARGS")
+  expect(editor.commands.get("rgrep")?.description).toContain("Recursively grep")
   expect(editor.keymap.get("M-g n")).toBe("next-error")
   expect(editor.keymap.get("M-g M-n")).toBe("next-error")
   expect(editor.keymap.get("M-g p")).toBe("previous-error")
@@ -180,6 +194,35 @@ test("counsel-ag is redefined to populate the location list", async () => {
   await editor.run("next-error")
   expect(editor.currentBuffer.path).toBe(fileA)
   expect(editor.currentBuffer.lineCol()).toEqual({ line: 1, col: 1 })
+})
+
+test("grep runs a user grep command in the current buffer directory", async () => {
+  const editor = makeEditor()
+  install(editor)
+  await editor.openFile(fileA)
+
+  await editor.run("grep", ["grep -nH beta a.txt"])
+
+  expect(editor.currentBuffer.name).toBe("*grep*")
+  expect(editor.currentBuffer.locals.get("default-directory")).toBe(dir)
+  expect(editor.currentBuffer.text).toContain("a.txt:2:beta")
+  expect(locationList(editor)).toEqual([
+    { file: fileA, line: 2, col: 1, text: "beta" },
+  ])
+})
+
+test("rgrep recursively searches regexp in matching files rooted at dir", async () => {
+  const editor = makeEditor()
+  install(editor)
+
+  await editor.run("rgrep", ["three", "*.txt", dir])
+
+  expect(editor.currentBuffer.name).toBe("*grep*")
+  expect(editor.currentBuffer.locals.get("default-directory")).toBe(dir)
+  expect(editor.currentBuffer.text).toContain("b.txt:2:1:three four")
+  expect(locationList(editor)).toEqual([
+    { file: fileB, line: 2, col: 1, text: "three four" },
+  ])
 })
 
 test("next-error-hook fires after visiting a location", async () => {

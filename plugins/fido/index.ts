@@ -192,11 +192,16 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("icomplete-fido-slash", ({ editor }) => fidoSlash(editor),
     "Descend into the highlighted directory during file completion; otherwise insert `/`.")
 
-  // Aliases so M-x grep / M-x rgrep resolve exactly instead of fuzzy-matching an unrelated command.
-  editor.command("grep", ({ editor, args }) => editor.run("counsel-ag", args),
-    "Search the project with ripgrep (alias for counsel-ag).")
-  editor.command("rgrep", ({ editor, args }) => editor.run("counsel-ag", args),
-    "Recursively search the project with ripgrep (alias for counsel-ag).")
+  // Fallbacks so fido-only installs still let M-x grep / M-x rgrep exact-match.
+  // In normal startup next-error registers the real grep commands before fido.
+  if (!editor.commands.get("grep")) {
+    editor.command("grep", ({ editor, args }) => editor.run("counsel-ag", args),
+      "Fallback alias for counsel-ag when grep is not installed.")
+  }
+  if (!editor.commands.get("rgrep")) {
+    editor.command("rgrep", ({ editor, args }) => editor.run("counsel-ag", args),
+      "Fallback alias for counsel-ag when rgrep is not installed.")
+  }
 
   editor.defineKey("minibuffer", "C-n", "icomplete-forward-completions")
   editor.defineKey("minibuffer", "C-p", "icomplete-backward-completions")
