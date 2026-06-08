@@ -18,6 +18,7 @@ test("rectangle commands use Emacs names and keys", () => {
   expect(editor.commands.get("open-rectangle")).toBeDefined()
   expect(editor.commands.get("string-rectangle")).toBeDefined()
   expect(editor.commands.get("string-insert-rectangle")).toBeDefined()
+  expect(editor.commands.get("rectangle-number-lines")).toBeDefined()
   expect(editor.commands.get("yank-rectangle")).toBeDefined()
   expect(editor.keymaps.lookup("C-x r k")).toMatchObject({ status: "matched", command: "kill-rectangle" })
   expect(editor.keymaps.lookup("C-x r M-w")).toMatchObject({ status: "matched", command: "copy-rectangle-as-kill" })
@@ -26,6 +27,7 @@ test("rectangle commands use Emacs names and keys", () => {
   expect(editor.keymaps.lookup("C-x r c")).toMatchObject({ status: "matched", command: "clear-rectangle" })
   expect(editor.keymaps.lookup("C-x r o")).toMatchObject({ status: "matched", command: "open-rectangle" })
   expect(editor.keymaps.lookup("C-x r t")).toMatchObject({ status: "matched", command: "string-rectangle" })
+  expect(editor.keymaps.lookup("C-x r N")).toMatchObject({ status: "matched", command: "rectangle-number-lines" })
   expect(editor.keymaps.lookup("C-x r y")).toMatchObject({ status: "matched", command: "yank-rectangle" })
 })
 
@@ -115,4 +117,30 @@ test("string rectangle commands replace or insert text on each selected line", a
   await editor.run("string-insert-rectangle", [">"])
 
   expect(buffer.text).toBe("a>Xdef\ng>Xjkl\nm>Xpqr")
+})
+
+test("rectangle-number-lines inserts formatted numbers at the rectangle edge", async () => {
+  const editor = installEditor()
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef\nghijkl\nmnopqr", false)
+  buffer.mark = 1
+  buffer.point = 17
+
+  await editor.run("rectangle-number-lines", ["7", "[%d] "])
+
+  expect(buffer.text).toBe("a[7] bcdef\ng[8] hijkl\nm[9] nopqr")
+  expect(buffer.point).toBe(1)
+  expect(buffer.mark).toBeNull()
+})
+
+test("rectangle-number-lines uses Emacs default format and pads to the rectangle column", async () => {
+  const editor = installEditor()
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef\ng\nmnopqr", false)
+  buffer.mark = 3
+  buffer.point = 12
+
+  await editor.run("rectangle-number-lines", ["9"])
+
+  expect(buffer.text).toBe("abc 9 def\ng  10 \nmno11 pqr")
 })

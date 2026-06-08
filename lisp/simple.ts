@@ -454,6 +454,26 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     editor.message("Inserted string rectangle")
   }, "Insert STRING on each line of the region-rectangle.")
 
+  editor.command("rectangle-number-lines", async ({ buffer, editor, args, prefixArgument }) => {
+    if (buffer.mark == null) {
+      editor.message("Mark must be set for rectangle command")
+      return
+    }
+    const startInput = args[0] ?? (prefixArgument != null ? await editor.prompt("Number to count from: ", "1", "rectangle-number") : "1")
+    if (startInput == null) return
+    const startAt = Number(startInput)
+    if (!Number.isFinite(startAt)) {
+      editor.message(`Invalid number: ${startInput}`)
+      return
+    }
+    const rect = rectangleBounds(buffer)
+    const defaultFormat = defaultRectangleLineNumberFormat(rect, startAt)
+    const format = args[1] ?? (prefixArgument != null ? await editor.prompt("Format string: ", defaultFormat, "rectangle-number") : defaultFormat)
+    if (format == null) return
+    numberRectangle(buffer, Number.isFinite(startAt) ? startAt : 1, format)
+    editor.message("Numbered rectangle")
+  }, "Insert numbers in front of the region-rectangle.")
+
   editor.command("yank-rectangle", ({ buffer, editor }) => {
     const text = killRing[yankRingIndex]
     if (!text) return
@@ -590,6 +610,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.key("C-x r c", "clear-rectangle")
   editor.key("C-x r o", "open-rectangle")
   editor.key("C-x r t", "string-rectangle")
+  editor.key("C-x r N", "rectangle-number-lines")
   editor.key("C-x r y", "yank-rectangle")
 
   editor.key("C-_", "undo")
@@ -676,6 +697,38 @@ function replaceRectangle(buffer: BufferModel, mode: RectangleEditMode, replacem
   buffer.setText(rebuilt, true)
   buffer.point = start
   buffer.clearMark()
+}
+
+function numberRectangle(buffer: BufferModel, startAt: number, format: string): void {
+  const start = Math.min(buffer.mark ?? buffer.point, buffer.point)
+  const rect = rectangleBounds(buffer)
+  const rebuilt = rect.lines.map((text, line) => {
+    if (line < rect.startLine || line > rect.endLine) return text
+    const value = formatNumber(format, startAt + line - rect.startLine)
+    const padded = text.length < rect.colA ? text + " ".repeat(rect.colA - text.length) : text
+    return padded.slice(0, rect.colA) + value + padded.slice(rect.colA)
+  }).join("\n")
+  buffer.setText(rebuilt, true)
+  buffer.point = start
+  buffer.clearMark()
+}
+
+function defaultRectangleLineNumberFormat(rect: { startLine: number; endLine: number }, startAt: number): string {
+  const last = Math.trunc(startAt) + (rect.endLine - rect.startLine)
+  return `%${String(last).length}d `
+}
+
+function formatNumber(format: string, value: number): string {
+  return format
+    .replace(/%%/g, "\0")
+    .replace(/%([0 ]?)(\d*)d/g, (_match, flag: string, widthText: string) => {
+      const text = String(value)
+      const width = Number(widthText || 0)
+      if (text.length >= width) return text
+      const padding = (flag === "0" ? "0" : " ").repeat(width - text.length)
+      return padding + text
+    })
+    .replace(/\0/g, "%")
 }
 
 function rectangleBounds(buffer: BufferModel): { startLine: number; endLine: number; colA: number; colB: number; lines: string[] } {
