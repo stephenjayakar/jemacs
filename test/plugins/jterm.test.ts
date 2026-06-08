@@ -12,10 +12,10 @@ import {
   jtermSpans,
   sessionFor,
   surfaceChanged,
-} from "../../plugins/tui-term"
+} from "../../plugins/jterm"
 import type { Pty } from "../../plugins/term/pty"
 import { makeEditor } from "./helper"
-import { keyToPtyBytes } from "../../plugins/tui-term/key-encode"
+import { keyToPtyBytes } from "../../plugins/jterm/key-encode"
 
 function fakePty(): Pty & { sent: string; chunks: string[]; resizes: Array<[number, number]> } {
   let sent = ""
@@ -84,8 +84,8 @@ describe("jterm: install wiring", () => {
     expect(map?.get("C-c C-l")).toBe("jterm-clear")
   })
 
-  test("does not collide with the vterm plugin's commands", () => {
-    // The two plugins are independent. vterm binds term-send-raw; jterm
+  test("does not collide with term-v2 commands", () => {
+    // The two plugins are independent. term-v2 binds term-send-raw; jterm
     // binds jterm-send-raw. Both should coexist.
     const editor = makeEditor()
     install(editor)

@@ -75,8 +75,20 @@ argv = sys.argv[1:]
 if not argv:
     raise SystemExit("missing command")
 
+def initial_size():
+    try:
+        return int(os.environ.get("LINES", "24")), int(os.environ.get("COLUMNS", "80"))
+    except ValueError:
+        return 24, 80
+
+def set_winsize(fd, rows, cols):
+    winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
 pid, master = pty.fork()
 if pid == 0:
+    rows, cols = initial_size()
+    set_winsize(0, rows, cols)
     os.execvpe(argv[0], argv, os.environ)
 
 selector = selectors.DefaultSelector()
@@ -84,8 +96,7 @@ selector.register(master, selectors.EVENT_READ, "pty")
 selector.register(sys.stdin.buffer, selectors.EVENT_READ, "stdin")
 
 def resize(rows, cols):
-    winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
-    fcntl.ioctl(master, termios.TIOCSWINSZ, winsize)
+    set_winsize(master, rows, cols)
     try:
         os.kill(pid, signal.SIGWINCH)
     except ProcessLookupError:

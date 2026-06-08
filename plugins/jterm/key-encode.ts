@@ -8,7 +8,7 @@ export type KeyEncodeOptions = {
 
 /** Convert a KeyEventLike into the byte stream a real terminal would send to a
  *  foreground process. Mirrors term-v2/keyToPtyBytes plus the named keys that
- *  vterm/term.el both ship (Home/End/PageUp/PageDown/Insert/F1-F12). */
+ *  terminal modes commonly ship (Home/End/PageUp/PageDown/Insert/F1-F12). */
 export function keyToPtyBytes(k: KeyEventLike, opts: KeyEncodeOptions = {}): string {
   // Meta prefixes everything with ESC. When the key is a single letter, use
   // the name (not the multi-byte sequence the host may have handed us) so the

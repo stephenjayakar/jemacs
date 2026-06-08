@@ -105,7 +105,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   // Top-level entry points. We bind the most common ones to the global map
   // so users can M-x jterm or just hit the key.
   editor.key("C-c t", "jterm")  // GNU-style C-c t
-  editor.key("C-c T", "vterm")     // C-c T still launches the vterm plugin
 
   editor.command("jterm", async ({ editor }) => {
     const shell = process.env.SHELL ?? "bash"
@@ -121,7 +120,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("opencode", async ({ editor }) => {
     await spawnTerminalBuffer(editor, { argv: ["opencode"], name: "*opencode*" })
-  }, "Run opencode in a jterm buffer (replaces the vterm binding for the same name).")
+  }, "Run opencode in a jterm buffer.")
 
   // ---- char-mode / copy-mode ----
 

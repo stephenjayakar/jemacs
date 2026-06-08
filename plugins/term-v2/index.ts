@@ -1,11 +1,9 @@
 import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import type { FaceStyle } from "../../src/display/theme"
 import type { FaceName, TextSpan } from "../../src/modes/mode"
 import { defineMode, getMode } from "../../src/modes/mode"
 import { Keymap, normalizeSequence, type KeyEventLike } from "../../src/kernel/keymap"
-import { TERMINAL_SURFACE_LOCAL, type TerminalCell, type TerminalSurfaceModel } from "../../src/display/terminal-surface"
 import type { Pty } from "../term/pty"
 import { makeXTerm, type IBuffer, type IBufferCell, type Terminal as XTerm } from "./xterm-shim"
 
@@ -90,7 +88,6 @@ export type TermSession = {
 export const sessions = new WeakMap<BufferModel, TermSession>()
 
 export const TERM_SPANS_LOCAL = "term-spans"
-export const TERM_SURFACE_ENABLED_LOCAL = "term-surface-enabled"
 
 /** FaceName is a closed union; map the 16-colour ANSI palette onto the closest
  *  existing font-lock faces (same approach as smerge's SMERGE_FACES). */
@@ -125,47 +122,24 @@ export function resizeSession(buffer: BufferModel, rows: number, cols: number): 
   buffer.setText(text, false)
   buffer.point = point
   buffer.locals.set(TERM_SPANS_LOCAL, spans)
-  updateTerminalSurface(buffer, s)
 }
 
 export function termSpans(buffer: BufferModel): TextSpan[] {
   return (buffer.locals.get(TERM_SPANS_LOCAL) as TextSpan[] | undefined) ?? []
 }
 
-type TerminalRunStyle = { face: FaceName; style: FaceStyle }
-
-/** Reduce a cell's SGR attributes to a display style, or null for default. */
-function cellStyle(c: IBufferCell): TerminalRunStyle | null {
+/** Reduce a cell's SGR attributes to a single FaceName, or null for default. */
+function cellFace(c: IBufferCell): FaceName | null {
   if (c.isAttributeDefault()) return null
-  const style: FaceStyle = {}
-  if (c.isBold()) style.bold = true
-  if (c.isItalic()) style.italic = true
-  if (c.isUnderline()) style.underline = true
   if (!c.isFgDefault()) {
-    const fg = cellColor(c, "fg")
-    if (fg) style.fg = fg
+    // Palette indices 0-15 map via ANSI_FACES; 256-colour and RGB fall back to a
+    // visible non-default face so the run is at least distinguishable.
+    const idx = c.isFgPalette() ? c.getFgColor() : -1
+    return ANSI_FACES[idx] ?? "builtin"
   }
-  if (!c.isBgDefault()) {
-    const bg = cellColor(c, "bg")
-    if (bg) style.bg = bg
-  }
-  if (!style.fg && !style.bg && !style.bold && !style.italic && !style.underline) return null
-  return { face: "default", style }
-}
-
-function sameRunStyle(a: TerminalRunStyle | null, b: TerminalRunStyle | null): boolean {
-  if (a === b) return true
-  if (!a || !b) return false
-  return a.face === b.face
-    && a.style.fg === b.style.fg
-    && a.style.bg === b.style.bg
-    && !!a.style.bold === !!b.style.bold
-    && !!a.style.italic === !!b.style.italic
-    && !!a.style.underline === !!b.style.underline
-}
-
-function spanForRun(start: number, end: number, run: TerminalRunStyle): TextSpan {
-  return { start, end, face: run.face, style: run.style }
+  if (!c.isBgDefault()) return "region"
+  if (c.isBold()) return "keyword"
+  return null
 }
 
 /** Snapshot xterm's active buffer (scrollback + viewport) as text, a cursor
@@ -187,22 +161,22 @@ export function renderTerminal(xt: XTerm): { text: string; point: number; spans:
     // cell index): width-0 trailers contribute nothing, empty width-1 cells are
     // a single space in translateToString.
     let col = 0
-    let runStyle: TerminalRunStyle | null = null
+    let runFace: FaceName | null = null
     let runStart = 0
     const lineEnd = lineStart + s.length
     for (let x = 0; line && col < s.length; x++) {
       if (!line.getCell(x, cell)) break
       const w = cell.getWidth()
       if (w === 0) continue
-      const style = cellStyle(cell)
-      if (!sameRunStyle(style, runStyle)) {
-        if (runStyle) spans.push(spanForRun(lineStart + runStart, Math.min(lineStart + col, lineEnd), runStyle))
-        runStyle = style
+      const face = cellFace(cell)
+      if (face !== runFace) {
+        if (runFace) spans.push({ start: lineStart + runStart, end: Math.min(lineStart + col, lineEnd), face: runFace })
+        runFace = face
         runStart = col
       }
       col += cell.getChars().length || 1
     }
-    if (runStyle) spans.push(spanForRun(lineStart + runStart, Math.min(lineStart + col, lineEnd), runStyle))
+    if (runFace) spans.push({ start: lineStart + runStart, end: Math.min(lineStart + col, lineEnd), face: runFace })
     lineStart += s.length + 1
   }
   // Drop blank viewport rows past both the last output and the cursor.
@@ -224,112 +198,6 @@ export function renderTerminal(xt: XTerm): { text: string; point: number; spans:
   // Spans for trimmed-away trailing rows would only ever be empty (those rows
   // had length 0), but clamp defensively in case a future caller changes trim.
   return { text, point, spans: spans.filter(sp => sp.start < text.length && sp.start < sp.end) }
-}
-
-export function renderTerminalSurface(xt: XTerm): TerminalSurfaceModel {
-  const buf: IBuffer = xt.buffer.active
-  const rows = xt.rows
-  const cols = xt.cols
-  const cells: TerminalCell[][] = []
-  const scratch = buf.getNullCell()
-  for (let y = 0; y < rows; y++) {
-    const row: TerminalCell[] = []
-    const line = buf.getLine(buf.baseY + y)
-    for (let x = 0; x < cols; x++) {
-      if (!line?.getCell(x, scratch) || scratch.getWidth() === 0) {
-        row.push({ text: " " })
-        continue
-      }
-      row.push(cellToTerminalCell(scratch))
-    }
-    cells.push(row)
-  }
-  return {
-    kind: "terminal",
-    rows,
-    cols,
-    cursorRow: Math.max(0, Math.min(rows - 1, buf.cursorY)),
-    cursorCol: Math.max(0, Math.min(cols - 1, buf.cursorX)),
-    cells,
-  }
-}
-
-function updateTerminalSurface(buffer: BufferModel, session: TermSession): void {
-  if (!session.xt) return
-  if (buffer.locals.get(TERM_SURFACE_ENABLED_LOCAL) === false) {
-    buffer.locals.delete(TERMINAL_SURFACE_LOCAL)
-    return
-  }
-  buffer.locals.set(TERMINAL_SURFACE_LOCAL, renderTerminalSurface(session.xt))
-}
-
-function cellToTerminalCell(cell: IBufferCell): TerminalCell {
-  const out: TerminalCell = {
-    text: cell.getChars() || " ",
-  }
-  if (cell.isBold()) out.bold = true
-  if (cell.isItalic()) out.italic = true
-  if (cell.isUnderline()) out.underline = true
-  const fg = cellColor(cell, "fg")
-  const bg = cellColor(cell, "bg")
-  if (fg) out.fg = fg
-  if (bg) out.bg = bg
-  return out
-}
-
-function cellColor(cell: IBufferCell, part: "fg" | "bg"): string | undefined {
-  const c = cell as IBufferCell & {
-    isFgRGB?: () => boolean
-    isBgRGB?: () => boolean
-    isFgPalette?: () => boolean
-    isBgPalette?: () => boolean
-    isFgDefault?: () => boolean
-    isBgDefault?: () => boolean
-    getFgColor?: () => number
-    getBgColor?: () => number
-  }
-  const isDefault = part === "fg" ? c.isFgDefault?.() : c.isBgDefault?.()
-  if (isDefault !== false) return undefined
-  const isRgb = part === "fg" ? c.isFgRGB?.() : c.isBgRGB?.()
-  const isPalette = part === "fg" ? c.isFgPalette?.() : c.isBgPalette?.()
-  const value = part === "fg" ? c.getFgColor?.() : c.getBgColor?.()
-  if (value == null) return undefined
-  if (isRgb) return rgbHex(value)
-  if (isPalette) return xtermPalette(value)
-  return undefined
-}
-
-function rgbHex(value: number): string {
-  return `#${(value & 0xffffff).toString(16).padStart(6, "0")}`
-}
-
-const ANSI_HEX = [
-  "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
-  "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
-]
-
-function xtermPalette(index: number): string | undefined {
-  if (index >= 0 && index < ANSI_HEX.length) return ANSI_HEX[index]
-  if (index >= 16 && index <= 231) {
-    const n = index - 16
-    const r = Math.floor(n / 36)
-    const g = Math.floor((n % 36) / 6)
-    const b = n % 6
-    return rgbTripletHex(cubeLevel(r), cubeLevel(g), cubeLevel(b))
-  }
-  if (index >= 232 && index <= 255) {
-    const v = 8 + (index - 232) * 10
-    return rgbTripletHex(v, v, v)
-  }
-  return undefined
-}
-
-function cubeLevel(n: number): number {
-  return n === 0 ? 0 : 55 + n * 40
-}
-
-function rgbTripletHex(r: number, g: number, b: number): string {
-  return `#${[r, g, b].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")}`
 }
 
 /** Queue bytes for the pty and flush them as a single write on the next
@@ -365,7 +233,6 @@ export function feed(session: TermSession, buffer: BufferModel, chunk: string, d
       else buffer.setText(text, false)
       buffer.point = point
       buffer.locals.set(TERM_SPANS_LOCAL, spans)
-      updateTerminalSurface(buffer, session)
       done?.()
       resolve()
     })
@@ -383,104 +250,45 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     fontLock: termSpans,
   })
 
-  const vtermMap = getMode("vterm")?.keymap ?? new Keymap("vterm-map")
-  defineMode({
-    name: "vterm",
-    parent: "text",
-    keymap: vtermMap,
-    fontLock: termSpans,
-  })
-
-  async function spawnTerminalBuffer(options: {
-    argv: string[]
-    name: string
-    mode: "term" | "vterm"
-    cwd?: string
-    env?: Record<string, string>
-  }): Promise<BufferModel> {
-    const cwd = options.cwd ?? editor.currentBuffer.directory?.() ?? process.cwd()
-    const buffer = editor.scratch(options.name, "", options.mode)
-    buffer.mode = options.mode
-    buffer.locals.set(TERM_SURFACE_ENABLED_LOCAL, true)
-    const rows = (buffer.locals.get("window-body-rows") as number | undefined) ?? 30
-    const cols = (buffer.locals.get("window-body-cols") as number | undefined) ?? 100
+  editor.command("term", async ({ editor }) => {
+    const shell = process.env.SHELL ?? "bash"
+    const cwd = editor.currentBuffer.directory?.() ?? process.cwd()
+    const buffer = editor.scratch(`*term*<${shell}>`, "")
+    buffer.mode = "term"
+    const rows = 30, cols = 100
     const { spawnPty } = await loadPtyModule()
-    const pty = spawnPty(options.argv, { cwd, rows, cols, env: options.env })
+    const pty = spawnPty([shell, "-i"], { cwd, rows, cols })
     const session: TermSession = { pty, xt: makeXTerm(rows, cols), rows, cols }
     attachSession(buffer, session)
-    updateTerminalSurface(buffer, session)
     pty.onData(chunk => {
-      void editor.events.emit("terminalData", { bufferId: buffer.id, data: chunk })
       feed(session, buffer, chunk)
       // Anchor the redraw to the (async) mirror instead of voiding it; the
       // next chunk's feed() then waits for this changed() to settle too.
-      session.settled = session.settled!.then(() => editor.changed(`${options.mode}-output`))
+      session.settled = session.settled!.then(() => editor.changed("term-output"))
     })
     pty.onExit(code => {
-      buffer.locals.delete(TERMINAL_SURFACE_LOCAL)
       buffer.append(`\n[process exited ${code}]\n`)
       session.xt.dispose()
       sessions.delete(buffer)
       // The override is editor-global; drop it whenever *this* term installed it,
       // even if the user has since clicked into another window (t-f2e861cb).
       if (editor.overridingTerminalLocalMap === termRawMap) editor.overridingTerminalLocalMap = null
-      if (editor.currentBuffer === buffer) void editor.run(options.mode === "vterm" ? "vterm-copy-mode" : "term-line-mode")
-      void editor.changed(`${options.mode}-exit`)
+      if (editor.currentBuffer === buffer) void editor.run("term-line-mode")
+      void editor.changed("term-exit")
     })
-    await editor.run(options.mode === "vterm" ? "vterm-char-mode" : "term-char-mode")
-    editor.message(`${options.mode}: ${options.argv.join(" ")} (pid ${pty.pid})`)
-    return buffer
-  }
-
-  editor.command("term", async ({ editor }) => {
-    const shell = process.env.SHELL ?? "bash"
-    await spawnTerminalBuffer({ argv: [shell, "-i"], name: `*term*<${shell}>`, mode: "term" })
+    await editor.run("term-char-mode")
+    editor.message(`term: ${shell} (pid ${pty.pid})`)
   }, "Spawn an interactive shell in a *term* buffer (v2: @xterm/headless VT parser).")
 
-  editor.command("vterm", async ({ editor }) => {
-    const shell = process.env.SHELL ?? "bash"
-    await spawnTerminalBuffer({ argv: [shell, "-i"], name: `*vterm*<${shell}>`, mode: "vterm" })
-  }, "Spawn an interactive shell in a vterm buffer.")
-
-  editor.command("vterm-run-command", async ({ editor }) => {
-    const command = await editor.prompt("Run in vterm: ")
-    if (!command) return
-    const shell = process.env.SHELL ?? "bash"
-    await spawnTerminalBuffer({ argv: [shell, "-lc", command], name: `*vterm*<${command}>`, mode: "vterm" })
-  }, "Run a shell command in a vterm buffer.")
-
-  editor.command("opencode", async ({ editor }) => {
-    await spawnTerminalBuffer({ argv: ["opencode"], name: "*opencode*", mode: "vterm" })
-  }, "Run opencode in a vterm buffer.")
-
-  editor.command("vterm-opencode", async ({ editor }) => {
-    await editor.run("opencode")
-  }, "Run opencode in a vterm buffer.")
-
-  editor.command("vterm-char-mode", ({ buffer, editor }) => {
+  editor.command("term-char-mode", ({ buffer, editor }) => {
     if (!sessions.has(buffer)) return editor.message("No term session")
     buffer.readOnly = true
-    buffer.locals.set(TERM_SURFACE_ENABLED_LOCAL, true)
-    const s = sessions.get(buffer)
-    if (s) updateTerminalSurface(buffer, s)
     editor.overridingTerminalLocalMap = termRawMap
-    void editor.changed("vterm-char-mode")
-  }, "Switch the current vterm buffer to terminal character mode.")
-
-  editor.command("term-char-mode", async ({ editor }) => {
-    await editor.run("vterm-char-mode")
   })
 
-  editor.command("vterm-copy-mode", ({ buffer, editor }) => {
+  editor.command("term-line-mode", ({ buffer, editor }) => {
     buffer.readOnly = false
-    buffer.locals.set(TERM_SURFACE_ENABLED_LOCAL, false)
-    buffer.locals.delete(TERMINAL_SURFACE_LOCAL)
     editor.overridingTerminalLocalMap = null
-    void editor.changed("vterm-copy-mode")
-  }, "Switch the current vterm buffer to copy/edit mode.")
-
-  editor.command("term-line-mode", async ({ editor }) => {
-    await editor.run("vterm-copy-mode")
   })
 
   // Universal escape: a stuck term override soft-locks the whole editor, so
@@ -491,7 +299,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     },
   })
 
-  editor.command("vterm-send-raw", ({ buffer, editor, args, keyEvent }) => {
+  editor.command("term-send-raw", ({ buffer, editor, args, keyEvent }) => {
     // ctx.keyEvent is captured at dispatch; editor.lastKeyEvent can already be
     // the *next* key under rapid input (t-414394c1). Fallback covers M-x.
     const k = keyEvent ?? editor.lastKeyEvent
@@ -501,32 +309,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (bytes != null) writeRaw(s, bytes)
   })
 
-  editor.command("term-send-raw", async ({ editor, keyEvent, args }) => {
-    await editor.run("vterm-send-raw", args, keyEvent)
-  })
-
-  editor.command("vterm-send-string", async ({ buffer, editor }) => {
+  editor.command("term-send-string", async ({ buffer, editor }) => {
     const s = sessions.get(buffer)
     if (!s) return editor.message("No term session")
     const str = await editor.prompt("Send: ")
     if (str != null) writeRaw(s, str + "\r")
   })
 
-  editor.command("term-send-string", async ({ editor }) => {
-    await editor.run("vterm-send-string")
-  })
-
-  editor.command("vterm-send-C-c", ({ buffer }) => {
+  editor.command("term-interrupt", ({ buffer }) => {
     const s = sessions.get(buffer)
     if (s) writeRaw(s, "\x03")
   })
-  editor.command("term-interrupt", async ({ editor }) => {
-    await editor.run("vterm-send-C-c")
-  })
-  editor.command("vterm-kill", ({ buffer }) => sessions.get(buffer)?.pty.kill())
-  editor.command("term-kill", async ({ editor }) => {
-    await editor.run("vterm-kill")
-  })
+  editor.command("term-kill", ({ buffer }) => sessions.get(buffer)?.pty.kill())
 
   // Keep the pty's winsize in sync with the displaying window. The display
   // layer stashes the leaf's body geometry on the buffer before firing the
@@ -551,8 +345,4 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.defineKey("term-map", "C-c C-k", "term-kill")
   editor.defineKey("term-map", "C-c C-s", "term-send-string")
   editor.defineKey("term-map", "C-c C-j", "term-line-mode")
-  editor.defineKey("vterm-map", "C-c C-c", "vterm-send-C-c")
-  editor.defineKey("vterm-map", "C-c C-k", "vterm-kill")
-  editor.defineKey("vterm-map", "C-c C-s", "vterm-send-string")
-  editor.defineKey("vterm-map", "C-c C-t", "vterm-char-mode")
 }
