@@ -84,11 +84,13 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     }
   }, "Set mark (without activating) and move point to the end of the buffer.")
 
-  editor.command("goto-line", async ({ buffer, editor, args }) => {
-    const value = args[0] ?? await editor.prompt("Goto line: ", "", "goto-line")
+  editor.command("goto-line", async ({ buffer, editor, args, prefixArgument }) => {
+    const value = prefixArgument ?? args[0] ?? await editor.prompt("Goto line: ", "", "goto-line")
     const line = Math.max(1, Number(value) || 1)
     const lines = buffer.text.split("\n")
     const offset = lines.slice(0, line - 1).reduce((offset, text) => offset + text.length + 1, 0)
+    buffer.setMark()
+    editor.message("Mark set")
     buffer.point = Math.min(offset, buffer.text.length)
   }, "Move point to a line number.")
 

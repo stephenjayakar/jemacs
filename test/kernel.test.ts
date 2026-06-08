@@ -308,6 +308,39 @@ test("forward-word and backward-word preserve negative-prefix return semantics",
   expect(buffer.point).toBe(7)
 })
 
+test("goto-line uses numeric prefix and sets mark before moving", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("a\nb\nc\nd", false)
+  buffer.point = 2
+
+  editor.prefixArg.addDigit(3)
+  await editor.run("goto-line")
+  expect(buffer.point).toBe(4)
+  expect(buffer.mark).toBe(2)
+  expect(buffer.markActive).toBe(true)
+})
+
+test("goto-line clamps zero and negative prefixes to line one", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("a\nb\nc", false)
+  buffer.point = buffer.text.length
+
+  editor.prefixArg.addDigit(0)
+  await editor.run("goto-line")
+  expect(buffer.point).toBe(0)
+  expect(buffer.mark).toBe(5)
+
+  buffer.point = buffer.text.length
+  editor.prefixArg.toggleNegative()
+  await editor.run("goto-line")
+  expect(buffer.point).toBe(0)
+  expect(buffer.mark).toBe(5)
+})
+
 test("set-fill-column is the C-x f command and updates fill-column", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
