@@ -71,6 +71,45 @@ test("other-window cycles through leaves in tree order", async () => {
   expect(editor.selectedWindowId).toBe(leaves[1]!.id)
 })
 
+test("other-window honors positive numeric prefix as a skip count", async () => {
+  const editor = installEditor()
+  await editor.run("split-window-below")
+  await editor.run("split-window-right")
+  const leaves = listWindowLeaves(editor.windowLayout)
+  expect(editor.selectedWindowId).toBe(leaves[0]!.id)
+
+  editor.prefixArg.addDigit(2)
+  await editor.run("other-window")
+  expect(editor.selectedWindowId).toBe(leaves[2]!.id)
+})
+
+test("other-window with zero prefix keeps the selected window", async () => {
+  const editor = installEditor()
+  await editor.run("split-window-below")
+  const start = editor.selectedWindowId
+
+  editor.prefixArg.addDigit(0)
+  await editor.run("other-window")
+  expect(editor.selectedWindowId).toBe(start)
+})
+
+test("other-window honors negative numeric prefix and wraps", async () => {
+  const editor = installEditor()
+  await editor.run("split-window-below")
+  await editor.run("split-window-right")
+  const leaves = listWindowLeaves(editor.windowLayout)
+  expect(editor.selectedWindowId).toBe(leaves[0]!.id)
+
+  editor.prefixArg.toggleNegative()
+  await editor.run("other-window")
+  expect(editor.selectedWindowId).toBe(leaves[2]!.id)
+
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(4)
+  await editor.run("other-window")
+  expect(editor.selectedWindowId).toBe(leaves[1]!.id)
+})
+
 test("delete-other-windows keeps only the selected pane", async () => {
   const editor = installEditor()
   await editor.run("split-window-below")

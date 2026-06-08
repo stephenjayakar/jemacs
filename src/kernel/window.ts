@@ -137,7 +137,8 @@ export function nextWindowId(node: WindowNode, currentId: WindowId, delta = 1): 
   if (!leaves.length) throw new Error("No windows")
   const index = leaves.findIndex(leaf => leaf.id === currentId)
   const currentIndex = index === -1 ? 0 : index
-  return leaves[(currentIndex + delta + leaves.length) % leaves.length]!.id
+  const nextIndex = ((currentIndex + delta) % leaves.length + leaves.length) % leaves.length
+  return leaves[nextIndex]!.id
 }
 
 export function nextEligibleWindowId(
