@@ -252,12 +252,9 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     buffer.move(-count)
   }, "Insert a newline after point without moving point.")
 
-  editor.command("transpose-chars", ({ buffer }) => {
-    if (buffer.point >= buffer.text.length) buffer.move(-1)
-    if (buffer.point < 1) return
-    const i = buffer.point
-    const text = buffer.text
-    buffer.replaceRange(i - 1, i + 1, text[i]! + text[i - 1]!)
+  editor.command("transpose-chars", ({ buffer, editor, prefixArgument }) => {
+    const result = transposeChars(buffer, prefixArgument)
+    if (result) editor.message(result)
   }, "Transpose the character before point with the character at point.")
 
   editor.command("quoted-insert", ({ editor }) => {
@@ -664,6 +661,31 @@ function repeat(prefixArgument: number | null, fwd: () => void, bwd?: () => void
   const n = prefixArgument ?? 1
   const fn = n < 0 ? (bwd ?? fwd) : fwd
   for (let i = 0; i < Math.abs(n); i++) fn()
+}
+
+function transposeChars(buffer: BufferModel, prefixArgument: number | null): string | null {
+  if (prefixArgument === 0) return "No mark set in this buffer"
+  if (buffer.point < 1) return "Beginning of buffer"
+  const text = buffer.text
+  if (prefixArgument == null) {
+    const point = buffer.point >= text.length ? buffer.point - 1 : buffer.point
+    if (point < 1) return "Beginning of buffer"
+    const pair = text.slice(point - 1, point + 1)
+    if (pair.length < 2) return "End of buffer"
+    buffer.replaceRange(point - 1, point + 1, pair[1]! + pair[0]!)
+    return null
+  }
+
+  const from = buffer.point - 1
+  const to = from + prefixArgument
+  if (to < 0) return "Beginning of buffer"
+  if (to >= text.length) return "End of buffer"
+  const ch = text[from]!
+  const without = text.slice(0, from) + text.slice(from + 1)
+  const replaced = without.slice(0, to) + ch + without.slice(to)
+  buffer.setText(replaced, true)
+  buffer.point = to + 1
+  return null
 }
 
 /** Offset of the start of the line `n` lines after (n>0) or before (n<=0) `from`. */

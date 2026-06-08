@@ -340,6 +340,45 @@ test("open-line rejects negative prefix arguments", async () => {
   expect(echoed).toBe("Repetition argument has to be non-negative")
 })
 
+test("transpose-chars honors positive and negative prefix arguments", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("abcdef", false)
+  buffer.point = 2
+
+  editor.prefixArg.addDigit(3)
+  await editor.run("transpose-chars")
+  expect(buffer.text).toBe("acdebf")
+  expect(buffer.point).toBe(5)
+
+  buffer.setText("abcdef", false)
+  buffer.point = 3
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(2)
+  await editor.run("transpose-chars")
+  expect(buffer.text).toBe("cabdef")
+  expect(buffer.point).toBe(1)
+})
+
+test("transpose-chars reports Emacs boundary errors", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const messages: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) messages.push(text) })
+  const buffer = editor.currentBuffer
+
+  buffer.setText("abc", false)
+  buffer.point = 0
+  await editor.run("transpose-chars")
+  expect(messages.at(-1)).toBe("Beginning of buffer")
+
+  buffer.point = buffer.text.length
+  editor.prefixArg.addDigit(1)
+  await editor.run("transpose-chars")
+  expect(messages.at(-1)).toBe("End of buffer")
+})
+
 test("kill-region and kill-ring-save require a mark like Emacs", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
