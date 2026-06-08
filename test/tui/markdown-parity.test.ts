@@ -54,13 +54,14 @@ describe.skipIf(SKIP)("markdown parity: jemacs vs Emacs (tmux)", () => {
     expect(readFileSync(epath, "utf8")).toMatch(/^# Guide/)
   }, TIMEOUT)
 
-  test("C-c C-l starts link insertion (jemacs placeholder; emacs prompts)", async () => {
+  test("C-c C-l starts link insertion by prompting for URL/reference", async () => {
     const jpath = scratchMd("jl-", "text\n")
     const epath = scratchMd("el-", "text\n")
-    const { jemacs } = await driveBoth(jpath, ["C-c", "C-l"])
-    expect(normalizeMarkdownBuffer(jemacs)).toMatch(/\[link text\]\(url\)/)
+    const j = await tuiProbe({ file: jpath, keys: ["C-c", "C-l"], waitFor: "URL or" })
     const e = await emacsProbe({ file: epath, keys: ["C-c", "C-l"], waitFor: "URL or" })
+    expect(j.screen).toMatch(/URL or \[reference\]/)
     expect(e.screen).toMatch(/URL or \[reference\]/)
+    expect(readFileSync(jpath, "utf8")).toBe("text\n")
   }, TIMEOUT)
 
   test("double RET on empty list item yields blank line (guide.md list)", async () => {

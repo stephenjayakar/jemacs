@@ -967,8 +967,20 @@ function installMarkdownCommands(editor: Editor): void {
     indentRegion(buffer, region.start, region.end, -TAB_WIDTH)
   }, "Outdent the active region.")
 
-  editor.command("markdown-insert-link", ({ buffer, editor }) => {
-    wrapOrInsert(buffer, "[", "](url)", "link text")
+  editor.command("markdown-insert-link", async ({ buffer, editor }) => {
+    const url = await editor.prompt("URL or [reference]: ", "", "markdown-url")
+    if (!url) return
+    const region = activeRegion(buffer)
+    if (region) {
+      const text = buffer.text.slice(region.start, region.end)
+      insertMarkdownLink(buffer, region.start, region.end, text, url)
+      buffer.clearMark()
+      editor.message("Inserted link")
+      return
+    }
+    const text = await editor.prompt("Link text: ", "", "markdown-link-text")
+    if (text == null) return
+    insertMarkdownLink(buffer, buffer.point, buffer.point, text || url, url)
     editor.message("Inserted link")
   }, "Insert a Markdown inline link.")
 
@@ -1204,6 +1216,12 @@ function wrapOrInsert(buffer: BufferModel, open: string, close: string, placehol
   }
   buffer.insert(`${open}${placeholder}${close}`)
   buffer.point -= close.length + placeholder.length
+}
+
+function insertMarkdownLink(buffer: BufferModel, start: number, end: number, text: string, url: string): void {
+  const link = `[${text}](${url})`
+  buffer.replaceRange(start, end, link)
+  buffer.point = start + link.length
 }
 
 function insertAtxHeader(buffer: BufferModel, level: number): void {

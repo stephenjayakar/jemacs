@@ -263,6 +263,58 @@ describe("clear-whitespace-and-newline-and-indent", () => {
   })
 })
 
+describe("markdown-insert-link", () => {
+  test("C-c C-l dispatches link insertion in markdown-mode", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "", "markdown")
+    const answers = ["https://example.com", "Example"]
+    editor.prompt = async () => answers.shift() ?? null
+
+    await keySeq(editor, "C-c", "C-l")
+
+    expect(buffer.text).toBe("[Example](https://example.com)")
+  })
+
+  test("prompts for URL and link text before inserting", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "text\n", "markdown")
+    const prompts: string[] = []
+    const answers = ["https://example.com", "Example"]
+    editor.prompt = async prompt => {
+      prompts.push(prompt)
+      return answers.shift() ?? null
+    }
+
+    await editor.run("markdown-insert-link")
+
+    expect(prompts).toEqual(["URL or [reference]: ", "Link text: "])
+    expect(buffer.text).toBe("[Example](https://example.com)text\n")
+    expect(buffer.point).toBe("[Example](https://example.com)".length)
+  })
+
+  test("uses active region as link text", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "read more\n", "markdown")
+    buffer.point = 0
+    buffer.setMark()
+    buffer.point = 4
+    const prompts: string[] = []
+    editor.prompt = async prompt => {
+      prompts.push(prompt)
+      return "https://example.com"
+    }
+
+    await editor.run("markdown-insert-link")
+
+    expect(prompts).toEqual(["URL or [reference]: "])
+    expect(buffer.text).toBe("[read](https://example.com) more\n")
+    expect(buffer.markActive).toBe(false)
+  })
+})
+
 describe("markdown-outdent-or-delete", () => {
   test("backspace on an empty line joins with the previous line", async () => {
     const editor = makeEditor()
