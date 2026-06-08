@@ -331,7 +331,7 @@ export function diredUnmarkBackward(buffer: BufferModel): void {
   buffer.moveLine(-1)
 }
 
-function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): void {
+export function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): void {
   const marks = diredMarks.get(buffer) ?? new Map()
   const lines = [`  Directory ${buffer.path}`, "", ...entries.map(entry => formatEntry(entry, marks.get(entry.path)))]
   const entryPath = diredEntryAtPoint(buffer)?.path

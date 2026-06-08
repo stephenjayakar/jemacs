@@ -295,9 +295,7 @@ export class BufferModel {
       this.backedUp = true
     }
     await writeFileText(this.path, this.text)
-    this.visitedFileModtime = await fileModtime(this.path)
-    this.savedNode = this.undoCur
-    this.dirty = false
+    this.markSaved(await fileModtime(this.path))
     await ctx.runHook?.("after-save-hook", this)
   }
 
@@ -317,7 +315,13 @@ export class BufferModel {
     if (!this.path) throw new Error(`Buffer ${this.name} is not visiting a file`)
     const text = await readFileText(this.path)
     this.setText(text, false)
-    this.visitedFileModtime = await fileModtime(this.path)
+    this.markSaved(await fileModtime(this.path))
+  }
+
+  /** Mark the current text as synchronized with its visited file. Remote file
+   *  backends use this after their own transport-specific read/write path. */
+  markSaved(visitedFileModtime?: number): void {
+    this.visitedFileModtime = visitedFileModtime
     this.savedNode = this.undoCur
     this.dirty = false
   }

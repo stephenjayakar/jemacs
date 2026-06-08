@@ -25,6 +25,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["bookmark", () => import("./bookmark")],
   ["auto-revert", () => import("./auto-revert")],
   ["auto-save", () => import("./auto-save")],
+  ["tramp", () => import("./tramp")],
   ["lsp-extras", () => import("./lsp-extras")],
   ["lsp-monorepo", () => import("./lsp-monorepo")],
   ["lsp-watchman", () => import("./lsp-watchman")],
