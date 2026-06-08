@@ -46,6 +46,10 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   }, "Move point to the beginning of the line.")
   editor.command("move-end-of-line", ({ buffer, prefixArgument }) => {
     const arg = prefixArgument ?? 1
+    if (buffer.lineAt(buffer.point) + arg - 1 < 0) {
+      buffer.point = 0
+      return
+    }
     if (arg !== 1) buffer.moveLine(arg - 1)
     buffer.moveToLineEnd()
   }, "Move point to the end of the line.")

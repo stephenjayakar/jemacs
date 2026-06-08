@@ -309,6 +309,31 @@ test("next-line and previous-line honor negative prefixes at boundaries", async 
   expect(messages.at(-1)).toBe("End of buffer")
 })
 
+test("move-end-of-line negative prefix stops at buffer start when it overshoots", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("aa\nbb\ncc\ndd", false)
+  buffer.point = 6
+
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(2)
+  await editor.run("move-end-of-line")
+  expect(buffer.point).toBe(0)
+})
+
+test("move-end-of-line zero prefix moves to previous line end", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("aa\nbb\ncc", false)
+  buffer.point = 3
+
+  editor.prefixArg.addDigit(0)
+  await editor.run("move-end-of-line")
+  expect(buffer.point).toBe(2)
+})
+
 test("forward-word and backward-word return false when reaching buffer edge", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
