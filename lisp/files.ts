@@ -18,6 +18,7 @@ import {
   diredEntryAtPoint,
   diredFlagFileDeletion,
   diredMarkEntry,
+  diredMarkedFilesSummary,
   diredMarkFilesRegexp,
   diredToggleMarks,
   diredToggleMark,
@@ -249,6 +250,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("dired-toggle-mark", ({ buffer }) => {
     diredToggleMark(buffer, diredEntryAtPoint(buffer))
   }, "Toggle the mark on the current Dired line.")
+  editor.command("dired-number-of-marked-files", ({ buffer, editor }) => {
+    const { count, totalSize } = diredMarkedFilesSummary(buffer)
+    editor.message(`${count} marked file${count === 1 ? "" : "s"}, ${totalSize} byte${totalSize === 1 ? "" : "s"} total`)
+  }, "Display the number and total size of marked files in Dired.")
   editor.command("dired-mark-files-regexp", async ({ buffer, editor, args }) => {
     const regexp = args[0] ?? await editor.prompt("% m Mark files (regexp): ", "", "dired-regexp")
     if (!regexp) return

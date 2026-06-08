@@ -12,6 +12,7 @@ import {
   diredFlaggedEntries,
   diredMarkAll,
   diredMarkEntry,
+  diredMarkedFilesSummary,
   diredMarkFilesRegexp,
   diredToggleMarks,
   diredToggleMark,
@@ -76,6 +77,7 @@ test("dired mark, unmark, toggle, and mark-all update the listing", async () => 
     expect(count).toBe(1)
     expect(buffer.text).toContain("beta.txt")
     expect(buffer.text).toMatch(/^\* -.*beta\.txt/m)
+    expect(diredMarkedFilesSummary(buffer)).toEqual({ count: 1, totalSize: 4 })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -144,6 +146,7 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
   expect(editor.commands.get("dired-unmark-all-files")?.description).toContain("specific mark")
+  expect(editor.commands.get("dired-number-of-marked-files")?.description).toContain("total size")
   expect(keymap?.get("m")).toBe("dired-mark")
   expect(keymap?.get("S-c")).toBe("dired-do-copy")
   expect(keymap?.get("d")).toBe("dired-flag-file-deletion")
@@ -157,6 +160,28 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("* %")).toBe("dired-mark-files-regexp")
   expect(keymap?.get("% .")).toBeUndefined()
   expect(keymap?.get("+")).toBe("dired-create-directory")
+})
+
+test("dired-number-of-marked-files reports count and total size", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+    buffer.point = buffer.text.indexOf("beta.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "delete")
+    let message = ""
+    editor.events.on("message", ({ text }) => { message = text })
+
+    await editor.run("dired-number-of-marked-files")
+
+    expect(message).toBe("1 marked file, 5 bytes total")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("dired-unmark-all-files command removes a selected mark and can query each file", async () => {

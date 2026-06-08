@@ -188,6 +188,18 @@ export function diredMarkAll(buffer: BufferModel): void {
   renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
 }
 
+export function diredMarkedFilesSummary(buffer: BufferModel): { count: number; totalSize: number } {
+  const marks = diredMarks.get(buffer)
+  let count = 0
+  let totalSize = 0
+  for (const entry of diredEntryLines.get(buffer) ?? []) {
+    if (marks?.get(entry.path) !== "marked" || diredSpecialEntry(entry)) continue
+    count++
+    totalSize += entry.size
+  }
+  return { count, totalSize }
+}
+
 export function diredMarkFilesRegexp(buffer: BufferModel, regexp: string, mark: DiredMark, editor?: Editor): number {
   let re: RegExp
   try {
