@@ -265,6 +265,50 @@ test("forward-char and backward-char honor negative prefixes at boundaries", asy
   expect(messages.at(-1)).toBe("End of buffer")
 })
 
+test("next-line and previous-line report Emacs boundary errors", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const messages: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) messages.push(text) })
+  const buffer = editor.currentBuffer
+  buffer.setText("a\nb\nc", false)
+  buffer.point = 2
+
+  editor.prefixArg.addDigit(3)
+  await editor.run("next-line")
+  expect(buffer.lineCol().line).toBe(3)
+  expect(messages.at(-1)).toBe("End of buffer")
+
+  buffer.point = 2
+  editor.prefixArg.addDigit(3)
+  await editor.run("previous-line")
+  expect(buffer.lineCol().line).toBe(1)
+  expect(messages.at(-1)).toBe("Beginning of buffer")
+})
+
+test("next-line and previous-line honor negative prefixes at boundaries", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const messages: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) messages.push(text) })
+  const buffer = editor.currentBuffer
+  buffer.setText("a\nb\nc", false)
+  buffer.point = 2
+
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(3)
+  await editor.run("next-line")
+  expect(buffer.lineCol().line).toBe(1)
+  expect(messages.at(-1)).toBe("Beginning of buffer")
+
+  buffer.point = 2
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(3)
+  await editor.run("previous-line")
+  expect(buffer.lineCol().line).toBe(3)
+  expect(messages.at(-1)).toBe("End of buffer")
+})
+
 test("forward-word and backward-word return false when reaching buffer edge", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)

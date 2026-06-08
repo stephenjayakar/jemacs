@@ -28,10 +28,17 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     buffer.point = target
   }
 
+  const moveLine = (buffer: BufferModel, editor: Editor, delta: number) => {
+    const target = buffer.lineAt(buffer.point) + delta
+    buffer.moveLine(delta)
+    if (target < 0) editor.message("Beginning of buffer")
+    else if (target >= buffer.lineCount) editor.message("End of buffer")
+  }
+
   editor.command("forward-char", ({ buffer, editor, prefixArgument }) => moveChar(buffer, editor, prefixArgument ?? 1), "Move point forward one character.")
   editor.command("backward-char", ({ buffer, editor, prefixArgument }) => moveChar(buffer, editor, -(prefixArgument ?? 1)), "Move point backward one character.")
-  editor.command("next-line", ({ buffer, prefixArgument }) => buffer.moveLine(prefixArgument ?? 1), "Move point down one line.")
-  editor.command("previous-line", ({ buffer, prefixArgument }) => buffer.moveLine(-(prefixArgument ?? 1)), "Move point up one line.")
+  editor.command("next-line", ({ buffer, editor, prefixArgument }) => moveLine(buffer, editor, prefixArgument ?? 1), "Move point down one line.")
+  editor.command("previous-line", ({ buffer, editor, prefixArgument }) => moveLine(buffer, editor, -(prefixArgument ?? 1)), "Move point up one line.")
   editor.command("move-beginning-of-line", ({ buffer, prefixArgument }) => {
     const arg = prefixArgument ?? 1
     if (arg !== 1) buffer.moveLine(arg - 1)
