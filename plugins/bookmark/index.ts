@@ -217,6 +217,27 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     editor.message(`Renamed bookmark ${oldName} to ${newName}`)
   }, "Change the name of OLD-NAME bookmark to NEW-NAME name.")
 
+  editor.command("bookmark-insert-location", async ({ buffer, editor, args }) => {
+    const table = tableFor(editor)
+    const names = bookmarkNames(table)
+    if (!names.length) {
+      editor.message("No bookmarks")
+      return
+    }
+    const name = args[0]
+      ?? await editor.completingRead("Insert bookmark location: ", {
+        collection: names,
+        history: "bookmark",
+      })
+    if (!name) return
+    const record = table[name]
+    if (!record) {
+      editor.message(`No bookmark named ${name}`)
+      return
+    }
+    buffer.insert(record.filename)
+  }, "Insert the name of the file associated with BOOKMARK-NAME.")
+
   const listBookmarks = ({ editor }: { editor: Editor }) => {
     const table = tableFor(editor)
     const names = bookmarkNames(table)
