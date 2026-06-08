@@ -232,13 +232,16 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await lspRename(editor, buffer, args[0])
   }, "Rename the symbol at point across the workspace via LSP.")
 
-  editor.command("lsp-find-references", async ({ editor, buffer }) => {
+  const findReferences = async ({ editor, buffer }: { editor: Editor; buffer: BufferModel }) => {
     await lspFindReferences(editor, buffer)
-  }, "List all LSP references to the symbol at point.")
+  }
+  editor.command("xref-find-references", findReferences, "Find references to the identifier at point.")
+  editor.command("lsp-find-references", findReferences, "Compatibility alias for xref-find-references.")
 
   editor.command("lsp-install-server", async ({ editor, buffer, args }) => {
     await lspInstallServer(editor, buffer, args[0])
   }, "Install the LSP server for the current buffer's mode (runs on the remote when shadowed).")
 
   editor.key("C-c r", "lsp-rename")
+  editor.key("M-?", "xref-find-references")
 }

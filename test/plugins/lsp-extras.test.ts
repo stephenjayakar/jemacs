@@ -60,8 +60,10 @@ test("install registers commands and C-c r binding", () => {
   install(editor)
   expect(editor.commands.get("lsp-hover")).toBeDefined()
   expect(editor.commands.get("lsp-rename")).toBeDefined()
+  expect(editor.commands.get("xref-find-references")).toBeDefined()
   expect(editor.commands.get("lsp-find-references")).toBeDefined()
   expect(editor.describeKey("C-c r")).toContain("lsp-rename")
+  expect(editor.describeKey("M-?")).toContain("xref-find-references")
 })
 
 test("hoverInfo formats MarkupContent, MarkedString, and arrays", () => {
@@ -152,7 +154,7 @@ test("lsp-find-references with single result jumps directly", async () => {
     return [{ uri: pathToUri(pathA), range: { start: { line: 1, character: 12 }, end: { line: 1, character: 15 } } }]
   })
   buffer.point = buffer.text.indexOf("foo")
-  await editor.run("lsp-find-references")
+  await editor.run("xref-find-references")
   expect(editor.currentBuffer.path).toBe(pathA)
   expect(buffer.point).toBe(buffer.text.indexOf("foo", 10))
 })
