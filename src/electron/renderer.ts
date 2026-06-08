@@ -1,17 +1,20 @@
 import type { SerializedDisplayModel } from "../display/serialize"
 import { presentDomFrame } from "../display/dom-frame"
 import { domKeyFromKeyboardEvent, isDomModifierOnlyKey } from "./dom-key"
+import { XtermPaneRegistry } from "./xterm-panes"
 
 const titleEl = document.getElementById("jemacs-title")!
 const windowsEl = document.getElementById("jemacs-windows")!
 const minibufferCompletionsEl = document.getElementById("jemacs-minibuffer-completions")!
 const minibufferEl = document.getElementById("jemacs-minibuffer")!
 const echoEl = document.getElementById("jemacs-echo")!
+const xtermPanes = new XtermPaneRegistry()
 
 declare global {
   interface Window {
     jemacs: {
       onDisplay(handler: (model: SerializedDisplayModel) => void): () => void
+      onTerminalData(handler: (payload: unknown) => void): () => void
       sendInput(payload: unknown): void
       ready(): void
     }
@@ -25,6 +28,7 @@ function present(model: SerializedDisplayModel): void {
     (windowId, row, col) => {
       window.jemacs.sendInput({ type: "mouse", windowId, row, col, button: 0 })
     },
+    xtermPanes,
   )
 }
 
@@ -43,6 +47,7 @@ document.addEventListener("paste", event => {
 })
 
 try {
+  window.jemacs.onTerminalData(payload => xtermPanes.write(payload))
   window.jemacs.onDisplay(present)
   window.jemacs.ready()
 } catch (error) {

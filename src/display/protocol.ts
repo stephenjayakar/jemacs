@@ -3,6 +3,7 @@ import type { WindowClickState } from "./click-to-point"
 import type { TextSpan } from "../modes/mode"
 import type { Theme } from "./theme"
 import type { ThemedText } from "./themed-text"
+import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ViewportSize } from "./viewport"
 
 export type DisplayChunk = ThemedText
@@ -13,6 +14,8 @@ export type WindowPaneModel = {
   selected: boolean
   dedicated: boolean
   body: DisplayChunk
+  /** Optional host-renderable terminal grid. `body` remains the copy-mode/fallback text. */
+  terminalSurface?: TerminalSurfaceModel
   modeline: DisplayChunk
   /** Maps body cell coordinates to buffer point (see `pointFromWindowClick`). */
   clickState: WindowClickState
@@ -61,6 +64,15 @@ export type HostCapabilities = {
   osc52: boolean
   /** When true, the host applies per-chunk font-family and height (Electron only). */
   perFaceFonts?: boolean
+  /** When true, the host has a terminal-grid path instead of only plain text. */
+  terminalSurfaces?: boolean
+  /** When true, terminal panes can render raw PTY streams and only need surface metadata. */
+  terminalRawStreams?: boolean
+}
+
+export type TerminalData = {
+  bufferId: string
+  data: string
 }
 
 export type NormalizedInput =
@@ -78,6 +90,7 @@ export interface UiHost {
   start(): Promise<void>
   destroy(): void
   present(model: DisplayModel): void
+  sendTerminalData?(payload: TerminalData): void
   getViewport(): ViewportSize
   onInput(handler: InputHandler): void
   onResize(handler: ResizeHandler): void

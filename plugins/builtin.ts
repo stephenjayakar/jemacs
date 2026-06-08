@@ -39,6 +39,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["smerge", () => import("./smerge")],
   ["osc52", () => import("./osc52")],
   ["term-v2", () => import("./term-v2")],
+  ["jterm", () => import("./jterm")],
   ["avy", () => import("./avy")],
   ["register-text", () => import("./register-text")],
   ["org", () => import("./org")],

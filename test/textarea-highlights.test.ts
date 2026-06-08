@@ -4,19 +4,17 @@ import { TextareaRenderable } from "@opentui/core"
 import { buildDisplayModel } from "../src/display/build-display-model"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig } from "../src/config"
-import { installDefaultModes } from "../src/modes/default-modes"
+import { defineMode } from "../src/modes/mode"
 import { OpenTuiHost } from "../src/ui/opentui-host"
 
-test("TextareaRenderable sync applies font-lock highlights on full buffer", async () => {
+test("TextareaRenderable sync keeps multiline font-lock highlights aligned", async () => {
   const prev = process.env.JEMACS_USE_TEXTAREA
   process.env.JEMACS_USE_TEXTAREA = "1"
   try {
-    installDefaultModes()
+    defineMode({ name: "textarea-highlight-test", fontLock: () => [{ start: 12, end: 20, face: "keyword" }] })
     const editor = new Editor()
     installDefaultConfig(editor)
-    editor.scratch("hl", "hello world", "text")
-    editor.currentBuffer.mark = 0
-    editor.currentBuffer.point = 5
+    editor.scratch("hl", "const x = 1\nfunction hi() {}\n", "textarea-highlight-test")
 
     const { renderer, renderOnce } = await createTestRenderer({ width: 80, height: 24 })
     const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24, cols: 80 } })
@@ -25,8 +23,9 @@ test("TextareaRenderable sync applies font-lock highlights on full buffer", asyn
     await renderOnce()
 
     const body = renderer.root.findDescendantById(`window-body:${editor.selectedWindowId}`) as TextareaRenderable
-    const highlights = body.editBuffer.getLineHighlights(0)
-    expect(highlights.length).toBeGreaterThan(0)
+    expect(body.editBuffer.getLineHighlights(1).map(({ start, end }) => ({ start, end }))).toEqual([
+      { start: 0, end: 8 },
+    ])
     host.destroy()
   } finally {
     if (prev === undefined) delete process.env.JEMACS_USE_TEXTAREA

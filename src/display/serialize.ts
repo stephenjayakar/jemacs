@@ -1,4 +1,5 @@
 import type { DisplayModel, WindowDisplayNode } from "./protocol"
+import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ThemedText } from "./themed-text"
 
 export type SerializedThemedText = {
@@ -36,6 +37,7 @@ export type SerializedPane = {
   selected: boolean
   dedicated: boolean
   body: SerializedThemedText
+  terminalSurface?: TerminalSurfaceModel
   modeline: SerializedThemedText
   clickState: { startLine: number; gutterPrefixLen: number }
   bodyLineBudget: number
@@ -72,6 +74,7 @@ function serializeWindowNode(node: WindowDisplayNode): SerializedWindowNode {
         selected: node.pane.selected,
         dedicated: node.pane.dedicated,
         body: serializeThemedText(node.pane.body),
+        terminalSurface: node.pane.terminalSurface ? serializeTerminalSurface(node.pane.terminalSurface) : undefined,
         modeline: serializeThemedText(node.pane.modeline),
         clickState: node.pane.clickState,
         bodyLineBudget: node.pane.bodyLineBudget,
@@ -87,5 +90,12 @@ function serializeWindowNode(node: WindowDisplayNode): SerializedWindowNode {
     firstRatio: node.firstRatio,
     first: serializeWindowNode(node.first),
     second: serializeWindowNode(node.second),
+  }
+}
+
+function serializeTerminalSurface(surface: TerminalSurfaceModel): TerminalSurfaceModel {
+  return {
+    ...surface,
+    cells: surface.cells.map(row => row.map(cell => ({ ...cell }))),
   }
 }

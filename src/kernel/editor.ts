@@ -13,6 +13,7 @@ import type {
 } from "./extension-points"
 import { displaySystem, modeSystem } from "./extension-points"
 import type { HostCapabilities } from "../display/protocol"
+import type { TerminalData } from "../display/protocol"
 import type { ViewportSize } from "../display/viewport"
 import { composeTheme } from "../runtime/faces"
 import { fileCompletionCandidates } from "./completion"
@@ -50,6 +51,7 @@ export type EditorEvents = {
   changed: { reason: string }
   message: { text: string }
   minibuffer: { prompt: string }
+  terminalData: TerminalData
 }
 
 type MinibufferRequest = {
@@ -815,6 +817,7 @@ export class Editor {
       if (tab.bufferId === target.id) tab.bufferId = fallbackId
     })
     if (this.currentBufferId === target.id) this.switchToBuffer(fallbackId)
+    void this.runHook("kill-buffer-hook", target)
     void this.changed("kill-buffer")
     return target
   }

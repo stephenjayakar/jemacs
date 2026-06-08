@@ -1,8 +1,9 @@
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { applyTheme } from "../display/theme"
-import type { Theme } from "../display/theme"
+import type { FaceStyle, Theme } from "../display/theme"
 import type { ThemedChunk } from "../display/themed-text"
 import type { TextSpan } from "../modes/mode"
+import { resolveFace } from "../runtime/faces"
 
 const syntaxByTheme = new WeakMap<Theme, SyntaxStyle>()
 const styleIdByChunkKey = new WeakMap<SyntaxStyle, Map<string, number>>()
@@ -51,8 +52,18 @@ function styleIdForChunk(syntax: SyntaxStyle, chunk: ThemedChunk): number {
   return id
 }
 
-function chunkHasStyle(chunk: ThemedChunk): boolean {
-  return Boolean(chunk.fg || chunk.bg || chunk.bold || chunk.italic || chunk.underline)
+function chunkHasNonDefaultStyle(chunk: ThemedChunk, defaultStyle: FaceStyle | undefined): boolean {
+  return chunk.fg !== defaultStyle?.fg
+    || chunk.bg !== defaultStyle?.bg
+    || !!chunk.bold !== !!defaultStyle?.bold
+    || !!chunk.italic !== !!defaultStyle?.italic
+    || !!chunk.underline !== !!defaultStyle?.underline
+}
+
+function nativeLength(text: string): number {
+  let length = text.length
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) length--
+  return length
 }
 
 /** Sync full-buffer text, point, and font-lock highlights into a TextareaRenderable. */
@@ -63,21 +74,30 @@ export function syncTextareaFromSpans(
   const { editBuffer } = textarea
   editBuffer.setText(options.text)
   editBuffer.clearAllHighlights()
+  const defaultStyle = resolveFace("default", options.theme)
+  if (defaultStyle?.fg) {
+    textarea.textColor = defaultStyle.fg
+    textarea.focusedTextColor = defaultStyle.fg
+  }
+  if (defaultStyle?.bg) {
+    textarea.backgroundColor = defaultStyle.bg
+    textarea.focusedBackgroundColor = defaultStyle.bg
+  }
   const syntax = syntaxForTheme(options.theme)
   editBuffer.setSyntaxStyle(syntax)
 
   const themed = applyTheme(options.text, options.spans, options.theme)
-  let offset = 0
+  let nativeOffset = 0
   for (const chunk of themed.chunks) {
-    const end = offset + chunk.text.length
-    if (chunkHasStyle(chunk)) {
+    const nativeEnd = nativeOffset + nativeLength(chunk.text)
+    if (chunkHasNonDefaultStyle(chunk, defaultStyle)) {
       editBuffer.addHighlightByCharRange({
-        start: offset,
-        end,
+        start: nativeOffset,
+        end: nativeEnd,
         styleId: styleIdForChunk(syntax, chunk),
       })
     }
-    offset = end
+    nativeOffset = nativeEnd
   }
 
   textarea.cursorOffset = options.point

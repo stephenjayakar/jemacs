@@ -46,20 +46,20 @@ export function spawnPty(argv: string[], opts?: PtyOptions): Pty {
 
   return {
     pid: proc.pid ?? -1,
-    write(data) { writeTo(proc, data) },
-    resize(_rows, _cols) {
-      // The Python bridge owns the real pty. Without a native addon there is no fd to
-      // ioctl, so Electron keeps Jemacs' xterm mirror sized but cannot SIGWINCH
-      // the child process.
-    },
+    write(data) { writeData(proc, data) },
+    resize(rows, cols) { writeControl(proc, `R ${Math.max(1, rows)} ${Math.max(1, cols)}`) },
     onData(fn) { dataHandlers.push(fn) },
     onExit(fn) { exitHandlers.push(fn) },
     kill() { proc.kill() },
   }
 }
 
-function writeTo(proc: ChildProcessWithoutNullStreams, data: string): void {
-  if (!proc.stdin.destroyed) proc.stdin.write(data)
+function writeData(proc: ChildProcessWithoutNullStreams, data: string): void {
+  if (!proc.stdin.destroyed) proc.stdin.write(`D ${Buffer.from(data, "utf8").toString("base64")}\n`)
+}
+
+function writeControl(proc: ChildProcessWithoutNullStreams, command: string): void {
+  if (!proc.stdin.destroyed) proc.stdin.write(`${command}\n`)
 }
 
 function pythonCommand(): string {
@@ -69,19 +69,38 @@ function pythonCommand(): string {
 }
 
 const PY_PTY_BRIDGE = String.raw`
-import os, pty, selectors, sys
+import base64, fcntl, os, pty, selectors, signal, struct, sys, termios
 
 argv = sys.argv[1:]
 if not argv:
     raise SystemExit("missing command")
 
+def initial_size():
+    try:
+        return int(os.environ.get("LINES", "24")), int(os.environ.get("COLUMNS", "80"))
+    except ValueError:
+        return 24, 80
+
+def set_winsize(fd, rows, cols):
+    winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
 pid, master = pty.fork()
 if pid == 0:
+    rows, cols = initial_size()
+    set_winsize(0, rows, cols)
     os.execvpe(argv[0], argv, os.environ)
 
 selector = selectors.DefaultSelector()
 selector.register(master, selectors.EVENT_READ, "pty")
 selector.register(sys.stdin.buffer, selectors.EVENT_READ, "stdin")
+
+def resize(rows, cols):
+    set_winsize(master, rows, cols)
+    try:
+        os.kill(pid, signal.SIGWINCH)
+    except ProcessLookupError:
+        pass
 
 while True:
     for key, _mask in selector.select():
@@ -94,8 +113,13 @@ while True:
                 raise SystemExit(0)
             os.write(sys.stdout.fileno(), data)
         else:
-            data = os.read(sys.stdin.fileno(), 4096)
-            if not data:
+            line = sys.stdin.buffer.readline()
+            if not line:
                 raise SystemExit(0)
-            os.write(master, data)
+            if line.startswith(b"D "):
+                os.write(master, base64.b64decode(line[2:].strip()))
+            elif line.startswith(b"R "):
+                parts = line.decode("ascii", "replace").strip().split()
+                if len(parts) == 3:
+                    resize(int(parts[1]), int(parts[2]))
 `

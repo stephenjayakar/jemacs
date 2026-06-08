@@ -16,6 +16,7 @@ import type {
   WindowPaneModel,
 } from "../display/protocol"
 import { themeFaceBackground, type Theme } from "../display/theme"
+import { terminalSurfaceToThemedText } from "../display/terminal-surface"
 import type { FaceName } from "../modes/mode"
 import { contentAreaLines, defaultTerminalRows, type ViewportSize } from "../display/viewport"
 import { keyEventFromOpentui } from "./opentui-key"
@@ -37,6 +38,7 @@ export class OpenTuiHost implements UiHost {
     clipboard: true,
     osc52: true,
     perFaceFonts: false,
+    terminalSurfaces: true,
   }
 
   private renderer!: CliRenderer
@@ -348,7 +350,7 @@ export class OpenTuiHost implements UiHost {
       })
       return
     }
-    body.content = themedTextToStyledText(leaf.body)
+    body.content = themedTextToStyledText(leaf.terminalSurface ? terminalSurfaceToThemedText(leaf.terminalSurface) : leaf.body)
   }
 }
 

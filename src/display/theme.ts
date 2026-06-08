@@ -33,7 +33,7 @@ export function applyTheme(text: string, spans: TextSpan[], theme: Theme, option
     const style = ordered.reduce<FaceStyle | undefined>((merged, span) => {
       if (span.start > start || span.end < end) return merged
       const faceStyle = resolveFace(span.face, theme, options.buffer)
-      return mergeFaceStyles(merged, faceStyle)
+      return mergeFaceStyles(mergeFaceStyles(merged, faceStyle), span.style)
     }, defaultStyle)
     chunks.push(themedChunk(text.slice(start, end), style))
   }
