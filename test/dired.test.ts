@@ -8,6 +8,7 @@ import {
   diredDoDelete,
   diredDoFlaggedDelete,
   diredEntryAtPoint,
+  diredFlagFileDeletion,
   diredFlaggedEntries,
   diredMarkAll,
   diredMarkEntry,
@@ -15,6 +16,7 @@ import {
   diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
+  diredUnmarkAllFiles,
   diredUnmarkEntry,
   refreshDiredBuffer,
 } from "../src/modes/dired"
@@ -55,6 +57,20 @@ test("dired mark, unmark, toggle, and mark-all update the listing", async () => 
 
     diredUnmarkAll(buffer)
     expect(buffer.text).not.toMatch(/^\* /m)
+
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+    buffer.point = buffer.text.indexOf("beta.txt")
+    diredFlagFileDeletion(buffer, diredEntryAtPoint(buffer))
+    expect(buffer.text).toMatch(/^\* -.*alpha\.txt/m)
+    expect(buffer.text).toMatch(/^D -.*beta\.txt/m)
+
+    expect(await diredUnmarkAllFiles(buffer, "*")).toBe(1)
+    expect(buffer.text).not.toMatch(/^\* -.*alpha\.txt/m)
+    expect(buffer.text).toMatch(/^D -.*beta\.txt/m)
+
+    expect(await diredUnmarkAllFiles(buffer)).toBe(1)
+    expect(buffer.text).not.toMatch(/^D -.*beta\.txt/m)
 
     const count = diredMarkFilesRegexp(buffer, "beta\\.txt$", "marked")
     expect(count).toBe(1)
@@ -125,6 +141,9 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   const { getMode } = await import("../src/modes/mode")
   installDefaultModes()
   const keymap = getMode("dired")?.keymap
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  expect(editor.commands.get("dired-unmark-all-files")?.description).toContain("specific mark")
   expect(keymap?.get("m")).toBe("dired-mark")
   expect(keymap?.get("S-c")).toBe("dired-do-copy")
   expect(keymap?.get("d")).toBe("dired-flag-file-deletion")
@@ -138,6 +157,37 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("* %")).toBe("dired-mark-files-regexp")
   expect(keymap?.get("% .")).toBeUndefined()
   expect(keymap?.get("+")).toBe("dired-create-directory")
+})
+
+test("dired-unmark-all-files command removes a selected mark and can query each file", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+    buffer.point = buffer.text.indexOf("beta.txt")
+    diredFlagFileDeletion(buffer, diredEntryAtPoint(buffer))
+
+    await editor.run("dired-unmark-all-files", ["D"])
+    expect(buffer.text).toMatch(/^\* -.*alpha\.txt/m)
+    expect(buffer.text).not.toMatch(/^D -.*beta\.txt/m)
+
+    buffer.point = buffer.text.indexOf("beta.txt")
+    diredFlagFileDeletion(buffer, diredEntryAtPoint(buffer))
+    editor.prefixArg.universalArgument()
+    const pending = editor.run("dired-unmark-all-files", [""])
+    await editor.handleKey({ name: "n", sequence: "n" })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await editor.handleKey({ name: "y", sequence: "y" })
+    await pending
+    expect(buffer.text).toMatch(/^\* -.*alpha\.txt/m)
+    expect(buffer.text).not.toMatch(/^D -.*beta\.txt/m)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("make-directory and dired + create a subdirectory", async () => {

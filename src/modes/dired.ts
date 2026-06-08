@@ -135,6 +135,32 @@ export function diredUnmarkAll(buffer: BufferModel): void {
   renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
 }
 
+function markMatches(mark: DiredMark, markChar?: string): boolean {
+  if (!markChar) return true
+  if (markChar === "*") return mark === "marked"
+  if (markChar === "D") return mark === "delete"
+  return false
+}
+
+export async function diredUnmarkAllFiles(
+  buffer: BufferModel,
+  markChar?: string,
+  confirm?: (entry: DiredEntry, mark: DiredMark) => Promise<boolean>,
+): Promise<number> {
+  const marks = diredMarks.get(buffer)
+  if (!marks) return 0
+  let count = 0
+  for (const entry of diredEntryLines.get(buffer) ?? []) {
+    const mark = marks.get(entry.path)
+    if (!mark || !markMatches(mark, markChar)) continue
+    if (confirm && !await confirm(entry, mark)) continue
+    marks.delete(entry.path)
+    count++
+  }
+  renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
+  return count
+}
+
 export function diredToggleMark(buffer: BufferModel, entry: DiredEntry | undefined): void {
   if (!entry || diredSpecialEntry(entry)) return
   const marks = diredMarks.get(buffer)

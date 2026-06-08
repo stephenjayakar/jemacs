@@ -22,6 +22,7 @@ import {
   diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
+  diredUnmarkAllFiles,
   diredUnmarkBackward,
   diredUnmarkEntry,
   makeDirectory,
@@ -234,6 +235,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }
   editor.command("dired-unmark-all-marks", diredUnmarkAllMarks, "Remove all marks and deletion flags in Dired.")
   editor.command("dired-unmark-all", diredUnmarkAllMarks, "Compatibility alias for dired-unmark-all-marks.")
+  editor.command("dired-unmark-all-files", async ({ buffer, editor, args, prefixArgument }) => {
+    const input = args[0] ?? await editor.prompt("Remove marks (RET means all): ", "", "dired-unmark")
+    if (input == null) return
+    const markChar = input === "" ? undefined : input[0]
+    const count = await diredUnmarkAllFiles(buffer, markChar, prefixArgument == null ? undefined : async entry =>
+      await readKey(editor, `Unmark ${entry.name}? (y or n) `) === "y")
+    editor.message(`Removed ${count} mark${count === 1 ? "" : "s"}`)
+  }, "Remove a specific mark, or any mark, from every file in Dired.")
   editor.command("dired-toggle-marks", ({ buffer }) => {
     diredToggleMarks(buffer)
   }, "Toggle Dired marks throughout the current buffer.")
