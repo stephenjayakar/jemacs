@@ -284,8 +284,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   keymap.bind("M-RET", "org-meta-return")
   keymap.bind("M-left", "org-promote")
   keymap.bind("M-right", "org-demote")
-  keymap.bind("C-c C-n", "org-next-heading")
-  keymap.bind("C-c C-p", "org-previous-heading")
+  keymap.bind("C-c C-n", "org-next-visible-heading")
+  keymap.bind("C-c C-p", "org-previous-visible-heading")
 
   defineMode({
     name: "org-mode",
@@ -313,10 +313,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("org-demote", ({ buffer }) => shiftLevel(buffer, +1),
     "Increase the level of the current heading by one.")
 
-  editor.command("org-next-heading", ({ editor, buffer }) => {
+  editor.command("org-next-visible-heading", ({ editor, buffer }) => {
     if (!gotoHeading(buffer, 1)) editor.message("No next heading")
   }, "Move to the next heading.")
-  editor.command("org-previous-heading", ({ editor, buffer }) => {
+  editor.command("org-previous-visible-heading", ({ editor, buffer }) => {
     if (!gotoHeading(buffer, -1)) editor.message("No previous heading")
   }, "Move to the previous heading.")
 

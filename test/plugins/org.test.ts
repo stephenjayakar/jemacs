@@ -231,11 +231,11 @@ describe("promote / demote (M-left / M-right)", () => {
 describe("heading navigation (C-c C-n / C-c C-p)", () => {
   test("next/previous heading move point", async () => {
     const { editor, buffer } = setup(DOC, 0)
-    await editor.run("org-next-heading")
+    await editor.run("org-next-visible-heading")
     expect(buffer.point).toBe(DOC.indexOf("** TODO Child A"))
-    await editor.run("org-next-heading")
+    await editor.run("org-next-visible-heading")
     expect(buffer.point).toBe(DOC.indexOf("*** Grand"))
-    await editor.run("org-previous-heading")
+    await editor.run("org-previous-visible-heading")
     expect(buffer.point).toBe(DOC.indexOf("** TODO Child A"))
   })
 
@@ -243,7 +243,7 @@ describe("heading navigation (C-c C-n / C-c C-p)", () => {
     const { editor, buffer } = setup(DOC, DOC.indexOf("* Second"))
     let msg = ""
     editor.events.on("message", ({ text }) => { msg = text })
-    await editor.run("org-next-heading")
+    await editor.run("org-next-visible-heading")
     expect(msg).toContain("No next heading")
     expect(buffer.point).toBe(DOC.indexOf("* Second"))
   })
@@ -252,6 +252,14 @@ describe("heading navigation (C-c C-n / C-c C-p)", () => {
     const { editor, buffer } = setup(DOC, 0)
     await keySeq(editor, "C-c", "C-n")
     expect(buffer.point).toBe(DOC.indexOf("** TODO Child A"))
+  })
+
+  test("navigation commands use GNU Org names", () => {
+    const { editor } = setup(DOC, 0)
+    expect(editor.commands.get("org-next-heading")).toBeUndefined()
+    expect(editor.commands.get("org-previous-heading")).toBeUndefined()
+    expect(editor.commands.get("org-next-visible-heading")).toBeDefined()
+    expect(editor.commands.get("org-previous-visible-heading")).toBeDefined()
   })
 })
 
