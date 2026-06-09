@@ -49,6 +49,10 @@ Current branch for this work: `main`.
   - `copy-region-to-clipboard-mac` -> `jemacs-copy-region-to-clipboard-mac`
   - `bookmark-import-from-emacs` -> `jemacs-bookmark-import-from-emacs`
   - `clear-whitespace-and-newline-and-indent` -> `jemacs-clear-whitespace-and-newline-and-indent`
+  - `find-definition` -> `jemacs-find-definition`
+  - `revert-function` -> `jemacs-revert-function`
+  - `revert-definition` -> `jemacs-revert-definition`
+  - `revert-all-definitions` -> `jemacs-revert-all-definitions`
 
 ## Missing Or Incomplete Parity Work
 

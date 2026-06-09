@@ -51,7 +51,7 @@ export function formatDescribeFunction(spec: CommandSpec): string {
     lines.push("")
   }
   if (spec.patched) {
-    lines.push("Status: temporarily patched (M-x revert-function restores baseline)")
+    lines.push("Status: temporarily patched (M-x jemacs-revert-function restores baseline)")
     lines.push("")
   }
   const body = String(spec.fn)

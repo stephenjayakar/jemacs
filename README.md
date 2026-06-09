@@ -79,14 +79,14 @@ Everything registered through the public extension API is live, source-tracked, 
 
 | Kind | Define with | Describe | Patch at point | Revert |
 | --- | --- | --- | --- | --- |
-| Command | `editor.command(...)` | `C-h f` | `C-M-x` (`eval-defun`) | `M-x revert-function` |
-| Variable | `defcustom` / `defvar` | `C-h v` | `C-M-x` | `M-x revert-definition` |
-| Key | `editor.key` / `editor.defineKey` | `C-h k` | `C-M-x` | `M-x revert-definition` |
-| Mode | `defineMode(...)` | `C-h c` | `C-M-x` | `M-x revert-definition` |
-| Hook | `addHook(...)` | `M-x find-definition` | `C-M-x` | `M-x revert-definition` |
-| Advice | `addAdvice(...)` | `M-x find-definition` | `C-M-x` | `M-x revert-definition` |
+| Command | `editor.command(...)` | `C-h f` | `C-M-x` (`eval-defun`) | `M-x jemacs-revert-function` |
+| Variable | `defcustom` / `defvar` | `C-h v` | `C-M-x` | `M-x jemacs-revert-definition` |
+| Key | `editor.key` / `editor.defineKey` | `C-h k` | `C-M-x` | `M-x jemacs-revert-definition` |
+| Mode | `defineMode(...)` | `C-h c` | `C-M-x` | `M-x jemacs-revert-definition` |
+| Hook | `addHook(...)` | `M-x jemacs-find-definition` | `C-M-x` | `M-x jemacs-revert-definition` |
+| Advice | `addAdvice(...)` | `M-x jemacs-find-definition` | `C-M-x` | `M-x jemacs-revert-definition` |
 
-Help buffers use **help mode**: put point on a `Source:` line (or the described name) and press **RET** (`help-follow`) to jump to the definition. `M-x find-definition` covers any registered kind.
+Help buffers use **help mode**: put point on a `Source:` line (or the described name) and press **RET** (`help-follow`) to jump to the definition. `M-x jemacs-find-definition` covers any registered kind.
 
 **Temporary** changes: `C-M-x` on a definition form (or `C-x C-e` on a region). **Permanent**: edit the file, `C-x C-s`, then `C-c C-r` (`reload-current-file`) or `M-x load-file`. Reload clears all temporary patches first, then re-imports the module.
 

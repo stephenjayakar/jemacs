@@ -106,3 +106,16 @@ test("formatDescribeFunction shows patch status", () => {
   const body = formatDescribeFunction(spec)
   expect(body).toContain("temporarily patched")
 })
+
+test("live source extension commands use Jemacs names", () => {
+  const editor = new Editor()
+  boot(editor)
+  expect(editor.commands.get("find-definition")).toBeUndefined()
+  expect(editor.commands.get("revert-function")).toBeUndefined()
+  expect(editor.commands.get("revert-definition")).toBeUndefined()
+  expect(editor.commands.get("revert-all-definitions")).toBeUndefined()
+  expect(editor.commands.get("jemacs-find-definition")).toBeDefined()
+  expect(editor.commands.get("jemacs-revert-function")).toBeDefined()
+  expect(editor.commands.get("jemacs-revert-definition")).toBeDefined()
+  expect(editor.commands.get("jemacs-revert-all-definitions")).toBeDefined()
+})

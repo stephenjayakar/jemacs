@@ -37,7 +37,7 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
     editor.message(`Found definition of ${name}`)
   }, "Visit the source of a command or other definition.")
 
-  editor.command("find-definition", async ({ editor, args }) => {
+  editor.command("jemacs-find-definition", async ({ editor, args }) => {
     const label = args[0] ?? await pickDefinition(editor)
     if (!label) return
     const ref = parseDefinitionLabel(label)
@@ -97,7 +97,7 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
     editor.message(`Loaded ${path}`)
   }, "Load a TypeScript/JavaScript file into the live editor.")
 
-  editor.command("revert-function", ({ editor, args }) => {
+  editor.command("jemacs-revert-function", ({ editor, args }) => {
     const ref = args[0]
       ? ({ kind: "command", name: args[0] } satisfies DefinitionRef)
       : helpTopicRef(editor) ?? { kind: "command", name: editor.commands.names().find(n => editor.commands.get(n)?.patched) ?? "" }
@@ -107,9 +107,9 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
     }
     if (!revertDefinition(editor, ref)) editor.message(`Could not revert ${ref.name}`)
     else editor.message(`Reverted ${ref.kind} ${ref.name}`)
-  }, "Restore a temporarily patched command (alias: revert-definition).")
+  }, "Restore a temporarily patched command (alias: jemacs-revert-definition).")
 
-  editor.command("revert-definition", async ({ editor, args }) => {
+  editor.command("jemacs-revert-definition", async ({ editor, args }) => {
     const label = args[0] ?? await pickPatchedDefinition(editor)
     if (!label) return
     const ref = parseDefinitionLabel(label)
@@ -117,7 +117,7 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
     else editor.message(`Reverted ${ref.kind} ${ref.name}`)
   }, "Restore any temporarily patched definition to its baseline.")
 
-  editor.command("revert-all-definitions", ({ editor }) => {
+  editor.command("jemacs-revert-all-definitions", ({ editor }) => {
     const n = revertAllDefinitions(editor)
     editor.message(`Reverted ${n} patched definition(s)`)
   }, "Restore all patched commands and variables.")
@@ -193,7 +193,7 @@ function formatDescribeVariable(variable: CustomVariable): string {
     lines.push("RET — visit source and edit")
     lines.push("")
   }
-  if (variable.patched) lines.push("Status: temporarily patched (M-x revert-definition)")
+  if (variable.patched) lines.push("Status: temporarily patched (M-x jemacs-revert-definition)")
   return lines.filter((line, i) => i > 0 || line.length > 0).join("\n")
 }
 
