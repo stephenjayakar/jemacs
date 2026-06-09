@@ -7,6 +7,7 @@ import { createAuthorityFs, createRemoteRuntime } from "../../src/shadow/remote-
 import { attachAuthority, attachShadow } from "../../src/shadow/shadow"
 import { FakeFs, S_IFDIR, dirname } from "./fake-fs"
 import { FakeLink } from "./fake-link"
+import { SeededRng } from "./sim"
 
 function fsLike(fs: FakeFs): FsLike {
   return {
@@ -199,5 +200,32 @@ describe("attachShadow/attachAuthority fs wiring", () => {
     expect(await pe).toBe(true)
 
     dS(); dA()
+  })
+})
+
+describe("AuthorityFs path jail", () => {
+  test("want/manifest-req outside fsRoot return empty (no traversal)", async () => {
+    const fs = new FakeFs()
+    fs.mkdir("/proj"); fs.mkdir("/etc")
+    fs.writeFile("/proj/ok.txt", "allowed")
+    fs.writeFile("/etc/secret", "DENIED")
+    const { sLink, aLink } = FakeLink.pair({ rng: new SeededRng(1) })
+    const sent: ShadowOp[] = []
+    sLink.on(op => sent.push(op))
+    const afs = createAuthorityFs(aLink, fsLike(fs), "/proj")
+    aLink.on(op => afs.onOp(op))
+
+    sLink.send({ kind: "want", id: "/etc/secret" })
+    sLink.send({ kind: "want", id: "/proj/../etc/secret" })
+    sLink.send({ kind: "manifest-req", dir: "/etc" })
+    sLink.send({ kind: "want", id: "/proj/ok.txt" })
+    await settle(sLink, aLink)
+
+    const chunks = sent.filter(o => o.kind === "chunk") as Extract<ShadowOp, {kind:"chunk"}>[]
+    expect(chunks.find(c => c.id === "/etc/secret")?.data).toBe("")
+    expect(chunks.find(c => c.id === "/proj/../etc/secret")?.data).toBe("")
+    expect(chunks.find(c => c.id === "/proj/ok.txt")?.data).toBe("allowed")
+    const trees = sent.filter(o => o.kind === "manifest-tree") as Extract<ShadowOp, {kind:"manifest-tree"}>[]
+    expect(trees.find(t => t.dir === "/etc")?.entries).toEqual([])
   })
 })
