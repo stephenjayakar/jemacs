@@ -1560,6 +1560,15 @@ test("text-scale-adjust increases buffer scale and binds s-= in Stephen config",
   expect(leaf?.textScale).toBe(1)
 })
 
+test("Stephen config binds C-x C-j and C-x C-l to buffer navigation", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await installStephenConfig(editor)
+
+  expect(editor.keymap.get("C-x C-j")).toBe("previous-buffer")
+  expect(editor.keymap.get("C-x C-l")).toBe("next-buffer")
+})
+
 test("Stephen config installs and rust font-lock works", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   installDefaultModes()

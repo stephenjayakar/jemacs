@@ -35,6 +35,8 @@ export async function install(editor: Editor): Promise<void> {
   editor.key("C-c t", "xref-find-definitions")
   editor.key("C-c C-t", "lsp-ui-peek-find-implementation")
   editor.key("C-x C-a", "lsp-execute-code-action")
+  editor.key("C-x C-j", "previous-buffer")
+  editor.key("C-x C-l", "next-buffer")
   editor.key("s-f", "counsel-ag")
   editor.key("s-=", "text-scale-adjust")
 }
