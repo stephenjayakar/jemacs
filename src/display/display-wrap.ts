@@ -26,15 +26,27 @@ export function paneWrapLayout(
   startLine: number,
   lineBudget: number,
 ): PaneWrapLayout {
-  const lineCount = displayTextForBuffer(buffer).split("\n").length
+  return paneWrapLayoutFor(displayTextForBuffer(buffer), buffer.locals, cols, showLineNumbers, startLine, lineBudget)
+}
+
+/** `paneWrapLayout` over a precomputed display text + locals (no `BufferModel`). */
+export function paneWrapLayoutFor(
+  displayText: string,
+  locals: ReadonlyMap<string, unknown>,
+  cols: number | undefined,
+  showLineNumbers: boolean,
+  startLine: number,
+  lineBudget: number,
+): PaneWrapLayout {
+  const lineCount = displayText.split("\n").length
   const visibleLineCount = Math.min(lineBudget, Math.max(1, lineCount - startLine))
   const gutter = showLineNumbers ? gutterPrefixLen(startLine + 1, visibleLineCount) : 0
-  const wordWrap = buffer.locals.get("word-wrap") === true
+  const wordWrap = locals.get("word-wrap") === true
   if (cols == null) return { gutterPrefixLen: gutter, wordWrap }
-  if (buffer.locals.get(MARKDOWN_VISUAL_FILL) !== true) {
+  if (locals.get(MARKDOWN_VISUAL_FILL) !== true) {
     return { wrapCols: cols, gutterPrefixLen: gutter, wordWrap }
   }
-  const fillColumn = buffer.locals.get(MARKDOWN_FILL_COLUMN) as number | undefined
+  const fillColumn = locals.get(MARKDOWN_FILL_COLUMN) as number | undefined
     ?? getCustom<number>("markdown-fill-column")
     ?? 100
   const contentWidth = Math.max(1, cols - gutter)

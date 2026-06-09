@@ -20,9 +20,15 @@ async function main(): Promise<void> {
   // would corrupt framing. Divert to stderr before anything else loads.
   if (serveStdio) console.log = console.error
 
+  const web = Bun.argv.includes("--web")
+  const portIdx = Bun.argv.indexOf("--port")
+  const webPort = portIdx >= 0 ? Number(Bun.argv[portIdx + 1]) : undefined
+
   installDefaultModes()
   const editor = new Editor()
-  const args = parseStartupArgs(Bun.argv, new Set(["--gui", "--smoke-gui", "--serve-stdio"]))
+  const ignored = new Set(["--gui", "--smoke-gui", "--serve-stdio", "--web", "--port"])
+  if (portIdx >= 0 && Bun.argv[portIdx + 1] != null) ignored.add(Bun.argv[portIdx + 1]!)
+  const args = parseStartupArgs(Bun.argv, ignored)
   const evaluator = installDefaultConfig(editor)
   for (const config of args.configs) await loadStartupConfig(editor, evaluator, config)
   installLspMode(editor)
@@ -62,6 +68,15 @@ async function main(): Promise<void> {
     }
     // No UI host: stdin's data listener keeps the event loop alive until the
     // shadow disconnects.
+    return
+  }
+
+  if (web) {
+    const { createWebHost } = await import("./web/host")
+    const host = await createWebHost({ port: webPort })
+    host.attachEditor(editor)
+    console.log(`Web: http://127.0.0.1:${host.port}/`)
+    await runJemacs(editor, host)
     return
   }
 

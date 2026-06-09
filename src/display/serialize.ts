@@ -37,6 +37,10 @@ export type SerializedPane = {
   selected: boolean
   dedicated: boolean
   body: SerializedThemedText
+  /** When set, the host renders a positioned caret instead of an in-body █
+   *  glyph. `row` is the logical-line index into `body`; `colOffset` counts
+   *  characters into that row (pre-wrap). */
+  cursor?: { row: number; colOffset: number }
   terminalSurface?: TerminalSurfaceModel
   modeline: SerializedThemedText
   clickState: { startLine: number; gutterPrefixLen: number }

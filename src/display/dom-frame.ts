@@ -53,6 +53,98 @@ export function renderThemedText(
   for (const chunk of model.chunks) renderChunk(el, chunk, options)
 }
 
+/** Like `renderThemedText` but splits chunks on `\n` into one `<div.body-row>`
+ *  per logical line so the caret can be positioned against a row element. */
+export function renderBodyRows(
+  el: HTMLElement,
+  model: SerializedThemedText,
+  options: { textScale?: number; defaultFontPx?: number } = {},
+): HTMLElement[] {
+  el.classList.add("web-body")
+  const rows: HTMLElement[] = []
+  const newRow = () => {
+    const r = document.createElement("div")
+    r.className = "body-row"
+    rows.push(r)
+    return r
+  }
+  let row = newRow()
+  for (const chunk of model.chunks) {
+    const parts = chunk.text.split("\n")
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) row = newRow()
+      if (parts[i]!.length) renderChunk(row, { ...chunk, text: parts[i]! }, options)
+    }
+  }
+  el.replaceChildren(...rows)
+  return rows
+}
+
+/** Absolute-position a blinking caret at `cursor.colOffset` chars into
+ *  `rows[cursor.row]`. Uses a DOM Range so variable-pitch faces measure
+ *  correctly (the whole point of not inserting █ into the text). */
+export function renderCaret(
+  body: HTMLElement,
+  rows: HTMLElement[],
+  cursor: { row: number; colOffset: number },
+  fg?: string,
+): void {
+  const rowEl = rows[Math.min(cursor.row, rows.length - 1)]
+  if (!rowEl) return
+  const caret = document.createElement("div")
+  caret.className = "jemacs-caret"
+  if (fg) caret.style.backgroundColor = fg
+  body.appendChild(caret)
+  const place = () => {
+    const bodyRect = body.getBoundingClientRect()
+    const rowRect = rowEl.getBoundingClientRect()
+    let left = rowRect.left
+    let height = rowRect.height || DOM_FRAME_ROW_PX
+    const range = rangeAtCharOffset(rowEl, cursor.colOffset)
+    if (range) {
+      const r = range.getBoundingClientRect()
+      // Collapsed ranges at column 0 / inside empty rows report a 0×0 rect at
+      // (0,0); fall back to the row's left edge in that case.
+      if (r.width || r.height || r.left || r.top) {
+        left = r.left
+        height = r.height || height
+      }
+    }
+    caret.style.left = `${left - bodyRect.left + body.scrollLeft}px`
+    caret.style.top = `${rowRect.top - bodyRect.top + body.scrollTop}px`
+    caret.style.height = `${height}px`
+  }
+  place()
+  // Re-measure after layout settles (web fonts, first paint).
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(place)
+}
+
+function rangeAtCharOffset(row: HTMLElement, colOffset: number): Range | null {
+  if (typeof document.createRange !== "function") return null
+  let remaining = colOffset
+  const walker = document.createTreeWalker(row, 4 /* NodeFilter.SHOW_TEXT */)
+  let last: Text | null = null
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const text = n as Text
+    last = text
+    const len = text.data.length
+    if (remaining <= len) {
+      const range = document.createRange()
+      range.setStart(text, remaining)
+      range.setEnd(text, remaining)
+      return range
+    }
+    remaining -= len
+  }
+  if (last) {
+    const range = document.createRange()
+    range.setStart(last, last.data.length)
+    range.setEnd(last, last.data.length)
+    return range
+  }
+  return null
+}
+
 export type DomFrameMouseHandler = (windowId: string, row: number, col: number) => void
 export type DomTerminalRenderer = {
   mount(body: HTMLElement, pane: SerializedPane, theme?: SerializedDisplayModel["theme"]): boolean
@@ -95,6 +187,10 @@ export function renderWindows(
       body.style.setProperty("--jemacs-terminal-row-px", `${rowPx}px`)
       body.style.setProperty("--jemacs-terminal-col-px", `${colPx}px`)
       if (!terminalRenderer?.mount(body, node.pane, theme)) renderTerminalSurface(body, node.pane.terminalSurface)
+    }
+    else if (node.pane.cursor) {
+      const rows = renderBodyRows(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
+      renderCaret(body, rows, node.pane.cursor, defaultFace?.fg)
     }
     else renderThemedText(body, node.pane.body, { textScale, defaultFontPx: bodyDefaultPx })
     body.addEventListener("mousedown", event => sendMouse(event, body))

@@ -1,0 +1,13 @@
+{
+  "name": "@jemacs/host-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser UiHost for Jemacs (Bun.serve + WebSocket).",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@jemacs/core": "workspace:*"
+  }
+}
