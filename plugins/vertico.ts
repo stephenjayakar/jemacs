@@ -1,4 +1,5 @@
 import type { Editor, CompletingReadFunction, MinibufferCompletionFrontend } from "../src/kernel/editor"
+import { Keymap } from "../src/kernel/keymap"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { BufferModel } from "../src/kernel/buffer"
 import { fileCompletionCandidates, splitCompletionInput } from "../src/kernel/completion"
@@ -21,6 +22,7 @@ type VerticoInput = {
 
 const states = new WeakMap<Editor, VerticoState>()
 const installedEditors = new WeakSet<Editor>()
+const verticoMap = makeVerticoMap()
 
 const verticoCompletingRead: CompletingReadFunction = async (editor, prompt, options) => {
   const promise = editor.prompt(prompt, options.initialValue ?? "", options.history, {
@@ -36,6 +38,7 @@ const verticoFrontend: MinibufferCompletionFrontend = {
   refresh: editor => verticoRefresh(editor),
   complete: editor => verticoInsert(editor),
   submitValue: editor => verticoSubmitValue(editor),
+  keymap: verticoMap,
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
@@ -103,6 +106,25 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.defineKey("minibuffer", "M-enter", "vertico-exit-input")
   editor.defineKey("minibuffer", "tab", "vertico-insert")
   editor.defineKey("minibuffer", "C-i", "vertico-insert")
+}
+
+function makeVerticoMap(): Keymap {
+  const keymap = new Keymap("vertico-map")
+  for (const key of ["up", "C-p"]) keymap.bind(key, "vertico-previous")
+  for (const key of ["down", "C-n"]) keymap.bind(key, "vertico-next")
+  for (const key of ["M-<", "home", "kp-home", "C-home", "begin"]) keymap.bind(key, "vertico-first")
+  for (const key of ["M->", "end", "kp-end", "C-end"]) keymap.bind(key, "vertico-last")
+  for (const key of ["C-v", "next", "kp-next", "pagedown"]) keymap.bind(key, "vertico-scroll-up")
+  for (const key of ["M-v", "prior", "kp-prior", "pageup"]) keymap.bind(key, "vertico-scroll-down")
+  for (const key of ["M-}", "M-n"]) keymap.bind(key, "vertico-next-group")
+  for (const key of ["M-{", "M-p"]) keymap.bind(key, "vertico-previous-group")
+  for (const key of ["enter", "return", "C-m"]) keymap.bind(key, "vertico-exit")
+  keymap.bind("M-w", "vertico-save")
+  keymap.bind("M-RET", "vertico-exit-input")
+  keymap.bind("M-enter", "vertico-exit-input")
+  keymap.bind("tab", "vertico-insert")
+  keymap.bind("C-i", "vertico-insert")
+  return keymap
 }
 
 function installCustomVariables(): void {

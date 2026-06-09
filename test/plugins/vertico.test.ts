@@ -4,7 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
 import { install } from "../../plugins/vertico"
+import { install as installFido } from "../../plugins/fido"
 import { resetCustom, setCustom } from "../../src/runtime/custom"
+import { keySeq } from "../harness/script"
 
 /** Editor with vertico-mode enabled and a collection prompt open + refreshed.
  *  `customs` are applied after install (defcustom would otherwise overwrite them). */
@@ -63,6 +65,30 @@ describe("vertico-cycle wraparound", () => {
     await editor.run("vertico-next")
     await editor.run("vertico-next")
     expect(display(editor)).toContain("3/3")
+    editor.minibufferCancel()
+    await result
+  })
+})
+
+describe("vertico-map", () => {
+  test("C-n and C-p use the active Vertico frontend map even if fido owns minibuffer-local-map", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    installFido(editor)
+    expect(editor.minibufferKeymap.get("C-n")).toBe("icomplete-forward-completions")
+
+    const result = editor.prompt("Pick: ", "", undefined, { collection: ["aa", "bb", "cc"] })
+    await editor.refreshMinibufferCompletions()
+
+    await keySeq(editor, "C-n")
+    expect(display(editor)).toContain("2/3")
+    expect(display(editor)).toContain("> bb")
+
+    await keySeq(editor, "C-p")
+    expect(display(editor)).toContain("1/3")
+    expect(display(editor)).toContain("> aa")
+
     editor.minibufferCancel()
     await result
   })
