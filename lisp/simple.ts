@@ -72,7 +72,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   }, "Move point backward one word.")
 
   editor.command("beginning-of-buffer", ({ buffer, prefixArgument }) => {
-    if (prefixArgument == null && !buffer.markActive) {
+    if (!buffer.markActive) {
       buffer.mark = buffer.point
       buffer.markActive = false
     }
@@ -83,7 +83,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     }
   }, "Set mark (without activating) and move point to the beginning of the buffer.")
   editor.command("end-of-buffer", ({ buffer, editor, prefixArgument }) => {
-    if (prefixArgument == null && !buffer.markActive) {
+    if (!buffer.markActive) {
       buffer.mark = buffer.point
       buffer.markActive = false
     }

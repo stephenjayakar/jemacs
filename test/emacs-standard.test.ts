@@ -74,3 +74,51 @@ test("end-of-buffer with numeric prefix uses fractional position then forward-li
   await editor.run("end-of-buffer")
   expect(editor.currentBuffer.point).toBe(text.length)
 })
+
+test("beginning-of-buffer and end-of-buffer with prefix set inactive mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const text = "one\ntwo\nthree"
+  const buffer = editor.currentBuffer
+  buffer.setText(text, false)
+
+  buffer.point = 5
+  buffer.mark = null
+  buffer.markActive = false
+  editor.prefixArg.addDigit(5)
+  await editor.run("beginning-of-buffer")
+  expect(buffer.mark as number | null).toBe(5)
+  expect(buffer.markActive).toBe(false)
+
+  buffer.point = 5
+  buffer.mark = null
+  buffer.markActive = false
+  editor.prefixArg.addDigit(5)
+  await editor.run("end-of-buffer")
+  expect(buffer.mark as number | null).toBe(5)
+  expect(buffer.markActive).toBe(false)
+})
+
+test("beginning-of-buffer and end-of-buffer with prefix preserve active mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const text = "one\ntwo\nthree"
+  const buffer = editor.currentBuffer
+  buffer.setText(text, false)
+
+  buffer.point = 5
+  buffer.mark = 1
+  buffer.markActive = true
+  editor.prefixArg.addDigit(5)
+  await editor.run("beginning-of-buffer")
+  expect(buffer.mark).toBe(1)
+  expect(buffer.markActive).toBe(true)
+
+  buffer.point = 5
+  buffer.mark = 1
+  buffer.markActive = true
+  editor.prefixArg.addDigit(5)
+  await editor.run("end-of-buffer")
+  expect(buffer.mark).toBe(1)
+  expect(buffer.markActive).toBe(true)
+})

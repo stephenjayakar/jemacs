@@ -10,6 +10,7 @@ Current branch for this work: `emacs-parity-goal`.
   - `forward-char`, `backward-char`
   - `next-line`, `previous-line`
   - `move-end-of-line`
+  - `beginning-of-buffer`, `end-of-buffer` inactive/active mark side effects with numeric prefixes
   - `forward-word`, `backward-word`
   - `newline`
   - `self-insert-command`
@@ -56,7 +57,8 @@ Current branch for this work: `emacs-parity-goal`.
 - `move-beginning-of-line`
   - Verify all prefix cases against GNU Emacs, including before/after-buffer clamping and field/minibuffer prompt boundaries.
 - `beginning-of-buffer`, `end-of-buffer`
-  - Existing fractional prefix behavior is covered, but mark side effects need a direct audit against GNU Emacs with active/inactive transient mark cases.
+  - Fractional prefix behavior and active/inactive mark side effects are covered.
+  - Remaining audit: exact messages, mark ring interaction, narrowing, and field boundaries.
 - `set-mark-command`
   - Double-universal prefix behavior and `set-mark-command-repeat-pop` local/global repeat behavior are covered.
   - Remaining audit: transient-mark-mode-off temporary activation, exact command-loop state, messages, and full mark/global-mark ring edge cases.
