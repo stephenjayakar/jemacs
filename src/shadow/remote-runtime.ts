@@ -1,6 +1,7 @@
 import type { PlatformRuntime, SpawnHandle, SpawnOptions, StatLike } from "../platform/runtime"
 import type { ShadowLink } from "./link"
 import type { Chunk, ManifestEntry, ManifestTree, Seq, ShadowOp } from "./ops"
+import { resolve, sep } from "node:path"
 import { type Cas, chunkText, sha256 } from "./cas"
 import { buildManifest, diffManifest, dirname, type FsLike, type Manifest, ManifestCache } from "./manifest"
 
@@ -208,6 +209,17 @@ export type AuthorityFs = {
 export function createAuthorityFs(link: ShadowLink, fs: FsLike, root = "/"): AuthorityFs {
   let prev: Manifest | undefined
 
+  // op.dir / op.id arrive from the wire (S-controlled). Jail them to `root` so
+  // a client can't `want("/etc/shadow")` or `manifest-req("/")`. resolve()
+  // collapses any `..`; symlinks inside the project are honored (you put them
+  // there) — same model as git.
+  const jailRoot = resolve(root)
+  const jailPrefix = jailRoot.endsWith(sep) ? jailRoot : jailRoot + sep
+  function underRoot(p: string): string | null {
+    const r = resolve(p)
+    return r === jailRoot || r.startsWith(jailPrefix) ? r : null
+  }
+
   async function listDir(dir: string): Promise<ManifestTree> {
     const entries: ManifestEntry[] = []
     let names: string[] = []
@@ -224,15 +236,21 @@ export function createAuthorityFs(link: ShadowLink, fs: FsLike, root = "/"): Aut
   return {
     onOp(op) {
       switch (op.kind) {
-        case "manifest-req":
-          void listDir(op.dir).then(tree => link.send(tree))
+        case "manifest-req": {
+          const safe = underRoot(op.dir)
+          if (!safe) { link.send({ kind: "manifest-tree", root: "", dir: op.dir, entries: [] }); return true }
+          void listDir(safe).then(tree => link.send(tree))
           return true
-        case "want":
+        }
+        case "want": {
+          const safe = underRoot(op.id)
+          if (!safe) { link.send({ kind: "chunk", id: op.id, offset: 0, data: "", eof: true }); return true }
           void Promise.resolve()
-            .then(() => fs.readFile(op.id))
+            .then(() => fs.readFile(safe))
             .catch(() => "")
             .then(text => { for (const c of chunkText(op.id, text)) link.send(c) })
           return true
+        }
         default:
           return false
       }
