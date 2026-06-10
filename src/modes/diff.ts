@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { Editor } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
+import { addHook, getHooks } from "../kernel/hooks"
 import { Keymap } from "../kernel/keymap"
 import { spawnProcess } from "../platform/runtime"
 import { killNew } from "../runtime/kill-ring"
@@ -33,6 +34,7 @@ type Line = { text: string; start: number; end: number }
 const DIFF_NARROW_LOCAL = "diff-narrowed-region"
 const DIFF_REFINE_LOCAL = "diff-refine-spans"
 const DIFF_REMEMBERED_FILES_LOCAL = "diff-remembered-files"
+const DIFF_DELETE_EMPTY_FILES_LOCAL = "diff-delete-empty-files"
 
 export function installDiffMode(): void {
   const keymap = new Keymap("diff-mode-map")
@@ -149,6 +151,18 @@ export function installDiffCommands(editor: Editor): void {
     const count = killJunk(buffer)
     editor.message(count ? `Killed ${count} junk block${count === 1 ? "" : "s"}` : "No junk blocks")
   }, "Kill spurious empty diffs.")
+
+  if (!getHooks("after-save-hook").includes(diffDeleteEmptyFilesAfterSave)) addHook("after-save-hook", diffDeleteEmptyFilesAfterSave)
+
+  editor.command("diff-delete-if-empty", async ({ editor, buffer }) => {
+    if (await diffDeleteIfEmpty(buffer)) editor.message("Deleted empty diff file")
+    else editor.message("Diff file is not empty")
+  }, "Delete the current diff file if it is empty.")
+
+  editor.command("diff-delete-empty-files", ({ editor, buffer }) => {
+    buffer.locals.set(DIFF_DELETE_EMPTY_FILES_LOCAL, true)
+    editor.message("Will delete this diff file after saving it empty")
+  }, "Arrange for empty diff files to be removed after save.")
 
   editor.command("diff-delete-trailing-whitespace", async ({ editor, buffer, prefixArgument }) => {
     const count = await deleteTrailingWhitespaceFromDiff(editor, buffer, prefixArgument != null)
@@ -1120,6 +1134,22 @@ function killJunk(buffer: BufferModel): number {
   for (const range of ranges.sort((a, b) => b.startLine - a.startLine)) deleteLines(buffer, range.startLine, range.endLine)
   if (ranges.length) buffer.point = Math.min(buffer.point, buffer.text.length)
   return ranges.length
+}
+
+async function diffDeleteIfEmpty(buffer: BufferModel): Promise<boolean> {
+  if (!buffer.path) return false
+  try {
+    const info = await stat(buffer.path)
+    if (info.size !== 0) return false
+    await rm(buffer.path, { force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function diffDeleteEmptyFilesAfterSave({ buffer }: { buffer: BufferModel }): Promise<void> {
+  if (buffer.locals.get(DIFF_DELETE_EMPTY_FILES_LOCAL)) await diffDeleteIfEmpty(buffer)
 }
 
 async function deleteTrailingWhitespaceFromDiff(editor: Editor, buffer: BufferModel, otherFile: boolean): Promise<number> {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { BufferModel, inferMode } from "../../src/kernel/buffer"
@@ -45,6 +45,8 @@ test("diff-mode is installed as a core mode and inferred for patches", () => {
   expect(editor.commands.get("diff-find-file-name")).toBeDefined()
   expect(editor.commands.get("diff-buffer-file-names")).toBeDefined()
   expect(editor.commands.get("diff-tell-file-name")).toBeDefined()
+  expect(editor.commands.get("diff-delete-empty-files")).toBeDefined()
+  expect(editor.commands.get("diff-delete-if-empty")).toBeDefined()
   expect(inferMode("change.patch")).toBe("diff-mode")
   expect(inferMode("change.diff")).toBe("diff-mode")
 })
@@ -176,6 +178,36 @@ test("diff-kill-junk removes empty Index blocks and junk before file headers", a
   expect(buffer.text).not.toContain("stray metadata")
   expect(buffer.text).toContain("--- a/keep.txt")
   expect(buffer.text).toContain("+new")
+})
+
+test("diff-delete-if-empty deletes an empty visited diff file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-diff-delete-empty-now-"))
+  try {
+    const path = join(dir, "empty.diff")
+    await writeFile(path, "")
+    const editor = makeEditor()
+    await editor.openFile(path)
+    await editor.run("diff-delete-if-empty")
+    await expect(stat(path)).rejects.toThrow()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("diff-delete-empty-files removes the diff file after saving it empty", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-diff-delete-empty-save-"))
+  try {
+    const path = join(dir, "empty-after-save.diff")
+    await writeFile(path, sample)
+    const editor = makeEditor()
+    const buffer = await editor.openFile(path)
+    await editor.run("diff-delete-empty-files")
+    buffer.setText("")
+    await buffer.save({ runHook: (name, saved) => editor.runHook(name, saved), makeBackupFiles: false })
+    await expect(stat(path)).rejects.toThrow()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("diff-delete-trailing-whitespace removes changed-line whitespace from diff and source", async () => {
