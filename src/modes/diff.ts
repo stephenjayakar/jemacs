@@ -61,6 +61,7 @@ export function installDiffMode(): void {
     ["C-c M-u", "diff-revert-and-kill-hunk"],
     ["C-c C-m a", "diff-apply-buffer"],
     ["C-c C-m n", "diff-delete-other-hunks"],
+    ["C-c C-m k", "diff-kill-applied-hunks"],
     ["C-c C-e", "diff-ediff-patch"],
     ["C-c C-n", "diff-restrict-view"],
     ["C-c C-s", "diff-split-hunk"],
@@ -172,6 +173,11 @@ export function installDiffCommands(editor: Editor): void {
   editor.command("diff-apply-buffer", async ({ editor, buffer }) => {
     await applyPatchText(editor, buffer, buffer.text, false, false)
   }, "Apply all hunks in the current diff buffer.")
+
+  editor.command("diff-kill-applied-hunks", async ({ editor, buffer }) => {
+    const count = await killAppliedHunks(buffer)
+    editor.message(count ? `Killed ${count} already-applied hunk${count === 1 ? "" : "s"}` : "No already-applied hunks")
+  }, "Kill all hunks starting at point that have already been applied.")
 
   editor.command("diff-revert-and-kill-hunk", async ({ editor, buffer }) => {
     const hunk = diffHunkAtPoint(buffer)
@@ -457,6 +463,10 @@ function patchAtPoint(buffer: BufferModel): string | null {
   const file = diffFileAtPoint(buffer)
   const hunk = diffHunkAtPoint(buffer)
   if (!file || !hunk) return null
+  return patchForHunk(buffer, file, hunk)
+}
+
+function patchForHunk(buffer: BufferModel, file: DiffFile, hunk: DiffHunk): string {
   const lines = lineInfo(buffer)
   const header = lines.slice(file.startLine, hunk.startLine)
     .filter(line => !/^@@|^\*{15}|^[0-9,]+[acd]/.test(line.text))
@@ -676,6 +686,16 @@ function replaceHunk(buffer: BufferModel, hunk: DiffHunk, text: string): void {
 }
 
 async function applyPatchText(editor: Editor, buffer: BufferModel, patch: string, reverse: boolean, check: boolean): Promise<boolean> {
+  const result = await runGitApply(buffer, patch, reverse, check)
+  if (result.ok) {
+    editor.message(check ? "Patch applies cleanly" : "Applied patch")
+    return true
+  }
+  editor.message(`git apply failed: ${result.err.trim()}`)
+  return false
+}
+
+async function runGitApply(buffer: BufferModel, patch: string, reverse: boolean, check: boolean): Promise<{ ok: boolean; err: string }> {
   const args = ["apply", ...(check ? ["--check"] : []), ...(reverse ? ["--reverse"] : []), "-"]
   const proc = spawnProcess({
     cmd: ["git", ...args],
@@ -688,12 +708,23 @@ async function applyPatchText(editor: Editor, buffer: BufferModel, patch: string
   proc.stdin?.end()
   const err = proc.stderr ? await new Response(proc.stderr).text() : ""
   const code = await proc.exited
-  if (code === 0) {
-    editor.message(check ? "Patch applies cleanly" : "Applied patch")
-    return true
+  return { ok: code === 0, err }
+}
+
+async function killAppliedHunks(buffer: BufferModel): Promise<number> {
+  const startLine = buffer.lineAt(buffer.point)
+  const matches: DiffHunk[] = []
+  for (const file of parseDiffBuffer(buffer)) {
+    for (const hunk of file.hunks) {
+      if (hunk.startLine < startLine) continue
+      const patch = patchForHunk(buffer, file, hunk)
+      const reverseApplies = await runGitApply(buffer, patch, true, true)
+      if (reverseApplies.ok) matches.push(hunk)
+    }
   }
-  editor.message(`git apply failed: ${err.trim()}`)
-  return false
+  for (const hunk of matches.sort((a, b) => b.startLine - a.startLine)) deleteLines(buffer, hunk.startLine, hunk.endLine)
+  if (matches.length) buffer.point = Math.min(buffer.point, buffer.text.length)
+  return matches.length
 }
 
 async function previewPatchedHunk(editor: Editor, buffer: BufferModel): Promise<boolean> {

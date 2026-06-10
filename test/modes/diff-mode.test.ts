@@ -109,6 +109,38 @@ test("diff-apply-hunk applies the current hunk with git apply", async () => {
   }
 })
 
+test("diff-kill-applied-hunks removes hunks already present in the source", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-diff-kill-applied-"))
+  try {
+    await writeFile(join(dir, "a.txt"), "one\nTWO\nthree\n")
+    const text = [
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,2 +1,3 @@",
+      " one",
+      "-two",
+      "+TWO",
+      "+three",
+      "@@ -10 +11 @@",
+      "-old",
+      "+new",
+      "",
+    ].join("\n")
+    const editor = makeEditor()
+    const buffer = editor.scratch("*diff*", text, "diff-mode")
+    buffer.locals.set("diff-default-directory", dir)
+    buffer.point = buffer.text.indexOf("@@ -1,2")
+    await editor.run("diff-kill-applied-hunks")
+    expect(buffer.text).not.toContain("@@ -1,2 +1,3 @@")
+    expect(buffer.text).not.toContain("+three")
+    expect(buffer.text).toContain("@@ -10 +11 @@")
+    expect(buffer.text).toContain("+new")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("diff-split-hunk splits unified hunks and recomputes ranges", async () => {
   const editor = makeEditor()
   const buffer = editor.scratch("*diff*", sample, "diff-mode")
