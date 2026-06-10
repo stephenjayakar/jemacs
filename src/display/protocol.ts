@@ -14,6 +14,8 @@ export type WindowPaneModel = {
   selected: boolean
   dedicated: boolean
   body: DisplayChunk
+  /** Optional host-renderable Markdown body. `body` remains the plain fallback. */
+  markdownSurface?: MarkdownSurfaceModel
   /** Optional host-renderable terminal grid. `body` remains the copy-mode/fallback text. */
   terminalSurface?: TerminalSurfaceModel
   modeline: DisplayChunk
@@ -27,6 +29,12 @@ export type WindowPaneModel = {
   syncSpans: TextSpan[]
   /** Per-buffer text scale factor (1 = default; from `text-scale-mode-amount`). */
   textScale: number
+}
+
+export type MarkdownSurfaceModel = {
+  kind: "markdown"
+  content: string
+  startLine: number
 }
 
 export type WindowSplitModel = {

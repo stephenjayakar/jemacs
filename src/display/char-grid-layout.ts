@@ -84,6 +84,7 @@ function layoutLeafPane(
       selected: pane.selected,
       dedicated: leaf.dedicated,
       body: plainThemedText(""),
+      markdownSurface: undefined,
       terminalSurface: undefined,
       modeline: pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
@@ -104,6 +105,7 @@ function layoutLeafPane(
       selected: pane.selected,
       dedicated: leaf.dedicated,
       body: useRaw ? plainThemedText("") : terminalSurfaceToThemedText(surface),
+      markdownSurface: undefined,
       terminalSurface: useRaw ? terminalSurfaceMetadata(surface) : surface,
       modeline: pane.terminalModeline ?? pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
@@ -196,6 +198,7 @@ function layoutLeafPane(
     selected: pane.selected,
     dedicated: leaf.dedicated,
     body,
+    markdownSurface: activeMarkdownSurface(pane, startLine),
     terminalSurface: undefined,
     modeline: pane.modeline,
     clickState,
@@ -205,6 +208,33 @@ function layoutLeafPane(
     syncSpans,
     textScale: pane.textScale,
   }
+}
+
+function activeMarkdownSurface(pane: LogicalPane, startLine: number) {
+  if (pane.locals.get("opentui-markdown-renderer") !== true) return undefined
+  if (pane.mode !== "opentui-markdown-mode" && pane.mode !== "opentui-gfm-mode") return undefined
+  return {
+    kind: "markdown" as const,
+    content: foldedMarkdownContent(pane.text, pane.locals),
+    startLine,
+  }
+}
+
+function foldedMarkdownContent(text: string, locals: ReadonlyMap<string, unknown>): string {
+  const ranges = locals.get("markdown-folded") as Array<[number, number]> | undefined
+  if (!ranges?.length) return text
+  const lines = text.split("\n")
+  const hidden = new Uint8Array(lines.length)
+  for (const [a, b] of ranges) {
+    for (let line = Math.max(0, a); line <= b && line < lines.length; line++) hidden[line] = 1
+  }
+  const out: string[] = []
+  for (let line = 0; line < lines.length; line++) {
+    if (hidden[line]) continue
+    out.push(lines[line]!)
+    if (line + 1 < lines.length && hidden[line + 1]) out.push("...")
+  }
+  return out.join("\n")
 }
 
 function activeTerminalSurface(

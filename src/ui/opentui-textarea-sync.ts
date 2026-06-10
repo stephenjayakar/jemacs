@@ -8,7 +8,7 @@ import { resolveFace } from "../runtime/faces"
 const syntaxByTheme = new WeakMap<Theme, SyntaxStyle>()
 const styleIdByChunkKey = new WeakMap<SyntaxStyle, Map<string, number>>()
 
-function syntaxForTheme(theme: Theme): SyntaxStyle {
+export function syntaxForTheme(theme: Theme): SyntaxStyle {
   let syntax = syntaxByTheme.get(theme)
   if (!syntax) {
     const styles: Record<string, { fg?: string; bg?: string; bold?: boolean; italic?: boolean; underline?: boolean }> = {}

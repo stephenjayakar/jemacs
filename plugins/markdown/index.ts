@@ -47,6 +47,7 @@ defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries 
 const MARKDOWN_HIDE_MARKUP = "markdown-hide-markup"
 const MARKDOWN_HIDE_URLS = "markdown-hide-urls"
 const MARKDOWN_FONTIFY_CODE_BLOCKS = "markdown-fontify-code-blocks-natively"
+const OPENTUI_MARKDOWN_RENDERER = "opentui-markdown-renderer"
 const LIST_BULLET = "•"
 const URL_COMPOSE_CHAR = "↪"
 
@@ -790,6 +791,15 @@ function applyMarkdownViewModeEnter(buffer: BufferModel): void {
   }
 }
 
+function applyOpenTuiMarkdownModeEnter(buffer: BufferModel): void {
+  applyMarkdownFaceRemap(buffer)
+  // Let OpenTUI's MarkdownRenderable perform concealment. Keeping the source
+  // text intact gives the renderer enough syntax to build tables, code blocks,
+  // blockquotes, and headings.
+  setMarkdownHideMarkup(buffer, false)
+  buffer.locals.set(OPENTUI_MARKDOWN_RENDERER, true)
+}
+
 function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("return", "jemacs-clear-whitespace-and-newline-and-indent")
   keymap.bind("enter", "jemacs-clear-whitespace-and-newline-and-indent")
@@ -948,6 +958,14 @@ function installMarkdownCommands(editor: Editor): void {
   editor.command("gfm-view-mode", ({ editor, buffer }) => {
     editor.enterMode(buffer, "gfm-view-mode")
   }, "Enter read-oriented GFM view mode with markup hiding.")
+
+  editor.command("opentui-markdown-mode", ({ editor, buffer }) => {
+    editor.enterMode(buffer, "opentui-markdown-mode")
+  }, "Enter OpenTUI-rendered Markdown mode.")
+
+  editor.command("opentui-gfm-mode", ({ editor, buffer }) => {
+    editor.enterMode(buffer, "opentui-gfm-mode")
+  }, "Enter OpenTUI-rendered GFM mode.")
 
   editor.command("markdown-outdent-or-delete", ({ buffer }) => {
     if (buffer.deleteActiveRegion()) return
@@ -1197,6 +1215,18 @@ export function install(editor: Editor): void {
     name: "gfm-view-mode",
     parent: "gfm",
     onEnter: applyMarkdownViewModeEnter,
+  })
+
+  defineMode({
+    name: "opentui-markdown-mode",
+    parent: "markdown",
+    onEnter: applyOpenTuiMarkdownModeEnter,
+  })
+
+  defineMode({
+    name: "opentui-gfm-mode",
+    parent: "gfm",
+    onEnter: applyOpenTuiMarkdownModeEnter,
   })
 
   addHook("find-file-hook", ({ buffer }) => {

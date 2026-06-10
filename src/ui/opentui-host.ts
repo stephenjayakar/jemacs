@@ -1,5 +1,7 @@
 import {
   BoxRenderable,
+  MarkdownRenderable,
+  ScrollBoxRenderable,
   TextRenderable,
   TextareaRenderable,
   createCliRenderer,
@@ -21,9 +23,10 @@ import type { FaceName } from "../modes/mode"
 import { contentAreaLines, defaultTerminalRows, type ViewportSize } from "../display/viewport"
 import { keyEventFromOpentui } from "./opentui-key"
 import { themedTextToStyledText } from "./opentui-styled"
-import { syncTextareaFromSpans } from "./opentui-textarea-sync"
+import { syncTextareaFromSpans, syntaxForTheme } from "./opentui-textarea-sync"
 
-type BodyRenderable = TextRenderable | TextareaRenderable
+type BodyRenderable = TextRenderable | TextareaRenderable | ScrollBoxRenderable
+type BodyKind = "text" | "textarea" | "markdown"
 
 /** Opt-in native editor surface for the selected window (`JEMACS_USE_TEXTAREA=1`). */
 function useTextareaEditor(): boolean {
@@ -49,7 +52,7 @@ export class OpenTuiHost implements UiHost {
   private minibuffer!: TextRenderable
   private echo!: TextRenderable
   private splitPanes = new Map<string, BoxRenderable>()
-  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; modeline: TextRenderable }>()
+  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; modeline: TextRenderable; kind: BodyKind }>()
   private inputHandlers: InputHandler[] = []
   private resizeHandlers: ResizeHandler[] = []
   private bodyWindowIds = new WeakMap<BodyRenderable, string>()
@@ -188,7 +191,9 @@ export class OpenTuiHost implements UiHost {
   private applyTextBackground(text: BodyRenderable, theme: Theme, face: FaceName = "default"): void {
     if (text instanceof TextareaRenderable) return
     const bg = themeFaceBackground(theme, face)
-    if (bg) text.bg = bg
+    if (!bg) return
+    if (text instanceof ScrollBoxRenderable) fillBox(text, bg)
+    else text.bg = bg
   }
 
   private renderWindows(layout: WindowDisplayNode, availableLines: number, theme: Theme): void {
@@ -222,14 +227,13 @@ export class OpenTuiHost implements UiHost {
       const leaf = layout.pane
       seenLeaves.add(leaf.id)
       let parts = this.leafPanes.get(leaf.id)
-      const wantTextarea = useTextareaEditor() && leaf.selected
-      if (!parts || (wantTextarea && !(parts.body instanceof TextareaRenderable))
-        || (!wantTextarea && parts.body instanceof TextareaRenderable)) {
+      const wantKind: BodyKind = leaf.markdownSurface ? "markdown" : useTextareaEditor() && leaf.selected ? "textarea" : "text"
+      if (!parts || parts.kind !== wantKind) {
         if (parts) {
           parts.pane.destroyRecursively()
           this.leafPanes.delete(leaf.id)
         }
-        parts = this.createLeafPane(leaf.id, wantTextarea)
+        parts = this.createLeafPane(leaf.id, wantKind)
         this.leafPanes.set(leaf.id, parts)
         this.bodyWindowIds.set(parts.body, leaf.id)
         this.wireBodyMouse(parts.body)
@@ -303,7 +307,7 @@ export class OpenTuiHost implements UiHost {
     return { first, second: Math.max(3, availableLines - first) }
   }
 
-  private createLeafPane(windowId: string, useTextarea: boolean) {
+  private createLeafPane(windowId: string, kind: BodyKind) {
     const pane = new BoxRenderable(this.renderer, {
       id: `window:${windowId}`,
       flexDirection: "column",
@@ -314,7 +318,7 @@ export class OpenTuiHost implements UiHost {
       minHeight: 0,
       border: false,
     })
-    const body = useTextarea
+    const body = kind === "textarea"
       ? new TextareaRenderable(this.renderer, {
         id: `window-body:${windowId}`,
         focusable: false,
@@ -325,6 +329,18 @@ export class OpenTuiHost implements UiHost {
         showCursor: true,
         wrapMode: "word",
       })
+      : kind === "markdown"
+        ? new ScrollBoxRenderable(this.renderer, {
+          id: `window-body:${windowId}`,
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: 0,
+          minHeight: 0,
+          scrollY: true,
+          scrollX: false,
+          stickyScroll: false,
+          viewportCulling: true,
+        })
       : new TextRenderable(this.renderer, {
         id: `window-body:${windowId}`,
         content: "",
@@ -336,10 +352,14 @@ export class OpenTuiHost implements UiHost {
     const modeline = new TextRenderable(this.renderer, { id: `window-modeline:${windowId}`, content: "" })
     pane.add(body)
     pane.add(modeline)
-    return { pane, body, modeline }
+    return { pane, body, modeline, kind }
   }
 
   private updateLeafBody(body: BodyRenderable, leaf: WindowPaneModel, theme: Theme): void {
+    if (body instanceof ScrollBoxRenderable) {
+      this.syncMarkdownBody(body, leaf, theme)
+      return
+    }
     if (body instanceof TextareaRenderable) {
       syncTextareaFromSpans(body, {
         text: leaf.syncText,
@@ -351,6 +371,50 @@ export class OpenTuiHost implements UiHost {
       return
     }
     body.content = themedTextToStyledText(leaf.terminalSurface ? terminalSurfaceToThemedText(leaf.terminalSurface) : leaf.body)
+  }
+
+  private syncMarkdownBody(body: ScrollBoxRenderable, leaf: WindowPaneModel, theme: Theme): void {
+    const surface = leaf.markdownSurface
+    if (!surface) return
+    let markdown = body.getRenderable(`window-markdown:${leaf.id}`) as MarkdownRenderable | undefined
+    const bg = themeFaceBackground(theme)
+    if (!markdown) {
+      markdown = new MarkdownRenderable(this.renderer, {
+        id: `window-markdown:${leaf.id}`,
+        content: surface.content,
+        syntaxStyle: syntaxForTheme(theme),
+        conceal: true,
+        concealCode: true,
+        streaming: false,
+        internalBlockMode: "top-level",
+        tableOptions: {
+          style: "grid",
+          widthMode: "full",
+          wrapMode: "word",
+          borders: true,
+          selectable: true,
+        },
+        fg: theme.faces.default?.fg,
+        bg,
+        width: "100%",
+      })
+      body.add(markdown)
+    } else {
+      markdown.content = surface.content
+      markdown.syntaxStyle = syntaxForTheme(theme)
+      markdown.conceal = true
+      markdown.concealCode = true
+      markdown.tableOptions = {
+        style: "grid",
+        widthMode: "full",
+        wrapMode: "word",
+        borders: true,
+        selectable: true,
+      }
+      markdown.fg = theme.faces.default?.fg
+      markdown.bg = bg
+    }
+    body.scrollTop = Math.max(0, surface.startLine)
   }
 }
 
