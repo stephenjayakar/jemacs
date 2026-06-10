@@ -213,3 +213,52 @@ test("diff-refine-hunk highlights changed substrings in context hunks", async ()
   expect(spans.some(span => span.start === removed && span.end === removed + 3 && span.face === "diffRefineRemoved")).toBe(true)
   expect(spans.some(span => span.start === added && span.end === added + 3 && span.face === "diffRefineAdded")).toBe(true)
 })
+
+test("diff-ediff-patch opens a read-only patched preview beside source", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-diff-ediff-"))
+  try {
+    await writeFile(join(dir, "a.txt"), "one\ntwo\n")
+    const editor = makeEditor()
+    const buffer = editor.scratch("*diff*", sample, "diff-mode")
+    buffer.locals.set("diff-default-directory", dir)
+    buffer.point = buffer.text.indexOf("+TWO")
+    await editor.run("diff-ediff-patch")
+    const preview = [...editor.buffers.values()].find(b => b.name === "*diff-ediff-patch: a.txt*")
+    expect(preview?.text).toBe("one\nTWO\nthree\n")
+    expect(preview?.readOnly).toBe(true)
+    expect([...editor.buffers.values()].find(b => b.path === join(dir, "a.txt"))?.text).toBe("one\ntwo\n")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("diff-add-change-log-entries-other-window creates entries for diff hunks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-diff-changelog-"))
+  const oldUser = process.env.USER
+  const oldName = process.env.GIT_AUTHOR_NAME
+  const oldEmail = process.env.GIT_AUTHOR_EMAIL
+  try {
+    process.env.USER = "jemacs"
+    delete process.env.GIT_AUTHOR_NAME
+    delete process.env.GIT_AUTHOR_EMAIL
+    const editor = makeEditor()
+    const buffer = editor.scratch("*diff*", sample, "diff-mode")
+    buffer.locals.set("diff-default-directory", dir)
+    await editor.run("diff-add-change-log-entries-other-window")
+    const changeLog = [...editor.buffers.values()].find(b => b.path === join(dir, "ChangeLog"))
+    expect(changeLog).toBeDefined()
+    if (!changeLog) throw new Error("ChangeLog buffer was not opened")
+    expect(changeLog.text).toContain("  jemacs\n\n")
+    expect(changeLog.text).toContain("\t* a.txt (function name): ")
+    expect(changeLog.text).toContain("\t* b.txt: ")
+    expect(editor.currentBuffer).toBe(changeLog)
+  } finally {
+    if (oldUser == null) delete process.env.USER
+    else process.env.USER = oldUser
+    if (oldName == null) delete process.env.GIT_AUTHOR_NAME
+    else process.env.GIT_AUTHOR_NAME = oldName
+    if (oldEmail == null) delete process.env.GIT_AUTHOR_EMAIL
+    else process.env.GIT_AUTHOR_EMAIL = oldEmail
+    await rm(dir, { recursive: true, force: true })
+  }
+})

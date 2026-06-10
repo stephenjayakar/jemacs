@@ -181,14 +181,13 @@ export function installDiffCommands(editor: Editor): void {
     if (ok) deleteLines(buffer, hunk.startLine, hunk.endLine)
   }, "Reverse-apply and then kill the current hunk.")
 
-  for (const name of [
-    "diff-ediff-patch",
-    "diff-add-change-log-entries-other-window",
-  ]) {
-    editor.command(name, ({ editor }) => {
-      editor.message(`${name} is not implemented in jemacs yet`)
-    })
-  }
+  editor.command("diff-ediff-patch", async ({ editor, buffer }) => {
+    if (!(await previewPatchedHunk(editor, buffer))) editor.message("No source hunk at point")
+  }, "Show the current hunk's source and patched result in another window.")
+
+  editor.command("diff-add-change-log-entries-other-window", async ({ editor, buffer }) => {
+    if (!(await addChangeLogEntriesOtherWindow(editor, buffer))) editor.message("No change log entries found")
+  }, "Add ChangeLog entries for the current diff in another window.")
 
   editor.command("diff-refine-hunk", ({ buffer, editor }) => {
     if (!refineHunk(buffer)) editor.message("No refinable hunk at point")
@@ -695,6 +694,84 @@ async function applyPatchText(editor: Editor, buffer: BufferModel, patch: string
   }
   editor.message(`git apply failed: ${err.trim()}`)
   return false
+}
+
+async function previewPatchedHunk(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const file = diffFileAtPoint(buffer)
+  const hunk = diffHunkAtPoint(buffer)
+  if (!file || !hunk) return false
+  const sourceFile = file.oldFile && file.oldFile !== "/dev/null" ? file.oldFile : file.newFile
+  if (!sourceFile || sourceFile === "/dev/null") return false
+  const oldStart = hunk.oldStart ?? hunk.newStart
+  if (oldStart == null) return false
+
+  const source = await editor.openFile(resolve(diffDefaultDirectory(buffer), sourceFile))
+  const patchedText = replaceSourceTextRange(source.text, oldStart, hunk.oldCount ?? 0, hunkAppliedText(buffer, hunk, true))
+  const preview = editor.scratch(`*diff-ediff-patch: ${sourceFile}*`, patchedText, source.mode)
+  preview.readOnly = true
+  preview.locals.set("diff-ediff-source", source.path ?? sourceFile)
+  editor.switchToBuffer(source.id)
+  editor.displayBufferInOtherWindow(preview.id)
+  editor.message(`Prepared patched preview for ${sourceFile}`)
+  return true
+}
+
+function replaceSourceTextRange(sourceText: string, startLine: number, oldCount: number, replacementText: string): string {
+  const lines = sourceText.split("\n")
+  const replacement = replacementText.endsWith("\n")
+    ? replacementText.slice(0, -1).split("\n")
+    : replacementText.length
+      ? replacementText.split("\n")
+      : []
+  lines.splice(Math.max(0, startLine - 1), Math.max(0, oldCount), ...replacement)
+  return lines.join("\n")
+}
+
+async function addChangeLogEntriesOtherWindow(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const entries = changeLogEntries(buffer)
+  if (!entries.length) return false
+  const path = resolve(diffDefaultDirectory(buffer), "ChangeLog")
+  const origin = buffer.id
+  const changeLog = await editor.openFile(path)
+  const header = `${new Date().toISOString().slice(0, 10)}  ${changeLogUserName()}\n\n`
+  const body = entries.map(entry => `\t* ${entry.file}${entry.functionName ? ` (${entry.functionName})` : ""}: \n`).join("")
+  const insert = `${header}${body}\n`
+  changeLog.setText(insert + changeLog.text, true)
+  changeLog.point = insert.length - 1
+  if (editor.buffers.has(origin)) editor.switchToBuffer(origin)
+  editor.displayBufferInOtherWindow(changeLog.id)
+  editor.message(`Added ${entries.length} ChangeLog entr${entries.length === 1 ? "y" : "ies"}`)
+  return true
+}
+
+function changeLogEntries(buffer: BufferModel): Array<{ file: string; functionName?: string }> {
+  const entries: Array<{ file: string; functionName?: string }> = []
+  const seen = new Set<string>()
+  const lines = lineInfo(buffer)
+  for (const file of parseDiffBuffer(buffer)) {
+    const name = file.newFile && file.newFile !== "/dev/null" ? file.newFile : file.oldFile
+    if (!name || name === "/dev/null") continue
+    for (const hunk of file.hunks) {
+      const functionName = hunkFunctionName(lines[hunk.startLine]?.text ?? "")
+      const key = `${name}\0${functionName ?? ""}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      entries.push({ file: name, functionName })
+    }
+  }
+  return entries
+}
+
+function hunkFunctionName(header: string): string | undefined {
+  const unified = /^@@\s+-.+?\s+\+.+?\s+@@\s*(.+?)\s*$/.exec(header)?.[1]
+  if (unified) return unified
+  return undefined
+}
+
+function changeLogUserName(): string {
+  const name = process.env.GIT_AUTHOR_NAME || process.env.USER || process.env.LOGNAME || "user"
+  const email = process.env.GIT_AUTHOR_EMAIL || process.env.EMAIL
+  return email ? `${name}  <${email}>` : name
 }
 
 function reverseDiffDirection(buffer: BufferModel): void {
