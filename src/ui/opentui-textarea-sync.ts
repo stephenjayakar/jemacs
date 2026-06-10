@@ -21,10 +21,34 @@ export function syntaxForTheme(theme: Theme): SyntaxStyle {
         underline: face.underline,
       }
     }
+    const defaultFace = theme.faces.default
+    const title = theme.faces.title
+    const link = theme.faces.directory ?? theme.faces.constant ?? theme.faces.builtin
+    const code = theme.faces.string ?? theme.faces.keyword
+    const quote = theme.faces.comment ?? theme.faces.lineNumber
+    const list = theme.faces.builtin ?? theme.faces.keyword
+    const conceal = theme.faces.lineNumber ?? theme.faces.comment
+    styles["markup.heading"] = { fg: title?.fg ?? defaultFace?.fg, bg: title?.bg, bold: true }
+    styles["markup.strong"] = { fg: defaultFace?.fg, bold: true }
+    styles["markup.italic"] = { fg: defaultFace?.fg, italic: true }
+    styles["markup.strikethrough"] = { fg: conceal?.fg, underline: true }
+    styles["markup.raw"] = { fg: code?.fg, bg: codeBlockBackground(theme) }
+    styles["markup.quote"] = { fg: quote?.fg, italic: true }
+    styles["markup.list"] = { fg: list?.fg, bold: true }
+    styles["markup.link"] = { fg: link?.fg, underline: true }
+    styles["markup.link.label"] = { fg: link?.fg, bold: true }
+    styles["markup.link.url"] = { fg: conceal?.fg, underline: true }
+    styles.conceal = { fg: conceal?.fg, bg: conceal?.bg }
     syntax = SyntaxStyle.fromStyles(styles)
     syntaxByTheme.set(theme, syntax)
   }
   return syntax
+}
+
+function codeBlockBackground(theme: Theme): string | undefined {
+  const lineBg = theme.faces.lineNumber?.bg
+  if (lineBg && lineBg !== theme.faces.default?.bg) return lineBg
+  return theme.faces.modeLineInactive?.bg ?? theme.faces.minibuffer?.bg
 }
 
 function chunkStyleKey(chunk: ThemedChunk): string {

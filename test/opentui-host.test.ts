@@ -53,10 +53,10 @@ test("OpenTuiHost uses MarkdownRenderable for opentui markdown mode", async () =
   const editor = new Editor()
   installDefaultConfig(editor)
   installMarkdown(editor)
-  const buffer = editor.scratch("doc.md", "# Title\n\n| A | B |\n| - | - |\n| 1 | 2 |\n", "markdown")
+  const buffer = editor.scratch("doc.md", "# Title\n\nA paragraph with **strong** text.\n\n| A | B |\n| - | - |\n| 1 | 2 |\n", "markdown")
   editor.enterMode(buffer, "opentui-markdown-mode")
 
-  const { renderer, renderOnce } = await createTestRenderer({ width: 80, height: 24 })
+  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 80, height: 24 })
   const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24, cols: 80 } })
   const leaf = model.windows.kind === "leaf" ? model.windows.pane : null
   expect(leaf?.markdownSurface?.content).toContain("| A | B |")
@@ -67,7 +67,12 @@ test("OpenTuiHost uses MarkdownRenderable for opentui markdown mode", async () =
 
   const body = renderer.root.findDescendantById(`window-body:${editor.selectedWindowId}`)
   expect(body).toBeInstanceOf(ScrollBoxRenderable)
+  const frame = renderer.root.findDescendantById(`window-markdown-frame:${editor.selectedWindowId}`)
+  expect(frame).toBeDefined()
   const markdown = renderer.root.findDescendantById(`window-markdown:${editor.selectedWindowId}`)
   expect(markdown).toBeInstanceOf(MarkdownRenderable)
+  const rendered = captureCharFrame()
+  expect(rendered).toContain("Title")
+  expect(rendered).toContain("A paragraph with strong text.")
   host.destroy()
 })

@@ -56,6 +56,7 @@ export class OpenTuiHost implements UiHost {
   private inputHandlers: InputHandler[] = []
   private resizeHandlers: ResizeHandler[] = []
   private bodyWindowIds = new WeakMap<BodyRenderable, string>()
+  private markdownNodeCounter = 0
 
   /** Use an existing renderer (e.g. `createTestRenderer`) for automated tests. */
   static async forRenderer(renderer: CliRenderer): Promise<OpenTuiHost> {
@@ -336,6 +337,8 @@ export class OpenTuiHost implements UiHost {
           flexShrink: 1,
           flexBasis: 0,
           minHeight: 0,
+          paddingX: 1,
+          paddingTop: 1,
           scrollY: true,
           scrollX: false,
           stickyScroll: false,
@@ -376,8 +379,34 @@ export class OpenTuiHost implements UiHost {
   private syncMarkdownBody(body: ScrollBoxRenderable, leaf: WindowPaneModel, theme: Theme): void {
     const surface = leaf.markdownSurface
     if (!surface) return
-    let markdown = body.getRenderable(`window-markdown:${leaf.id}`) as MarkdownRenderable | undefined
     const bg = themeFaceBackground(theme)
+    const border = markdownAccentColor(theme)
+    const frameBg = markdownSurfaceBackground(theme)
+    let frame = body.findDescendantById(`window-markdown-frame:${leaf.id}`) as BoxRenderable | undefined
+    if (!frame) {
+      frame = new BoxRenderable(this.renderer, {
+        id: `window-markdown-frame:${leaf.id}`,
+        width: "100%",
+        maxWidth: 100,
+        alignSelf: "center",
+        flexDirection: "column",
+        flexShrink: 0,
+        border: ["left"],
+        borderStyle: "rounded",
+        borderColor: border,
+        backgroundColor: frameBg,
+        paddingLeft: 2,
+        paddingRight: 1,
+        paddingTop: 1,
+        paddingBottom: 1,
+      })
+      body.add(frame)
+    } else {
+      frame.borderColor = border
+      frame.backgroundColor = frameBg
+      frame.shouldFill = true
+    }
+    let markdown = frame.findDescendantById(`window-markdown:${leaf.id}`) as MarkdownRenderable | undefined
     if (!markdown) {
       markdown = new MarkdownRenderable(this.renderer, {
         id: `window-markdown:${leaf.id}`,
@@ -387,34 +416,120 @@ export class OpenTuiHost implements UiHost {
         concealCode: true,
         streaming: false,
         internalBlockMode: "top-level",
+        renderNode: token => this.renderMarkdownNode(token, theme),
         tableOptions: {
-          style: "grid",
-          widthMode: "full",
+          style: "columns",
+          widthMode: "content",
           wrapMode: "word",
-          borders: true,
+          cellPaddingX: 1,
+          borders: false,
+          borderColor: border,
           selectable: true,
         },
         fg: theme.faces.default?.fg,
-        bg,
+        bg: frameBg ?? bg,
         width: "100%",
       })
-      body.add(markdown)
+      frame.add(markdown)
     } else {
       markdown.content = surface.content
       markdown.syntaxStyle = syntaxForTheme(theme)
       markdown.conceal = true
       markdown.concealCode = true
+      markdown.renderNode = token => this.renderMarkdownNode(token, theme)
       markdown.tableOptions = {
-        style: "grid",
-        widthMode: "full",
+        style: "columns",
+        widthMode: "content",
         wrapMode: "word",
-        borders: true,
+        cellPaddingX: 1,
+        borders: false,
+        borderColor: border,
         selectable: true,
       }
       markdown.fg = theme.faces.default?.fg
-      markdown.bg = bg
+      markdown.bg = frameBg ?? bg
     }
     body.scrollTop = Math.max(0, surface.startLine)
+  }
+
+  private renderMarkdownNode(token: any, theme: Theme) {
+    const id = `jemacs-md-node:${++this.markdownNodeCounter}`
+    if (token.type === "heading") {
+      const chunks = markdownInlineChunks(token.tokens, theme, { heading: true })
+      const heading = new TextRenderable(this.renderer, {
+        id,
+        content: themedTextToStyledText({ chunks }),
+        width: "100%",
+        flexShrink: 0,
+        marginTop: token.depth > 1 ? 1 : 0,
+        marginBottom: 1,
+      })
+      return heading
+    }
+    if (token.type === "paragraph" || token.type === "text") {
+      return new TextRenderable(this.renderer, {
+        id,
+        content: themedTextToStyledText({ chunks: markdownInlineChunks(token.tokens ?? [{ type: "text", text: token.text ?? token.raw ?? "" }], theme) }),
+        width: "100%",
+        flexShrink: 0,
+        marginBottom: 1,
+      })
+    }
+    if (token.type === "blockquote") {
+      const quote = new BoxRenderable(this.renderer, {
+        id,
+        width: "100%",
+        border: ["left"],
+        borderColor: theme.faces.comment?.fg ?? markdownAccentColor(theme),
+        paddingLeft: 1,
+        marginBottom: 1,
+        flexShrink: 0,
+      })
+      quote.add(new TextRenderable(this.renderer, {
+        id: `${id}:text`,
+        content: themedTextToStyledText({ chunks: markdownInlineChunks(flattenMarkdownTokens(token.tokens), theme, { quote: true }) }),
+        width: "100%",
+        flexShrink: 0,
+      }))
+      return quote
+    }
+    if (token.type === "list") {
+      const list = new BoxRenderable(this.renderer, {
+        id,
+        width: "100%",
+        flexDirection: "column",
+        flexShrink: 0,
+        marginBottom: 1,
+      })
+      const start = Number(token.start ?? 1)
+      const items = token.items ?? []
+      const markerWidth = Math.max(1, ...items.map((_item: any, index: number) => (token.ordered ? `${start + index}.` : "•").length))
+      items.forEach((item: any, index: number) => {
+        const row = new BoxRenderable(this.renderer, {
+          id: `${id}:item:${index}`,
+          width: "100%",
+          flexDirection: "row",
+          flexShrink: 0,
+        })
+        row.add(new TextRenderable(this.renderer, {
+          id: `${id}:marker:${index}`,
+          content: themedTextToStyledText({
+            chunks: [{ text: `${(token.ordered ? `${start + index}.` : "•").padStart(markerWidth)} `, fg: theme.faces.builtin?.fg ?? markdownAccentColor(theme), bold: true }],
+          }),
+          width: markerWidth + 1,
+          flexShrink: 0,
+        }))
+        row.add(new TextRenderable(this.renderer, {
+          id: `${id}:body:${index}`,
+          content: themedTextToStyledText({ chunks: markdownInlineChunks(flattenMarkdownTokens(item.tokens), theme) }),
+          flexGrow: 1,
+          flexShrink: 1,
+        }))
+        list.add(row)
+      })
+      return list
+    }
+    return undefined
   }
 }
 
@@ -428,4 +543,83 @@ function proportionalBudget(total: number, firstRatio: number, min: number): num
   if (total <= min * 2) return Math.floor(total / 2)
   const ratio = Math.max(0.05, Math.min(0.95, firstRatio))
   return Math.max(min, Math.min(total - min, Math.floor(total * ratio)))
+}
+
+function markdownAccentColor(theme: Theme): string {
+  return theme.faces.directory?.fg
+    ?? theme.faces.builtin?.fg
+    ?? theme.faces.lineNumberCurrent?.fg
+    ?? theme.faces.lineNumber?.fg
+    ?? theme.faces.default?.fg
+    ?? "#888888"
+}
+
+function markdownSurfaceBackground(theme: Theme): string | undefined {
+  const defaultBg = theme.faces.default?.bg
+  const inactive = theme.faces.modeLineInactive?.bg
+  if (inactive && inactive !== defaultBg) return inactive
+  const minibuffer = theme.faces.minibuffer?.bg
+  if (minibuffer && minibuffer !== defaultBg) return minibuffer
+  return defaultBg
+}
+
+function markdownInlineChunks(tokens: any[] | undefined, theme: Theme, options: { heading?: boolean; quote?: boolean } = {}) {
+  const chunks: Array<{ text: string; fg?: string; bg?: string; bold?: boolean; italic?: boolean; underline?: boolean }> = []
+  const baseFg = options.heading
+    ? theme.faces.title?.fg ?? theme.faces.default?.fg
+    : options.quote
+      ? theme.faces.comment?.fg ?? theme.faces.default?.fg
+      : theme.faces.default?.fg
+  const codeBg = markdownSurfaceBackground(theme)
+  const pushText = (text: string, style: Partial<typeof chunks[number]> = {}) => {
+    if (!text) return
+    chunks.push({ text, fg: baseFg, italic: options.quote || undefined, ...style })
+  }
+  const walk = (items: any[] | undefined, style: Partial<typeof chunks[number]> = {}) => {
+    for (const token of items ?? []) {
+      if (!token) continue
+      if (token.type === "text" || token.type === "escape") pushText(token.text ?? token.raw ?? "", style)
+      else if (token.type === "strong") walk(token.tokens, { ...style, bold: true })
+      else if (token.type === "em") walk(token.tokens, { ...style, italic: true })
+      else if (token.type === "del") walk(token.tokens, { ...style, underline: true, fg: theme.faces.lineNumber?.fg ?? style.fg })
+      else if (token.type === "codespan") pushText(token.text ?? "", {
+        ...style,
+        fg: theme.faces.string?.fg ?? style.fg,
+        bg: codeBg,
+      })
+      else if (token.type === "link") {
+        walk(token.tokens, {
+          ...style,
+          fg: theme.faces.directory?.fg ?? markdownAccentColor(theme),
+          underline: true,
+        })
+        if (token.href) pushText(` (${token.href})`, {
+          fg: theme.faces.lineNumber?.fg ?? style.fg,
+          underline: true,
+        })
+      } else if (token.type === "image") {
+        pushText(token.text || token.href || "image", {
+          ...style,
+          fg: theme.faces.directory?.fg ?? markdownAccentColor(theme),
+          underline: true,
+        })
+      } else if (Array.isArray(token.tokens)) walk(token.tokens, style)
+      else pushText(token.text ?? token.raw ?? "", style)
+    }
+  }
+  walk(tokens, { bold: options.heading || undefined })
+  return chunks.length ? chunks : [{ text: " " }]
+}
+
+function flattenMarkdownTokens(tokens: any[] | undefined): any[] {
+  const out: any[] = []
+  for (const token of tokens ?? []) {
+    if (!token) continue
+    if (token.type === "space") continue
+    if ((token.type === "paragraph" || token.type === "text") && Array.isArray(token.tokens)) out.push(...token.tokens)
+    else if (token.type === "list") {
+      for (const item of token.items ?? []) out.push(...flattenMarkdownTokens(item.tokens))
+    } else out.push(token)
+  }
+  return out
 }
