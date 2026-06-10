@@ -38,6 +38,7 @@ test("diff-mode is installed as a core mode and inferred for patches", () => {
   expect(mode?.keymap?.get("ESC S-w")).toBe("widen")
   expect(mode?.keymap?.get("C-c C-a")).toBe("diff-apply-hunk")
   expect(editor.commands.get("diff-hunk-next")).toBeDefined()
+  expect(editor.commands.get("diff-make-unified")).toBeDefined()
   expect(inferMode("change.patch")).toBe("diff-mode")
   expect(inferMode("change.diff")).toBe("diff-mode")
 })
@@ -342,6 +343,20 @@ test("diff-unified->context and diff-context->unified convert the current hunk",
   expect(buffer.text).toContain("-two")
   expect(buffer.text).toContain("+TWO")
   expect(buffer.text).toContain("+three")
+})
+
+test("diff-make-unified converts context hunks across the buffer", async () => {
+  const editor = makeEditor()
+  const buffer = editor.scratch("*diff*", sample, "diff-mode")
+  buffer.point = buffer.text.indexOf("+TWO")
+  await editor.run("diff-unified->context")
+  expect(buffer.text).toContain("***************")
+
+  await editor.run("diff-make-unified")
+  expect(buffer.text).not.toContain("***************")
+  expect(buffer.text).toContain("@@ -1,2 +1,3 @@")
+  expect(buffer.text).toContain("-two")
+  expect(buffer.text).toContain("+TWO")
 })
 
 test("diff-ignore-whitespace-hunk removes a whitespace-only hunk", async () => {

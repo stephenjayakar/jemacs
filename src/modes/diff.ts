@@ -149,6 +149,11 @@ export function installDiffCommands(editor: Editor): void {
     editor.message(count ? `Deleted trailing whitespace from ${count} line${count === 1 ? "" : "s"}` : "No trailing whitespace to delete")
   }, "Remove trailing whitespace from lines modified in this diff and their source files.")
 
+  editor.command("diff-make-unified", async ({ editor, buffer }) => {
+    const count = await makeUnifiedDiff(editor, buffer)
+    editor.message(count ? `Converted ${count} context hunk${count === 1 ? "" : "s"} to unified diff` : "No context hunks to convert")
+  }, "Turn context diffs into unified diffs.")
+
   editor.command("diff-delete-other-hunks", ({ buffer, editor }) => {
     const keep = diffHunkAtPoint(buffer)
     if (!keep) return editor.message("No hunk at point")
@@ -682,6 +687,20 @@ async function replaceHunkWithDiff(editor: Editor, buffer: BufferModel, style: "
   if (replacement == null) return true
   replaceHunk(buffer, hunk, replacement)
   return true
+}
+
+async function makeUnifiedDiff(editor: Editor, buffer: BufferModel): Promise<number> {
+  const hunks = parseDiffBuffer(buffer)
+    .flatMap(file => file.hunks)
+    .filter(hunk => hunk.style === "context")
+    .sort((a, b) => b.startLine - a.startLine)
+  for (const hunk of hunks) {
+    const oldText = hunkAppliedText(buffer, hunk, false)
+    const newText = hunkAppliedText(buffer, hunk, true)
+    const replacement = await diffTexts(editor, oldText, newText, "unified", false)
+    if (replacement != null) replaceHunk(buffer, hunk, replacement)
+  }
+  return hunks.length
 }
 
 async function diffTexts(
