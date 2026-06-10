@@ -4,6 +4,7 @@
 export { Editor } from "../kernel/editor"
 export { BufferModel } from "../kernel/buffer"
 export { defcustom, defvar, getCustom, setCustom, saveCustom, resetCustom, resetCustomToSaved, patchCustom, restoreCustom, listCustomVariables } from "./custom"
+export { currentKill, getKillRing, killNew, killRingIndex } from "./kill-ring"
 export {
   defface,
   setFaceAttribute,

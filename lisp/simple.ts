@@ -4,6 +4,7 @@ import type { PluginContext } from "../src/runtime/plugin-context"
 import type { BufferModel } from "../src/kernel/buffer"
 import type { TextSpan } from "../src/modes/mode"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
+import { currentKill, getKillRing, killNew, killRingIndex as ringIndex } from "../src/runtime/kill-ring"
 import { isPrintable } from "../src/kernel/keymap"
 import { scrollDownCommand, scrollUpCommand, selectedWindowBodyBudget } from "../src/display/scroll"
 import { modeFeature } from "../src/modes/mode"
@@ -158,12 +159,9 @@ export function install(editor: Editor, ctx?: PluginContext): void {
 
   // ---- kill ring / basic editing -----------------------------------------
 
-  // defvar holds the per-editor map so the ring outlives a hot-reload of this
-  // module; WeakMap keying keeps separate Editor instances (tests) isolated.
-  // The yank cursor and last-yank span are transient and reset to head on reload.
-  const rings = defvar("kill-ring", new WeakMap<Editor, string[]>(), "Per-editor kill ring storage.").value
-  let killRing = rings.get(editor)
-  if (!killRing) rings.set(editor, killRing = [])
+  // The kill ring itself lives in runtime/kill-ring so packages can use
+  // Emacs-like `kill-new` behavior. Yank cursor state remains command-local.
+  const killRing = getKillRing(editor)
   let yankRingIndex = 0
   let lastYankStart: number | null = null
   let lastYankEnd: number | null = null
@@ -183,17 +181,9 @@ export function install(editor: Editor, ctx?: PluginContext): void {
 
   const pushKill = (text: string, append = false, before = false) => {
     if (!text) return
-    if (append && killRing.length) {
-      killRing[0] = before ? text + killRing[0]! : killRing[0]! + text
-      yankRingIndex = 0
-      return
-    }
-    killRing.unshift(text)
-    if (killRing.length > 60) killRing.length = 60
+    killNew(editor, text, { append, before })
     yankRingIndex = 0
   }
-
-  const killRingIndex = (delta: number) => ((delta % killRing.length) + killRing.length) % killRing.length
 
   const recordYank = (buffer: BufferModel, text: string, ringIndex = 0) => {
     lastYankStart = buffer.point - text.length
@@ -206,8 +196,8 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   const yankPop = (buffer: BufferModel, delta: number): boolean => {
     if (!killRing.length) return false
     if (!lastCommandWasYank() || lastYankStart == null || lastYankEnd == null) return false
-    yankRingIndex = killRingIndex(yankRingIndex + delta)
-    const text = killRing[yankRingIndex]!
+    yankRingIndex = ringIndex(editor, yankRingIndex + delta)
+    const text = currentKill(editor, yankRingIndex)!
     buffer.replaceRange(lastYankStart, lastYankEnd, text)
     lastYankEnd = lastYankStart + text.length
     buffer.mark = lastYankStart
@@ -503,11 +493,11 @@ export function install(editor: Editor, ctx?: PluginContext): void {
 
   editor.command("yank", ({ buffer, prefixArgument }) => {
     if (!killRing.length) return
-    const ringIndex = killRingIndex((prefixArgument ?? 1) - 1)
-    const text = killRing[ringIndex]
+    const index = ringIndex(editor, (prefixArgument ?? 1) - 1)
+    const text = currentKill(editor, index)
     if (!text) return
     buffer.insert(text)
-    recordYank(buffer, text, ringIndex)
+    recordYank(buffer, text, index)
   }, "Insert the last killed text at point.")
 
   editor.command("clipboard-yank", async ({ buffer }) => {
