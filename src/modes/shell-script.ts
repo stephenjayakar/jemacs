@@ -12,7 +12,7 @@ const shellBuiltins = new Set([
 
 const blockOpeners = /\b(?:do|then)\s*(?:[#;].*)?$|(?:^|\s)case\b.*\bin\s*(?:[#;].*)?$|\{\s*(?:[#;].*)?$/
 const blockClosers = /^(?:done|fi|esac|elif|else)\b|^\}/
-const functionDefunRegex = /^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\))?\s*\{/gm
+const functionDefunRegex = /^[ \t]*(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\))?\s*\{/gm
 
 export function installShellScriptMode(): void {
   const keymap = new Keymap("sh-mode-map")
@@ -27,6 +27,8 @@ export function installShellScriptMode(): void {
     indentLine: shellScriptIndentLine,
     fontLock: shellScriptFontLock,
     completeAtPoint: shellScriptCompleteAtPoint,
+    beginningOfDefun: shellScriptBeginningOfDefun,
+    endOfDefun: shellScriptEndOfDefun,
   })
   defineMode({ name: "shell-script-mode", parent: "sh-mode" })
   defineMode({ name: "bash-mode", parent: "sh-mode" })
@@ -40,6 +42,46 @@ export function shellScriptIndentLine(buffer: BufferModel): void {
   const oldIndent = line.text.length - content.length
   buffer.replaceRange(line.start, line.end, " ".repeat(desired) + content)
   buffer.point = line.start + Math.max(desired, column + desired - oldIndent)
+}
+
+export function shellScriptBeginningOfDefun(buffer: BufferModel): void {
+  let target = 0
+  for (const match of buffer.text.matchAll(functionDefunRegex)) {
+    if (match.index == null || match.index >= buffer.point) break
+    target = match.index
+  }
+  buffer.point = target
+}
+
+export function shellScriptEndOfDefun(buffer: BufferModel): void {
+  const start = findCurrentDefunStart(buffer)
+  let depth = 0
+  for (let i = start; i < buffer.text.length; i++) {
+    const ch = buffer.text[i]!
+    if (ch === "#") {
+      i = lineEnd(buffer.text, i)
+      continue
+    }
+    if (ch === "\"" || ch === "'" || ch === "`") {
+      const quote = ch
+      i++
+      while (i < buffer.text.length) {
+        if (quote !== "'" && buffer.text[i] === "\\") i += 2
+        else if (buffer.text[i] === quote) break
+        else i++
+      }
+      continue
+    }
+    if (ch === "{") depth++
+    else if (ch === "}") {
+      depth--
+      if (depth <= 0) {
+        buffer.point = i + 1
+        return
+      }
+    }
+  }
+  buffer.point = buffer.text.length
 }
 
 export function shellScriptFontLock(buffer: BufferModel): TextSpan[] {
@@ -100,6 +142,15 @@ function shellScriptDesiredIndent(text: string, lineStart: number): number {
   }
   if (blockClosers.test(current)) indent = Math.max(0, indent - 2)
   return indent
+}
+
+function findCurrentDefunStart(buffer: BufferModel): number {
+  let target = 0
+  for (const match of buffer.text.matchAll(functionDefunRegex)) {
+    if (match.index == null || match.index > buffer.point) break
+    target = match.index
+  }
+  return target
 }
 
 function addWords(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0): void {

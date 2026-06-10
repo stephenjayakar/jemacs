@@ -52,6 +52,8 @@ export type Mode = {
   onEnter?: (buffer: BufferModel) => void
   indentLine?: (buffer: BufferModel) => void
   fontLock?: (buffer: BufferModel) => TextSpan[]
+  beginningOfDefun?: (buffer: BufferModel) => boolean | void
+  endOfDefun?: (buffer: BufferModel) => boolean | void
   /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */
   displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number } | null
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
@@ -67,6 +69,8 @@ const MODE_GENERICS = {
   completeAtPoint: "complete-at-point",
   fontLock: "font-lock",
   displayFilter: "display-filter",
+  beginningOfDefun: "beginning-of-defun-function",
+  endOfDefun: "end-of-defun-function",
 } as const
 type ModeGenericField = keyof typeof MODE_GENERICS
 

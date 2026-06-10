@@ -88,14 +88,15 @@ export interface KernelLsp {
 // ── Mode-system seam ────────────────────────────────────────────────────────
 
 /** Shape of a major mode as far as kernel cares: a name, an optional keymap,
- *  and the per-mode behaviours kernel currently dispatches (font-lock,
- *  indent, completion). `defgeneric` will eventually replace the latter. */
+ *  and the per-mode behaviours kernel currently dispatches. */
 export type ModeSpec = {
   name: string
   keymap?: Keymap
   indentLine?: (buffer: BufferModel) => void
   fontLock?: (buffer: BufferModel) => TextSpan[]
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
+  beginningOfDefun?: (buffer: BufferModel) => boolean | void
+  endOfDefun?: (buffer: BufferModel) => boolean | void
 }
 
 export type MinorModeSpec = {

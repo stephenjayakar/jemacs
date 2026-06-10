@@ -1247,12 +1247,14 @@ test("prog-mode and python-mode are installed with a real python major map", asy
 
 test("sh-mode, shell-script-mode, and bash-mode are installed as core shell script modes", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
-  const { getMode, modeLineage } = await import("../src/modes/mode")
+  const { getMode, modeFeature, modeLineage } = await import("../src/modes/mode")
   installDefaultModes()
 
   expect(getMode("sh-mode")?.parent).toBe("prog-mode")
   expect(getMode("sh-mode")?.commentStart).toBe("#")
   expect(getMode("sh-mode")?.keymap?.get("C-M-a")).toBe("beginning-of-defun")
+  expect(modeFeature("sh-mode", "beginningOfDefun")).toBeDefined()
+  expect(modeFeature("sh-mode", "endOfDefun")).toBeDefined()
   expect(getMode("shell-script-mode")?.parent).toBe("sh-mode")
   expect(getMode("bash-mode")?.parent).toBe("sh-mode")
   expect(modeLineage("bash-mode").map(m => m.name)).toEqual(["bash-mode", "sh-mode", "prog-mode", "text"])
@@ -1297,15 +1299,31 @@ test("sh-mode supports indentation, font-lock, and TAB completion", async () => 
   expect(buffer.text.endsWith("exec")).toBe(true)
 })
 
+test("sh-mode supports generic defun navigation through mode features", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.scratch("example.sh", "greet() {\n  echo hi\n}\n\nbye() {\n  echo bye\n}\n", "sh-mode")
+
+  buffer.point = buffer.text.indexOf("echo bye")
+  await editor.run("beginning-of-defun")
+  expect(buffer.point).toBe(buffer.text.indexOf("bye()"))
+  await editor.run("end-of-defun")
+  expect(buffer.point).toBe(buffer.text.lastIndexOf("}") + 1)
+})
+
 test("emacs-lisp-mode is installed for .el files using GNU Emacs naming", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
-  const { getMode, modeLineage } = await import("../src/modes/mode")
+  const { getMode, modeFeature, modeLineage } = await import("../src/modes/mode")
   installDefaultModes()
 
   expect(getMode("emacs-lisp-mode")?.parent).toBe("prog-mode")
   expect(getMode("emacs-lisp-mode")?.commentStart).toBe(";")
   expect(getMode("emacs-lisp-mode")?.keymap?.get("C-M-a")).toBe("beginning-of-defun")
   expect(getMode("emacs-lisp-mode")?.keymap?.get("C-M-e")).toBe("end-of-defun")
+  expect(modeFeature("emacs-lisp-mode", "beginningOfDefun")).toBeDefined()
+  expect(modeFeature("emacs-lisp-mode", "endOfDefun")).toBeDefined()
   expect(modeLineage("emacs-lisp-mode").map(m => m.name)).toEqual(["emacs-lisp-mode", "prog-mode", "text"])
   expect(new BufferModel({ name: "init.el" }).mode).toBe("emacs-lisp-mode")
 })
@@ -1340,11 +1358,14 @@ test("emacs-lisp-mode supports indentation, defun navigation, font-lock, and TAB
 
 test("python mode supports indentation, defun navigation, font-lock, and TAB completion", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
+  const { modeFeature } = await import("../src/modes/mode")
   installDefaultModes()
   const editor = new Editor()
   installDefaultCommands(editor)
   await installStephenConfig(editor)
   const buffer = editor.scratch("example.py", "def outer():\nprint('hi')\n    return ran", "python")
+  expect(modeFeature("python", "beginningOfDefun")).toBeDefined()
+  expect(modeFeature("python", "endOfDefun")).toBeDefined()
 
   buffer.point = buffer.text.indexOf("print")
   editor.indentLine(buffer)

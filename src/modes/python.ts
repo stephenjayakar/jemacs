@@ -15,7 +15,7 @@ const pythonBuiltins = new Set([
 const dedentStarters = /^(elif|else|except|finally|case)\b/
 const dedentKeywords = /^(return|raise|break|continue|pass)\b/
 const blockOpeners = /:\s*(#.*)?$/
-const defunRegex = /^\s*(async\s+def|def|class)\s+([A-Za-z_]\w*)/gm
+const defunRegex = /^[ \t]*(async\s+def|def|class)\s+([A-Za-z_]\w*)/gm
 
 export function installPythonMode(): void {
   const keymap = new Keymap("python-map")
@@ -32,6 +32,8 @@ export function installPythonMode(): void {
       return ts.length ? ts : codeFontLock(buffer, pythonKeywords, "#")
     },
     completeAtPoint: pythonCompleteAtPoint,
+    beginningOfDefun: pythonBeginningOfDefun,
+    endOfDefun: pythonEndOfDefun,
   })
 }
 

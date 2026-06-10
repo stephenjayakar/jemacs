@@ -6,8 +6,7 @@ import type { TextSpan } from "../src/modes/mode"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 import { isPrintable } from "../src/kernel/keymap"
 import { scrollDownCommand, scrollUpCommand, selectedWindowBodyBudget } from "../src/display/scroll"
-import { emacsLispBeginningOfDefun, emacsLispEndOfDefun } from "../src/modes/emacs-lisp"
-import { pythonBeginningOfDefun, pythonEndOfDefun } from "../src/modes/python"
+import { modeFeature } from "../src/modes/mode"
 import { spawnProcess } from "../src/platform/runtime"
 import { readKey } from "./misc"
 
@@ -143,25 +142,13 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   }, "Set mark at end and point at beginning of buffer.")
 
   const beginningOfDefun = ({ buffer, editor }: CommandContext) => {
-    if (buffer.mode === "emacs-lisp-mode") {
-      emacsLispBeginningOfDefun(buffer)
-      return
-    }
-    if (buffer.mode === "python") {
-      pythonBeginningOfDefun(buffer)
-      return
-    }
+    const move = modeFeature(buffer.mode, "beginningOfDefun")
+    if (move) return move(buffer)
     editor.message("No defun navigation for this mode")
   }
   const endOfDefun = ({ buffer, editor }: CommandContext) => {
-    if (buffer.mode === "emacs-lisp-mode") {
-      emacsLispEndOfDefun(buffer)
-      return
-    }
-    if (buffer.mode === "python") {
-      pythonEndOfDefun(buffer)
-      return
-    }
+    const move = modeFeature(buffer.mode, "endOfDefun")
+    if (move) return move(buffer)
     editor.message("No defun navigation for this mode")
   }
   editor.command("beginning-of-defun", beginningOfDefun, "Move to the beginning of the current defun.")

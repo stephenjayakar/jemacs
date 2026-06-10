@@ -10,7 +10,7 @@ const emacsLispBuiltins = new Set([
   "add-hook", "apply", "autoload", "buffer-file-name", "car", "cdr", "cons", "eq", "equal", "eval-after-load", "expand-file-name", "find-file", "format", "funcall", "global-set-key", "list", "load-file", "mapcar", "message", "nil", "not", "point", "provide", "require", "t",
 ])
 
-const defunRegex = /^\s*\((?:cl-)?(?:defun|defmacro|defvar|defconst|defcustom|defface|defgroup|define-[\w-]+)\s+([^\s()]+)/gm
+const defunRegex = /^[ \t]*\((?:cl-)?(?:defun|defmacro|defvar|defconst|defcustom|defface|defgroup|define-[\w-]+)\s+([^\s()]+)/gm
 const specialForms = new Set(["cond", "condition-case", "defcustom", "defface", "defgroup", "defmacro", "defun", "defvar", "defconst", "if", "lambda", "let", "let*", "progn", "save-excursion", "save-restriction", "unwind-protect", "when", "while", "with-current-buffer", "with-temp-buffer"])
 
 export function installEmacsLispMode(): void {
@@ -26,6 +26,8 @@ export function installEmacsLispMode(): void {
     indentLine: emacsLispIndentLine,
     fontLock: emacsLispFontLock,
     completeAtPoint: emacsLispCompleteAtPoint,
+    beginningOfDefun: emacsLispBeginningOfDefun,
+    endOfDefun: emacsLispEndOfDefun,
   })
 }
 
