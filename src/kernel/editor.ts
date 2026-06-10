@@ -36,6 +36,8 @@ import {
   setWindowLeafPoint,
   setWindowLeafStartLine,
   splitWindowLeaf,
+  type ChildFrameRecord,
+  type ChildFrameParameters,
   type WindowNode,
 } from "./window"
 import type { RegisterContents } from "./register"
@@ -150,6 +152,7 @@ export class Editor {
   /** Editor-scoped scratch storage for plugins (parallels BufferModel.locals). */
   readonly locals = new Map<string, unknown>()
   readonly tabs: Array<{ name: string; bufferId: string }> = []
+  readonly childFrames = new Map<string, ChildFrameRecord>()
   private _windowLayout!: WindowNode
   /** Read-only view of the window tree. Mutate via kernel primitives (setSelectedWindowPoint etc). */
   get windowLayout(): WindowNode { return this._windowLayout }
@@ -362,10 +365,14 @@ export class Editor {
     void this.changed("set-window-dedicated")
   }
 
+  private resolveBuffer(idOrName: string): BufferModel | undefined {
+    return this.buffers.get(idOrName)
+      ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
+  }
+
   displayBufferInOtherWindow(idOrName: string, options: { select?: boolean } = {}): BufferModel {
     const select = options.select ?? true
-    const found = this.buffers.get(idOrName)
-      ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
+    const found = this.resolveBuffer(idOrName)
     if (!found) throw new Error(`No such buffer: ${idOrName}`)
     const existing = findWindowShowingBuffer(this.windowLayout, found.id, this.selectedWindowId)
     if (existing) {
@@ -394,6 +401,33 @@ export class Editor {
       void this.changed("display-buffer")
     }
     return found
+  }
+
+  displayBufferInChildFrame(idOrName: string, options: { childFrameParameters?: ChildFrameParameters } = {}): ChildFrameRecord {
+    const found = this.resolveBuffer(idOrName)
+    if (!found) throw new Error(`No such buffer: ${idOrName}`)
+    const params = options.childFrameParameters ?? {}
+    const parentFrameId = typeof params["parent-frame"] === "string" ? params["parent-frame"] : this.selectedWindowId
+    const existing = [...this.childFrames.values()].find(frame => frame.parentFrameId === parentFrameId)
+    if (existing) {
+      existing.window = { ...existing.window, bufferId: found.id, point: found.point }
+      existing.parameters = { "parent-frame": parentFrameId, ...params }
+      existing.visible = true
+      void this.changed("display-buffer-in-child-frame")
+      return existing
+    }
+    const window = createLeafWindow(found.id, found.point)
+    window.dedicated = true
+    const record: ChildFrameRecord = {
+      id: crypto.randomUUID(),
+      parentFrameId,
+      window,
+      parameters: { "parent-frame": parentFrameId, ...params },
+      visible: true,
+    }
+    this.childFrames.set(record.id, record)
+    void this.changed("display-buffer-in-child-frame")
+    return record
   }
 
   private restoreSelectedWindowPoint(): void {

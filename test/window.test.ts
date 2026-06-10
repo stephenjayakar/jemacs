@@ -320,6 +320,42 @@ test("dedicated windows are skipped when displaying another buffer", async () =>
   expect(dedicatedLeaf.bufferId).not.toBe(editor.currentBuffer.id)
 })
 
+test("display-buffer-in-child-frame creates a child frame without selecting a tiled window", async () => {
+  const editor = installEditor()
+  const base = editor.scratch("base", "base", "text")
+  const doc = editor.scratch("*doc*", "docs", "text")
+  editor.switchToBuffer(base.id)
+  const selected = editor.selectedWindowId
+
+  const result = await editor.run("display-buffer-in-child-frame", [doc.id])
+
+  expect(result).toMatchObject({
+    parentFrameId: selected,
+    visible: true,
+  })
+  expect(editor.selectedWindowId).toBe(selected)
+  expect(editor.currentBuffer.id).toBe(base.id)
+  expect(listWindowLeaves(editor.windowLayout)).toHaveLength(1)
+  expect(editor.childFrames.size).toBe(1)
+  expect([...editor.childFrames.values()][0]!.window.bufferId).toBe(doc.id)
+})
+
+test("display-buffer action display-buffer-in-child-frame reuses the selected frame's child frame", async () => {
+  const editor = installEditor()
+  const base = editor.scratch("base", "base", "text")
+  const a = editor.scratch("*a*", "a", "text")
+  const b = editor.scratch("*b*", "b", "text")
+  editor.switchToBuffer(base.id)
+
+  const first = await editor.run("display-buffer", [a.id, "display-buffer-in-child-frame"])
+  const second = await editor.run("display-buffer", [b.id, "display-buffer-in-child-frame"])
+
+  expect(editor.childFrames.size).toBe(1)
+  expect((first as { id: string }).id).toBe((second as { id: string }).id)
+  expect([...editor.childFrames.values()][0]!.window.bufferId).toBe(b.id)
+  expect(editor.currentBuffer.id).toBe(base.id)
+})
+
 test("find-file-other-window selects the other window", async () => {
   const editor = installEditor()
   const path = "/tmp/jemacs-other-window-test.txt"

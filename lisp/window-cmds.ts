@@ -1,5 +1,6 @@
 import type { Editor } from "../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
+import type { ChildFrameParameters, ChildFrameRecord } from "../src/kernel/window"
 import { findWindowLeaf, listWindowLeaves, nextWindowId, scrollWindowLeaf } from "../src/kernel/window"
 import { pageScrollLines } from "../src/display/viewport"
 import { defvar } from "../src/runtime/custom"
@@ -8,6 +9,33 @@ import { directoryInitialValue, substituteInFileName } from "./files"
 
 const recenterCycle = defvar("recenter--cycle", new WeakMap<Editor, number>(),
   "Per-editor C-l cycle state (center → top → bottom).").value
+
+export type DisplayBufferActionFunction =
+  | "display-buffer-in-child-frame"
+  | "display-buffer-pop-up-window"
+  | "display-buffer-use-some-window"
+  | "display-buffer-reuse-window"
+
+export type DisplayBufferActionAlist = {
+  action?: DisplayBufferActionFunction
+  "child-frame-parameters"?: ChildFrameParameters
+  select?: boolean
+}
+
+export function displayBufferInChildFrame(
+  editor: Editor,
+  bufferOrName: string,
+  alist: DisplayBufferActionAlist = {},
+): ChildFrameRecord {
+  return editor.displayBufferInChildFrame(bufferOrName, {
+    childFrameParameters: alist["child-frame-parameters"],
+  })
+}
+
+export function displayBuffer(editor: Editor, bufferOrName: string, alist: DisplayBufferActionAlist = {}) {
+  if (alist.action === "display-buffer-in-child-frame") return displayBufferInChildFrame(editor, bufferOrName, alist)
+  return editor.displayBufferInOtherWindow(bufferOrName, { select: alist.select ?? false })
+}
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const otherWindow = (editor: Editor, delta: number) => {
@@ -128,7 +156,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`Now visiting ${editor.bufferDisplayName(buffer)} in other window`)
   }, "Find a file in another window.")
 
-  const displayBuffer = async ({ editor, args }: { editor: Editor; args: string[] }) => {
+  const displayBufferCommand = async ({ editor, args }: { editor: Editor; args: string[] }) => {
     const name = args[0] ?? await editor.completingRead("Display buffer in other window: ", {
       collection: [...editor.buffers.values()].map(b => editor.bufferDisplayName(b)),
       history: "buffer",
@@ -136,11 +164,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     })
     if (!name) return
     const target = resolveBufferName(editor, name)
-    const shown = editor.displayBufferInOtherWindow(target?.id ?? name, { select: false })
-    editor.message(`Displayed ${editor.bufferDisplayName(shown)} in other window`)
+    const action = args[1] as DisplayBufferActionFunction | undefined
+    const result = displayBuffer(editor, target?.id ?? name, { action, select: false })
+    const shown = "window" in result ? editor.buffers.get(result.window.bufferId) : result
+    editor.message(`Displayed ${shown ? editor.bufferDisplayName(shown) : name}${action === "display-buffer-in-child-frame" ? " in child frame" : " in other window"}`)
+    return result
   }
-  editor.command("display-buffer", displayBuffer, "Display a buffer in another window without selecting it.")
-  editor.command("jemacs-display-buffer-other-window", displayBuffer, "Jemacs extension alias for display-buffer.")
+  editor.command("display-buffer", displayBufferCommand, "Display a buffer in another window without selecting it.")
+  editor.command("jemacs-display-buffer-other-window", displayBufferCommand, "Jemacs extension alias for display-buffer.")
+
+  editor.command("display-buffer-in-child-frame", async ({ editor, args }) => {
+    const name = args[0] ?? await editor.completingRead("Display buffer in child frame: ", {
+      collection: [...editor.buffers.values()].map(b => editor.bufferDisplayName(b)),
+      history: "buffer",
+      initialValue: editor.bufferDisplayName(editor.currentBuffer),
+    })
+    if (!name) return
+    const target = resolveBufferName(editor, name)
+    const frame = displayBufferInChildFrame(editor, target?.id ?? name)
+    const shown = editor.buffers.get(frame.window.bufferId)
+    editor.message(`Displayed ${shown ? editor.bufferDisplayName(shown) : name} in child frame`)
+    return frame
+  }, "Display a buffer in a child frame of the selected frame.")
 
   editor.command("pop-to-buffer", async ({ editor, args }) => {
     const name = args[0] ?? await editor.completingRead("Pop to buffer: ", {

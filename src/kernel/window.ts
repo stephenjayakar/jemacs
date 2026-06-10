@@ -19,6 +19,16 @@ export type WindowSplit = {
 
 export type WindowNode = WindowLeaf | WindowSplit
 
+export type ChildFrameParameters = Record<string, unknown>
+
+export type ChildFrameRecord = {
+  id: string
+  parentFrameId: WindowId
+  window: WindowLeaf
+  parameters: ChildFrameParameters
+  visible: boolean
+}
+
 export function createLeafWindow(bufferId: string, point = 0, id = crypto.randomUUID(), startLine = 0): WindowLeaf {
   return { kind: "leaf", id, bufferId, point, startLine, dedicated: false }
 }
