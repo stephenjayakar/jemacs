@@ -154,7 +154,7 @@ export function attachShadow(editor: Editor, link: ShadowLink, opts?: AttachOpts
   }
   for (const b of editor.buffers.values()) hookBuffer(b)
 
-  link.on(op => onShadowOp(editor, link, state, op, hookBuffer))
+  link.on(op => void onShadowOp(editor, link, state, op, hookBuffer))
 
   const detach = () => {
     for (const r of restore) r()
@@ -177,7 +177,7 @@ export function resendPending(editor: Editor): number {
 }
 
 /** S-side receive: ack/rebase/lsp handled here; splice/point/buffer/layout via the chokepoint. */
-function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: ShadowOp, hookBuffer: (b: BufferModel) => void): void {
+async function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: ShadowOp, hookBuffer: (b: BufferModel) => void): Promise<void> {
   switch (op.kind) {
     case "ack": {
       for (const [id, list] of state.pending) {
@@ -237,7 +237,7 @@ function onShadowOp(editor: Editor, link: ShadowLink, state: ShadowState, op: Sh
       //   → keep rendering it with [⊘ syncing], send Have{cachedSha}; A diffs and
       //   replies rebase{ops}. Same convergence machinery as an external splice.
       // Miss: nothing → empty placeholder + Want; A streams Chunks.
-      const hit = state.cas.lookup(op.sha)
+      const hit = state.cas.lookupAsync ? await state.cas.lookupAsync(op.sha) : state.cas.lookup(op.sha)
       let buf = editor.buffers.get(op.id)
       if (!buf) {
         buf = editor.addBuffer(new BufferModel({ id: op.id, name: op.path ?? op.id, path: op.path, text: hit ?? "", mode: op.mode }))
@@ -337,7 +337,7 @@ export function attachAuthority(editor: Editor, link: ShadowLink, opts?: AttachO
   editor.onAddBuffer = b => { hookAuthorityBuffer(b); prevOnAdd?.(b) }
   restore.push(() => { editor.onAddBuffer = prevOnAdd })
 
-  link.on(op => onAuthorityOp(editor, link, state, op))
+  link.on(op => void onAuthorityOp(editor, link, state, op))
 
   const detach = () => {
     if (state.flushTimer !== undefined) { clearTimeout(state.flushTimer); state.flushTimer = undefined }
@@ -387,7 +387,7 @@ export function flushExternal(editor: Editor): number {
 }
 
 /** A-side receive: S may send splice/point/command/have/want. Anything else is wrong-direction. */
-function onAuthorityOp(editor: Editor, link: ShadowLink, state: AuthorityState, op: ShadowOp): void {
+async function onAuthorityOp(editor: Editor, link: ShadowLink, state: AuthorityState, op: ShadowOp): Promise<void> {
   switch (op.kind) {
     case "have": {
       const buf = editor.buffers.get(op.id)
@@ -398,7 +398,7 @@ function onAuthorityOp(editor: Editor, link: ShadowLink, state: AuthorityState, 
         link.send({ kind: "ack", upTo: state.recvSeq })
         return
       }
-      const cached = state.cas.lookup(op.sha)
+      const cached = state.cas.lookupAsync ? await state.cas.lookupAsync(op.sha) : state.cas.lookup(op.sha)
       if (cached !== undefined) {
         // S has a stale version A can reconstruct → ship the diff as a rebase.
         // baseSeq=lastSeq so S applies on top with no rewind (same as flushExternal).

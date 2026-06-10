@@ -143,6 +143,17 @@ checkout, then `Want`.
 in-memory Map. `project-find-file` does a prefix scan; `dired` does a range
 read. Same access pattern as git's pack index.
 
+### fsRoot jail and symlinks
+
+`AuthorityFs` jails `want`/`manifest-req` to `fsRoot` via `resolve()` prefix
+check. This is **symlink-permeable**: a symlink inside the project that
+targets outside it will be followed. Same as git (`git add` follows
+in-worktree symlinks). This is correct for the single-user model (you put the
+symlink there; and the link's `{command:"spawn"}` is full RCE anyway). For a
+hypothetical multi-tenant A where untrusted projects share a host, swap in a
+`realpath()`-based check — but that breaks intentional symlinks (vendored
+deps, bazel-out, `packages/jemacs-core/*`), so it's not the default.
+
 ### Coherence failure modes
 
 - A's watcher misses a change → S stale until next full root-hash check

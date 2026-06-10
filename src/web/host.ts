@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto"
-import { existsSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { existsSync, watch as fsWatch } from "node:fs"
+import { readFile, readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Server, ServerWebSocket } from "bun"
 import type { Editor } from "../kernel/editor"
@@ -16,16 +16,46 @@ import type { SerializedDisplayModel } from "../display/serialize"
 import type { ViewportSize } from "../display/viewport"
 import { buildLogicalModel } from "../display/logical"
 import { webLayout } from "./web-layout"
+import type { FsLike } from "../shadow/manifest"
+import type { FsWatcher } from "../shadow/remote-runtime"
+import { announceBuffer, attachAuthority } from "../shadow/shadow"
+import { WsLink } from "../shadow/ws-link"
 
 export type WebHostOptions = {
   port?: number
   /** ms to wait for the auth message before closing a fresh socket. */
   authTimeoutMs?: number
+  /** Serve the browser-shadow bundle (`dist/shadow-web/editor.js`) and bridge
+   *  the WebSocket to `attachAuthority` instead of pushing display models. */
+  shadow?: boolean
+  /** Shadow mode: filesystem root for `manifest-req`/`want`. Defaults to cwd. */
+  fsRoot?: string
 }
 
 type SocketState = {
   authed: boolean
   authTimer?: ReturnType<typeof setTimeout>
+  /** Shadow mode: the per-connection authority link, set after auth. */
+  link?: WsLink
+  detach?: () => void
+}
+
+/** `FsLike` over `node:fs/promises` — what `attachAuthority` reads to answer
+ *  `manifest-req` / `want` ops in shadow mode. */
+const nodeFs: FsLike = {
+  stat: async p => { const s = await stat(p); return { mode: s.mode, size: s.size, mtime: s.mtimeMs } },
+  readdir: p => readdir(p),
+  readFile: p => readFile(p, "utf8"),
+}
+
+/** Recursive `fs.watch` adapted to the `FsWatcher` shape. */
+function nodeWatcher(root: string): FsWatcher {
+  return onChange => {
+    const w = fsWatch(root, { recursive: true }, (_ev, filename) => {
+      if (filename) onChange({ path: join(root, filename.toString()) })
+    })
+    return () => w.close()
+  }
 }
 
 const STATIC_ROUTES: Record<string, { file: string; type: string }> = {
@@ -51,6 +81,7 @@ export class WebHost implements UiHost {
 
   readonly token: string
   readonly port: number
+  readonly shadow: boolean
 
   private readonly server: Server<SocketState>
   private readonly distDir: string
@@ -58,6 +89,7 @@ export class WebHost implements UiHost {
   private readonly inputHandlers: InputHandler[] = []
   private readonly resizeHandlers: ResizeHandler[] = []
   private readonly authTimeoutMs: number
+  private readonly fsRoot: string
   private editor?: Editor
   private lastMessage = ""
   private lastModel: SerializedDisplayModel | null = null
@@ -69,14 +101,22 @@ export class WebHost implements UiHost {
     this.port = server.port ?? 0
     this.distDir = distDir
     this.authTimeoutMs = opts.authTimeoutMs ?? 5000
+    this.shadow = opts.shadow ?? false
+    this.fsRoot = opts.fsRoot ?? process.cwd()
   }
 
   static async create(opts: WebHostOptions = {}): Promise<WebHost> {
     const token = randomBytes(32).toString("hex")
-    const distDir = webDistDir()
-    if (!existsSync(join(distDir, "client-bridge.js"))) {
-      const { buildWebAssets } = await import("../../scripts/build-web")
-      await buildWebAssets()
+    const distDir = opts.shadow ? shadowDistDir() : webDistDir()
+    const entry = opts.shadow ? "editor.js" : "client-bridge.js"
+    if (!existsSync(join(distDir, entry))) {
+      if (opts.shadow) {
+        const { buildShadowWeb } = await import("../../scripts/build-shadow-web")
+        await buildShadowWeb()
+      } else {
+        const { buildWebAssets } = await import("../../scripts/build-web")
+        await buildWebAssets()
+      }
     }
     let host!: WebHost
     const server = Bun.serve<SocketState>({
@@ -112,7 +152,7 @@ export class WebHost implements UiHost {
   getViewport(): ViewportSize { return { rows: 48, cols: 160 } }
 
   present(_model: DisplayModel): void {
-    if (!this.editor) return
+    if (!this.editor || this.shadow) return
     const logical = buildLogicalModel(this.editor, {
       lastMessage: this.lastMessage,
       hostLabel: this.label,
@@ -136,6 +176,11 @@ export class WebHost implements UiHost {
     if (url.pathname === "/") {
       return new Response(this.html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
     }
+    if (this.shadow && url.pathname === "/editor.js") {
+      return new Response(Bun.file(join(this.distDir, "editor.js")), {
+        headers: { "Content-Type": "text/javascript" },
+      })
+    }
     const route = STATIC_ROUTES[url.pathname]
     if (route) {
       return new Response(Bun.file(join(this.distDir, route.file)), {
@@ -154,8 +199,16 @@ export class WebHost implements UiHost {
   }
 
   private async loadHtml(): Promise<string> {
-    const raw = await readFile(join(this.distDir, "renderer.html"), "utf8")
     const inject = `<script>window.__JEMACS_TOKEN__=${JSON.stringify(this.token)}</script>`
+    if (this.shadow) {
+      // The shadow bundle auto-mounts when it finds these ids; the editor
+      // renders locally so no thin-client CSS/shell is needed.
+      return `<!doctype html><html><head><meta charset="utf-8"><title>Jemacs Shadow</title>${inject}</head>`
+        + `<body><div id="jemacs-root"><div id="jemacs-title"></div><div id="jemacs-windows"></div>`
+        + `<div id="jemacs-minibuffer"></div><div id="jemacs-echo"></div></div>`
+        + `<script type="module" src="/editor.js"></script></body></html>`
+    }
+    const raw = await readFile(join(this.distDir, "renderer.html"), "utf8")
     return raw.replace("</head>", `  ${inject}\n</head>`)
   }
 
@@ -168,6 +221,7 @@ export class WebHost implements UiHost {
   }
 
   private wsMessage(ws: ServerWebSocket<SocketState>, raw: string | Buffer): void {
+    if (ws.data.link) { ws.data.link._recv(raw); return }
     let msg: unknown
     try { msg = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8")) }
     catch { ws.close(1003, "bad json"); return }
@@ -176,6 +230,7 @@ export class WebHost implements UiHost {
       ws.data.authed = true
       if (ws.data.authTimer) clearTimeout(ws.data.authTimer)
       this.sockets.add(ws)
+      if (this.shadow) { this.attachShadowLink(ws); return }
       if (this.lastModel) ws.send(JSON.stringify(this.lastModel))
       return
     }
@@ -184,8 +239,24 @@ export class WebHost implements UiHost {
     for (const handler of this.inputHandlers) void handler(input)
   }
 
+  /** Shadow mode: wrap the authed socket as an authority-role `WsLink` and
+   *  let `attachAuthority` serve manifest/chunks from `fsRoot`. */
+  private attachShadowLink(ws: ServerWebSocket<SocketState>): void {
+    if (!this.editor) { ws.close(1011, "no editor"); return }
+    const link = new WsLink(ws, { role: "authority", trust: "full", peerId: String(ws.remoteAddress ?? "ws") })
+    ws.data.link = link
+    ws.data.detach = attachAuthority(this.editor, link, {
+      fs: nodeFs,
+      fsRoot: this.fsRoot,
+      watcher: nodeWatcher(this.fsRoot),
+    })
+    for (const buf of this.editor.buffers.values()) announceBuffer(this.editor, buf.id)
+  }
+
   private wsClose(ws: ServerWebSocket<SocketState>): void {
     if (ws.data.authTimer) clearTimeout(ws.data.authTimer)
+    ws.data.link?._closed()
+    ws.data.detach?.()
     this.sockets.delete(ws)
   }
 
@@ -215,4 +286,10 @@ function webDistDir(): string {
   const home = process.env.JEMACS_HOME
   if (home) return join(home, "dist/web")
   return join(import.meta.dirname, "..", "..", "dist", "web")
+}
+
+function shadowDistDir(): string {
+  const home = process.env.JEMACS_HOME
+  if (home) return join(home, "dist/shadow-web")
+  return join(import.meta.dirname, "..", "..", "dist", "shadow-web")
 }

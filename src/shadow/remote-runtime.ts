@@ -85,9 +85,9 @@ export function createRemoteRuntime(link: ShadowLink, manifest: ManifestCache, c
   }
 
   /** CAS hit → return; miss → Want over the link, assemble Chunks, write CAS. */
-  function fetch(id: string, sha: string): Promise<string> {
-    const hit = cas.lookup(sha)
-    if (hit !== undefined) return Promise.resolve(hit)
+  async function fetch(id: string, sha: string): Promise<string> {
+    const hit = cas.lookupAsync ? await cas.lookupAsync(sha) : cas.lookup(sha)
+    if (hit !== undefined) return hit
     if (!wantWaiters.has(id)) link.send({ kind: "want", id })
     return new Promise(resolve => {
       let list = wantWaiters.get(id)

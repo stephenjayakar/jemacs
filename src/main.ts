@@ -21,12 +21,13 @@ async function main(): Promise<void> {
   if (serveStdio) console.log = console.error
 
   const web = Bun.argv.includes("--web")
+  const shadow = Bun.argv.includes("--shadow")
   const portIdx = Bun.argv.indexOf("--port")
   const webPort = portIdx >= 0 ? Number(Bun.argv[portIdx + 1]) : undefined
 
   installDefaultModes()
   const editor = new Editor()
-  const ignored = new Set(["--gui", "--smoke-gui", "--serve-stdio", "--web", "--port"])
+  const ignored = new Set(["--gui", "--smoke-gui", "--serve-stdio", "--web", "--shadow", "--port"])
   if (portIdx >= 0 && Bun.argv[portIdx + 1] != null) ignored.add(Bun.argv[portIdx + 1]!)
   const args = parseStartupArgs(Bun.argv, ignored)
   const evaluator = installDefaultConfig(editor)
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
 
   if (web) {
     const { createWebHost } = await import("./web/host")
-    const host = await createWebHost({ port: webPort })
+    const host = await createWebHost({ port: webPort, shadow })
     host.attachEditor(editor)
     console.log(`Web: http://127.0.0.1:${host.port}/`)
     await runJemacs(editor, host)

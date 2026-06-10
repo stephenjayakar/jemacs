@@ -23,9 +23,16 @@ export function casPath(sha: string): string {
  * Content-addressed store keyed by sha256(text). `lookup` returns the exact text
  * that hashes to `sha`, or undefined if absent. `write` stores `text` and returns
  * its sha. Both sides of a shadow link have their own Cas; they need not share.
+ *
+ * `lookupAsync` is for backends with no sync read path (IndexedDB). Callers
+ * branch on its presence — `cas.lookupAsync ? await cas.lookupAsync(sha) :
+ * cas.lookup(sha)` — so a sync Cas takes no microtask yield (the DST drain
+ * relies on that). A Cas that only implements `lookupAsync` should return
+ * `undefined` from `lookup` (sync miss → falls through to Want).
  */
 export interface Cas {
   lookup(sha: string): string | undefined
+  lookupAsync?(sha: string): Promise<string | undefined>
   write(text: string): string
 }
 

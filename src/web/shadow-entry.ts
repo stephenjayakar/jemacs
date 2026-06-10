@@ -4,9 +4,9 @@
  * attached to a remote authority over a WebSocket. Built by
  * `scripts/build-shadow-web.ts` → `dist/shadow-web/editor.js`.
  *
- * Phase-5 scope (DESIGN.md §Filesystem replica): no local FS — `readFile` /
- * `spawn` / `stat` throw `NotImplementedInBrowser` via `node-stubs.ts`. All
- * buffer content arrives over the link (`BufferRef` → CAS or `Chunk`).
+ * Phase-6 (DESIGN.md §Filesystem replica): `find-file` / `dired` /
+ * `save-buffer` route through a manifest+CAS-backed `PlatformRuntime`. Content
+ * persists across reloads in IndexedDB so reconnect is a `Have`, not a re-stream.
  */
 
 import { Editor } from "../kernel/editor"
@@ -14,27 +14,15 @@ import { installDefaultConfig } from "../config"
 import { installLisp } from "../../lisp"
 import { installDefaultModes } from "../modes/default-modes"
 import { attachShadow } from "../shadow/shadow"
-import { MemCas } from "../shadow/cas"
+import { MemCas, type Cas } from "../shadow/cas"
+import { ManifestCache } from "../shadow/manifest"
+import { createRemoteRuntime } from "../shadow/remote-runtime"
 import { WsLink, connectWs } from "../shadow/ws-link"
-import { setPlatformRuntime } from "../platform/runtime"
+import { IdbCas } from "./idb-cas"
 import { buildLogicalModel } from "../display/logical"
 import { webLayout } from "./web-layout"
 import { presentDomFrame, type DomFrameTargets } from "../display/dom-frame"
 import { domKeyFromKeyboardEvent, isDomModifierOnlyKey } from "../electron/dom-key"
-
-function notImplemented(name: string): never {
-  throw new Error(`${name}: not implemented in browser shadow (phase-6 supplies the manifest+CAS-backed runtime)`)
-}
-
-// Phase-6 swaps this for the manifest+CAS-backed impl; until then every
-// platform call that escapes the link is a loud failure, not silent emptiness.
-setPlatformRuntime({
-  readFileText: path => notImplemented(`readFileText(${path})`),
-  writeFileText: path => notImplemented(`writeFileText(${path})`),
-  fileExists: async () => false,
-  spawnProcess: () => notImplemented("spawnProcess"),
-  whichExecutable: () => null,
-})
 
 export type ShadowMountOptions = {
   /** Defaults to `ws://${location.host}/shadow`. */
@@ -69,9 +57,17 @@ export function mountShadowEditor(options: ShadowMountOptions = {}): { editor: E
     catch (err) { console.warn("[shadow] default config partially loaded:", err) }
   }
 
-  const wsUrl = options.wsUrl ?? `ws://${location.host}/shadow`
+  const wsUrl = options.wsUrl ?? `ws://${location.host}/ws`
   const link = connectWs(wsUrl)
-  attachShadow(editor, link, { cas: new MemCas() })
+  // Host gates the socket on `{type:"auth",token}` before forwarding ShadowOps;
+  // connectWs queues until OPEN, so sending this first guarantees it lands first.
+  const token = (globalThis as { __JEMACS_TOKEN__?: string }).__JEMACS_TOKEN__
+  if (token) link.send({ type: "auth", token } as unknown as Parameters<typeof link.send>[0])
+  // IdbCas needs `indexedDB`; fall back to MemCas in test sandboxes that lack it.
+  const cas: Cas = typeof indexedDB !== "undefined" ? new IdbCas() : new MemCas()
+  const manifest = new ManifestCache()
+  const runtime = createRemoteRuntime(link, manifest, cas)
+  attachShadow(editor, link, { cas, runtime })
 
   const targets = options.targets ?? defaultTargets()
   let lastMessage = ""
@@ -99,10 +95,11 @@ export function mountShadowEditor(options: ShadowMountOptions = {}): { editor: E
 // Exposed so the bundle test (and a hosting page's inline script) can reach
 // these without an import map.
 
-export { Editor, attachShadow, connectWs, WsLink, MemCas, installDefaultConfig, installLisp }
+export { Editor, attachShadow, connectWs, WsLink, MemCas, IdbCas, installDefaultConfig, installLisp }
 
 ;(globalThis as Record<string, unknown>).JemacsShadow = {
-  Editor, attachShadow, connectWs, WsLink, MemCas,
+  Editor, attachShadow, connectWs, WsLink, MemCas, IdbCas,
+  ManifestCache, createRemoteRuntime,
   installDefaultConfig, installLisp, installDefaultModes,
   buildLogicalModel, webLayout, presentDomFrame,
   mountShadowEditor,
