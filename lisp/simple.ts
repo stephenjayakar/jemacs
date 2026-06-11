@@ -544,6 +544,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     }
     const rectangle = extractRectangle(buffer, prefixArgument != null)
     editor.registers.set(register, { kind: "rectangle", lines: rectangle.split("\n") })
+    buffer.markActive = false
     editor.message(`Copied rectangle to register ${register}`)
   }, "Copy rectangular region into register; with prefix arg, delete it.")
 
@@ -922,7 +923,7 @@ function replaceRectangle(buffer: BufferModel, mode: RectangleEditMode, replacem
   }).join("\n")
   buffer.setText(rebuilt, true)
   buffer.point = start
-  buffer.clearMark()
+  buffer.markActive = false
 }
 
 function replaceRegionText(buffer: BufferModel, transform: (text: string) => string): void {
@@ -950,7 +951,7 @@ function numberRectangle(buffer: BufferModel, startAt: number, format: string): 
   }).join("\n")
   buffer.setText(rebuilt, true)
   buffer.point = start
-  buffer.clearMark()
+  buffer.markActive = false
 }
 
 function defaultRectangleLineNumberFormat(rect: { startLine: number; endLine: number }, startAt: number): string {

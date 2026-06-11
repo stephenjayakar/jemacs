@@ -59,7 +59,7 @@ test("copy-rectangle-to-register stores rectangle and prefix deletes it", async 
   expect(editor.registers.get("r")).toEqual({ kind: "rectangle", lines: ["bc", "hi", "no"] })
   expect(buffer.text).toBe("adef\ngjkl\nmpqr")
   expect(buffer.point).toBe(1)
-  expect(buffer.mark).toBeNull()
+  expect(buffer.markActive).toBe(false)
 })
 
 test("delete-rectangle deletes without saving to the kill ring", async () => {
@@ -130,7 +130,7 @@ test("rectangle-number-lines inserts formatted numbers at the rectangle edge", a
 
   expect(buffer.text).toBe("a[7] bcdef\ng[8] hijkl\nm[9] nopqr")
   expect(buffer.point).toBe(1)
-  expect(buffer.mark).toBeNull()
+  expect(buffer.markActive).toBe(false)
 })
 
 test("rectangle-number-lines uses Emacs default format and pads to the rectangle column", async () => {
