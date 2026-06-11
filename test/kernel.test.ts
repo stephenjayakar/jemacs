@@ -220,6 +220,38 @@ test("kill-line reports end of buffer only without an explicit prefix", async ()
   expect(messages).toEqual(["End of buffer"])
 })
 
+test("kill-line on read-only buffer signals error", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello world", false)
+  buffer.readOnly = true
+  buffer.point = 0
+  await expect(editor.run("kill-line")).rejects.toThrow(/read-only/i)
+})
+
+test("downcase-region on read-only buffer signals error", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("Hello World", false)
+  buffer.readOnly = true
+  buffer.point = 0
+  buffer.mark = 5
+  await expect(editor.run("downcase-region")).rejects.toThrow(/read-only/i)
+})
+
+test("upcase-region on read-only buffer signals error", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("Hello World", false)
+  buffer.readOnly = true
+  buffer.point = 0
+  buffer.mark = 5
+  await expect(editor.run("upcase-region")).rejects.toThrow(/read-only/i)
+})
+
 test("default emacs keybindings are registered and runnable", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
@@ -355,6 +387,65 @@ test("move-end-of-line zero prefix moves to previous line end", async () => {
   editor.prefixArg.addDigit(0)
   await editor.run("move-end-of-line")
   expect(buffer.point).toBe(2)
+})
+
+test("move-beginning-of-line no prefix moves to column 0", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello\nworld", false)
+  buffer.point = 4
+
+  await editor.run("move-beginning-of-line")
+  expect(buffer.point).toBe(0)
+})
+
+test("move-beginning-of-line with positive prefix moves down N-1 lines then to start", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("aa\nbb\ncc\ndd", false)
+  buffer.point = 0
+
+  editor.prefixArg.addDigit(3)
+  await editor.run("move-beginning-of-line")
+  expect(buffer.point).toBe(6)
+})
+
+test("move-beginning-of-line with zero prefix moves to previous line start", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("aa\nbb\ncc", false)
+  buffer.point = 6
+
+  editor.prefixArg.addDigit(0)
+  await editor.run("move-beginning-of-line")
+  expect(buffer.point).toBe(3)
+})
+
+test("move-beginning-of-line with negative prefix stops at buffer start", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("aa\nbb\ncc\ndd", false)
+  buffer.point = 6
+
+  editor.prefixArg.toggleNegative()
+  editor.prefixArg.addDigit(2)
+  await editor.run("move-beginning-of-line")
+  expect(buffer.point).toBe(0)
+})
+
+test("move-beginning-of-line on first line stays at position 0", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello", false)
+  buffer.point = 3
+
+  await editor.run("move-beginning-of-line")
+  expect(buffer.point).toBe(0)
 })
 
 test("forward-word and backward-word return false when reaching buffer edge", async () => {
