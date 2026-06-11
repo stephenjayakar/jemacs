@@ -1174,6 +1174,17 @@ test("C-c C-r uses revert-buffer", () => {
   expect(editor.keymaps.feed({ name: "r", ctrl: true })).toMatchObject({ status: "matched", command: "revert-buffer" })
 })
 
+test("switch-to-buffer excludes minibuffer from completions", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.completingRead("test: ", { collection: [] })
+  const names = [...editor.buffers.values()].filter(b => b.kind !== "minibuffer").map(b => editor.bufferDisplayName(b))
+  const wb = [...editor.buffers.values()].map(b => editor.bufferDisplayName(b))
+  expect(wb.length).toBeGreaterThan(names.length)
+  expect(names.includes("*Minibuf-0*")).toBe(false)
+  editor.minibufferCancel()
+})
+
 test("kernel handles printable, command, prefix, and minibuffer keys through one dispatcher", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)

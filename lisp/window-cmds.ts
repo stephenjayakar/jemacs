@@ -250,7 +250,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const defaultBuffer = editor.otherBuffer()
     const defaultName = defaultBuffer ? editor.bufferDisplayName(defaultBuffer) : ""
     const prompt = defaultName ? `Switch to buffer (default ${defaultName}): ` : "Switch to buffer: "
-    const input = args[0] ?? await editor.completingRead(prompt, { collection: [...editor.buffers.values()].map(b => editor.bufferDisplayName(b)), history: "buffer" })
+    const input = args[0] ?? await editor.completingRead(prompt, { collection: [...editor.buffers.values()].filter(b => b.kind !== "minibuffer").map(b => editor.bufferDisplayName(b)), history: "buffer" })
     const name = input || defaultName
     if (!name) return
     const buffer = editor.switchToBuffer(name)
