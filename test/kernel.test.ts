@@ -1167,6 +1167,70 @@ test("isearch enter exits and clears stale prompt echo", async () => {
   expect(lastMessage).toBe("")
 })
 
+test("isearch-exit command exits isearch and clears message", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("foo bar foo", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward")
+  expect(editor.isearch).not.toBeNull()
+  await editor.run("isearch-exit")
+  expect(editor.isearch).toBeNull()
+})
+
+test("isearch-repeat-forward repeats in forward direction", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("foo foo foo", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward")
+  await editor.handleKey({ name: "f", sequence: "f" })
+  expect(editor.currentBuffer.point).toBe(1)
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(5)
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(9)
+})
+
+test("isearch-repeat-forward starts new search when none active", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("foo", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-repeat-forward")
+  expect(editor.isearch?.direction).toBe(1)
+})
+
+test("replace-string with case-fold finds case-insensitive matches", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("Foo FOO foo", false)
+  editor.currentBuffer.point = 0
+  await editor.run("replace-string", ["foo", "bar"])
+  expect(editor.currentBuffer.text).toBe("bar bar bar")
+})
+
+test("replace-string with case-fold disabled is case-sensitive", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("Foo FOO foo", false)
+  buffer.locals["case-fold-search"] = false
+  await editor.run("replace-string", ["foo", "bar"])
+  expect(buffer.text).toBe("Foo FOO bar")
+})
+
+test("query-replace respects region when mark is active", async () => {
+  const { script, keySeq } = await import("./harness")
+  const ed = await script({ plugins: false }).text("foo foo foo").point(0).done()
+  ed.currentBuffer.mark = 7
+  ed.currentBuffer.markActive = true
+  const done = ed.run("query-replace", ["foo", "bar"])
+  await keySeq(ed, "!")
+  await done
+  expect(ed.currentBuffer.text).toBe("bar bar foo")
+})
+
 test("find-file prompt defaults to dired buffer directory", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   installDefaultModes()

@@ -660,9 +660,19 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     const to = args[1] ?? await editor.prompt(`Replace ${from} with: `, "", "replace")
     if (to == null) return
     const region = buffer.mark == null || buffer.mark === buffer.point ? { start: 0, end: buffer.text.length } : { start: Math.min(buffer.mark, buffer.point), end: Math.max(buffer.mark, buffer.point) }
-    const replaced = buffer.text.slice(region.start, region.end).split(from).join(to)
+    const text = buffer.text.slice(region.start, region.end)
+    const flags = isSearchCaseFold(buffer) ? "gi" : "g"
+    const replaced = text.replace(new RegExp(escapeRegex(from), flags), to)
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
+
+  function isSearchCaseFold(buffer: BufferModel): boolean {
+    return buffer.locals["case-fold-search"] ?? true
+  }
+
+  function escapeRegex(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }
 
   // Kernel has no removeOverlaySource yet, so register the source once per
   // Editor (defvar/WeakMap, like kill-ring) and have each install reuse the
@@ -681,36 +691,48 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     if (!from) return
     const to = args[1] ?? await editor.prompt(`Replace ${from} with: `, "", "query-replace")
     if (to == null) return
+    const useRegion = buffer.mark != null && buffer.mark !== buffer.point
+    const regionStart = useRegion ? Math.min(buffer.mark!, buffer.point) : 0
+    let regionEnd = useRegion ? Math.max(buffer.mark!, buffer.point) : 0
     let index = buffer.point
+    if (useRegion && index < regionStart) index = regionStart
+    if (useRegion && index > regionEnd) index = regionEnd
     let count = 0
     let all = false
     qr!.buffer = buffer
     const trail: Array<{ at: number; replaced: boolean }> = []
+    const caseFold = isSearchCaseFold(buffer)
+    const re = new RegExp(escapeRegex(from), caseFold ? "gi" : "g")
     try {
-    while (index <= buffer.text.length) {
-      const at = buffer.text.indexOf(from, index)
-      if (at === -1) break
+    while (index <= (useRegion ? regionEnd : buffer.text.length)) {
+      const searchEnd = useRegion ? regionEnd : buffer.text.length
+      const slice = buffer.text.slice(index, searchEnd)
+      re.lastIndex = 0
+      const match = re.exec(slice)
+      if (!match) break
+      const at = index + match.index
+      const matchLen = match[0].length
       buffer.point = at
-      qr!.spans = [{ start: at, end: at + from.length, face: "isearch" }]
+      qr!.spans = [{ start: at, end: at + matchLen, face: "isearch" }]
       const key = all ? "y" : await readKey(editor, `Query replacing ${from} with ${to}: (y n q ! . ^) `)
       if (key === null || key === "q" || key === "enter" || key === "esc") break
       if (key === "y" || key === "space" || key === "!" || key === ".") {
-        buffer.replaceRange(at, at + from.length, to)
+        buffer.replaceRange(at, at + matchLen, to)
         trail.push({ at, replaced: true })
         index = at + to.length
+        if (useRegion) regionEnd += to.length - matchLen
         count++
         if (key === "!") all = true
         if (key === ".") break
       } else if (key === "n" || key === "backspace") {
         trail.push({ at, replaced: false })
-        index = at + from.length
+        index = at + matchLen
       } else if (key === "^") {
         const prev = trail.pop()
         if (!prev) { editor.message("No previous match"); continue }
         if (prev.replaced) { buffer.replaceRange(prev.at, prev.at + to.length, from); count-- }
         index = prev.at
       }
-      // any other key: re-prompt at the same match
     }
     } finally {
       qr!.spans = []

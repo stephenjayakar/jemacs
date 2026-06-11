@@ -66,6 +66,29 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     else editor.startIsearch(-1)
   }, "Incremental search backward.")
 
+  editor.command("isearch-exit", ({ editor }) => {
+    editor.endIsearch()
+    editor.clearMessage()
+  }, "Exit isearch and move point to the current match.")
+
+  editor.command("isearch-repeat-forward", ({ editor }) => {
+    if (editor.isearch) {
+      editor.isearch.direction = 1
+      editor.isearchRepeat()
+    } else {
+      editor.startIsearch(1)
+    }
+  }, "Repeat incremental search forward.")
+
+  editor.command("isearch-repeat-backward", ({ editor }) => {
+    if (editor.isearch) {
+      editor.isearch.direction = -1
+      editor.isearchRepeat()
+    } else {
+      editor.startIsearch(-1)
+    }
+  }, "Repeat incremental search backward.")
+
   editor.key("C-s", "isearch-forward")
   editor.key("C-r", "isearch-backward")
 }

@@ -124,10 +124,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await spawnTerminalBuffer(editor, { argv: [shell, "-lc", command], name: `*jterm*<${command}>` })
   }, "Run a one-shot shell command in a jterm buffer.")
 
-  editor.command("opencode", async ({ editor }) => {
-    await spawnTerminalBuffer(editor, { argv: ["opencode"], name: "*opencode*" })
-  }, "Run opencode in a jterm buffer.")
-
   // ---- char-mode / copy-mode ----
 
   editor.command("jterm-char-mode", ({ buffer, editor }) => {
