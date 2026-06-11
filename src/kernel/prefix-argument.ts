@@ -1,3 +1,14 @@
+/** Describes the raw prefix shape before collapsing to a single numeric value. */
+export type RawPrefixShape =
+  /** No prefix was given. */
+  | { kind: "none" }
+  /** Plain `C-u` (or repeated `C-u`), no digits typed. `value` = 4, 16, 64, … */
+  | { kind: "plain-cu"; value: number }
+  /** Bare `M--` with no digits. */
+  | { kind: "bare-negative" }
+  /** Explicit numeric value from digits (`C-u N`, `M-- N`, `C-u 0`, bare digit prefix). */
+  | { kind: "explicit"; value: number }
+
 /** GNU Emacs-style numeric prefix argument state (C-u, M--, digit keys). */
 export class PrefixArgumentState {
   private value: number | null = null
@@ -55,6 +66,26 @@ export class PrefixArgumentState {
     return null
   }
 
+  /** Compute the raw prefix shape from the current state (without clearing). */
+  rawShape(): RawPrefixShape {
+    if (this.digitString != null) {
+      const n = parseInt(this.digitString, 10)
+      return { kind: "explicit", value: this.negative ? -n : n }
+    }
+    if (this.value != null) return { kind: "plain-cu", value: this.peek()! }
+    if (this.negative) return { kind: "bare-negative" }
+    return { kind: "none" }
+  }
+
+  /** Consume prefix, returning both the raw shape and the computed numeric value. */
+  consumeRaw(): { raw: RawPrefixShape; value: number | null } {
+    const raw = this.rawShape()
+    const value = this.peek()
+    this.clear()
+    return { raw, value }
+  }
+
+  /** Legacy: consume and return only the numeric value. */
   consume(): number | null {
     const n = this.peek()
     this.clear()

@@ -1,6 +1,7 @@
 import type { BufferModel } from "./buffer"
 import type { Editor } from "./editor"
 import type { KeyEventLike } from "./keymap"
+import type { RawPrefixShape } from "./prefix-argument"
 import { registerCatalogEntry } from "../runtime/definitions"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
@@ -10,6 +11,10 @@ export type CommandContext = {
   buffer: BufferModel
   args: string[]
   prefixArgument: number | null
+  /** Raw prefix shape before collapsing to a single number.
+   *  Use this when behavior depends on how the prefix was specified
+   *  (plain C-u vs typed digits, bare M--, explicit zero, etc.). */
+  rawPrefixShape: RawPrefixShape
   /** Key that triggered this command via dispatchKey; null when run programmatically.
    *  Prefer this over editor.lastKeyEvent, which a later key can overwrite mid-dispatch. */
   keyEvent: KeyEventLike | null

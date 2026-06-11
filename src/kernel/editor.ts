@@ -4,7 +4,7 @@ import { BufferModel } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
 import { isPrintable, Keymap, KeymapStack, keyToken, normalizeSequence, type KeyEventLike } from "./keymap"
-import { digitFromKey, PrefixArgumentState } from "./prefix-argument"
+import { digitFromKey, PrefixArgumentState, type RawPrefixShape } from "./prefix-argument"
 import type {
   CompletionCandidate,
   MinorModeSpec as MinorMode,
@@ -666,12 +666,14 @@ export class Editor {
       throw new Error(`Unknown command: ${name}`)
     }
     const buildsPrefix = name === "universal-argument" || name === "negative-argument" || name === "digit-argument"
-    const prefixArgument = buildsPrefix ? null : this.consumePrefixArgument()
+    const { raw: rawPrefixShape, value: prefixArgument } = buildsPrefix
+      ? { raw: { kind: "none" } as const, value: null }
+      : this.consumePrefixRaw()
     let runArgs = args
     if (typeof spec.interactive === "string" && !runArgs.length) {
       runArgs = await readInteractiveArgs(this, spec.interactive)
     }
-    const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, keyEvent }
+    const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, rawPrefixShape, keyEvent }
     this.clearMessage()
     const result = await invokeWithAdvice(name, spec.fn, ctx)
     await this.runHook("post-command-hook", this.activeBuffer)
@@ -1080,8 +1082,8 @@ export class Editor {
     return true
   }
 
-  private consumePrefixArgument(): number | null {
-    return this.prefixArg.consume()
+  private consumePrefixRaw(): { raw: RawPrefixShape; value: number | null } {
+    return this.prefixArg.consumeRaw()
   }
 
   startIsearch(direction: 1 | -1): void {
