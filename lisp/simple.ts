@@ -638,6 +638,22 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     replaceRegionText(buffer, text => text.toLowerCase())
   }, "Convert the region to lower case.")
 
+  editor.command("upcase-region", ({ buffer, editor }) => {
+    if (buffer.mark == null) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+    replaceRegionText(buffer, text => text.toUpperCase())
+  }, "Convert the region to upper case.")
+
+  editor.command("capitalize-region", ({ buffer, editor }) => {
+    if (buffer.mark == null) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+    replaceRegionText(buffer, text => text.replace(/\b(\w)/g, (_, c) => c.toUpperCase()))
+  }, "Convert the region to capitalized words.")
+
   editor.command("replace-string", async ({ buffer, editor, args }) => {
     const from = args[0] ?? await editor.prompt("Replace string: ", "", "replace")
     if (!from) return
@@ -766,6 +782,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.key("C-/", "undo")
   editor.key("C-x u", "undo")
   editor.key("C-x C-l", "downcase-region")
+  editor.key("C-x C-u", "upcase-region")
 
   editor.key("C-c r", "replace-string")
   editor.key("M-%", "query-replace")

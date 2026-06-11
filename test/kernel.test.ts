@@ -999,6 +999,68 @@ test("downcase-region converts region text and preserves point and mark", async 
   expect(buffer.markActive).toBe(true)
 })
 
+test("upcase-region converts region text and preserves point and mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("AbC DeF", false)
+  buffer.point = 1
+  buffer.mark = 5
+  buffer.markActive = true
+
+  await editor.run("upcase-region")
+
+  expect(buffer.text).toBe("ABC DeF")
+  expect(buffer.point).toBe(1)
+  expect(buffer.mark).toBe(5)
+  expect(buffer.markActive).toBe(true)
+})
+
+test("upcase-region reports no mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("test", false)
+  buffer.point = 0
+  buffer.mark = null
+
+  await editor.run("upcase-region")
+  expect(buffer.text).toBe("test")
+})
+
+test("capitalize-region converts region text", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello world foo", false)
+  buffer.point = 0
+  buffer.mark = 16
+  buffer.markActive = true
+
+  await editor.run("capitalize-region")
+
+  expect(buffer.text).toBe("Hello World Foo")
+})
+
+test("capitalize-region reports no mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("test", false)
+  buffer.point = 0
+  buffer.mark = null
+
+  await editor.run("capitalize-region")
+  expect(buffer.text).toBe("test")
+})
+
+test("C-x C-u is bound to upcase-region", () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  expect(editor.keymaps.feed({ name: "x", ctrl: true }).status).toBe("pending")
+  expect(editor.keymaps.feed({ name: "u", ctrl: true })).toMatchObject({ status: "matched", command: "upcase-region" })
+})
+
 test("help keybindings keep C-h as a prefix", () => {
   const editor = new Editor()
   installDefaultCommands(editor)
