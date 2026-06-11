@@ -7,6 +7,7 @@ export type IsearchState = {
   startPoint: number
   regexp?: boolean
   match?: IsearchMatch
+  wrapped?: boolean
 }
 
 export type IsearchMatch = { start: number; end: number }

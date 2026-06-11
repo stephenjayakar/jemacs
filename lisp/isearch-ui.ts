@@ -89,6 +89,37 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
   }, "Repeat incremental search backward.")
 
+  editor.command("isearch-forward-word", ({ editor }) => {
+    const buffer = editor.activeBuffer
+    const word = thingAtPoint(buffer.text, buffer.point, /\w+/)
+    if (word) {
+      editor.startIsearch(1)
+      editor.setIsearchString(word)
+    } else {
+      editor.startIsearch(1)
+    }
+  }, "Incremental search forward for the word at point.")
+
+  editor.command("isearch-forward-symbol", ({ editor }) => {
+    const buffer = editor.activeBuffer
+    const sym = thingAtPoint(buffer.text, buffer.point, /[a-zA-Z0-9_\-+*\/<>=!?]+/)
+    if (sym) {
+      editor.startIsearch(1)
+      editor.setIsearchString(sym)
+    } else {
+      editor.startIsearch(1)
+    }
+  }, "Incremental search forward for the symbol at point.")
+
   editor.key("C-s", "isearch-forward")
   editor.key("C-r", "isearch-backward")
+}
+
+function thingAtPoint(text: string, point: number, pattern: RegExp): string | null {
+  pattern.lastIndex = 0
+  let match
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index <= point && point <= match.index + match[0].length) return match[0]
+  }
+  return null
 }

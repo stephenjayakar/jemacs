@@ -1292,6 +1292,66 @@ test("isearch-repeat-forward starts new search when none active", async () => {
   expect(editor.isearch?.direction).toBe(1)
 })
 
+test("isearch-repeat-forward wraps around buffer on last match", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const messages: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) messages.push(text) })
+  editor.currentBuffer.setText("foo bar foo", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward")
+  await editor.handleKey({ name: "f", sequence: "f" })
+  expect(editor.currentBuffer.point).toBe(1)
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(9)
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(1)
+  expect(messages.some(m => m.includes("wrapped"))).toBe(true)
+})
+
+test("isearch-repeat-forward wraps and shows wrapped message", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  let lastMessage = ""
+  editor.events.on("message", ({ text }) => { lastMessage = text })
+  editor.currentBuffer.setText("abc abc", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward")
+  await editor.handleKey({ name: "a", sequence: "a" })
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(5)
+  await editor.run("isearch-repeat-forward")
+  expect(editor.currentBuffer.point).toBe(1)
+  expect(lastMessage).toContain("wrapped")
+})
+
+test("isearch-forward-word starts isearch with word at point", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("hello world", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward-word")
+  expect(editor.isearch?.string).toBe("hello")
+})
+
+test("isearch-forward-word with no word at point starts empty search", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("  ", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward-word")
+  expect(editor.isearch?.string).toBe("")
+})
+
+test("isearch-forward-symbol starts isearch with symbol at point", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  editor.currentBuffer.setText("foo-bar baz", false)
+  editor.currentBuffer.point = 0
+  await editor.run("isearch-forward-symbol")
+  expect(editor.isearch?.string).toBe("foo-bar")
+})
+
 test("replace-string with case-fold finds case-insensitive matches", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)

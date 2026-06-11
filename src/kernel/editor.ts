@@ -1104,15 +1104,23 @@ export class Editor {
     }
     const buffer = this.buffers.get(state.bufferId)
     if (!buffer) return
-    const match = state.direction === 1
+    let match = state.direction === 1
       ? findMatchForward(buffer.text, state.string, buffer.point, state.regexp ?? false)
       : findMatchBackward(buffer.text, state.string, buffer.point, state.regexp ?? false)
     if (match == null) {
-      this.message(`Search failed: ${state.string}`)
-      return
+      const wrapPoint = state.direction === 1 ? 0 : buffer.text.length
+      match = state.direction === 1
+        ? findMatchForward(buffer.text, state.string, wrapPoint, state.regexp ?? false)
+        : findMatchBackward(buffer.text, state.string, wrapPoint, state.regexp ?? false)
+      if (match == null) {
+        this.message(`Search failed: ${state.string}`)
+        return
+      }
+      state.wrapped = true
     }
     this.applyIsearchMatch(buffer, state, match)
-    this.message(isearchPrompt(state))
+    const prompt = isearchPrompt(state) + (state.wrapped ? " (wrapped)" : "")
+    this.message(prompt)
     void this.changed("isearch-repeat")
   }
 
