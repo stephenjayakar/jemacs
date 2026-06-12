@@ -11,8 +11,7 @@ const S_IFDIR = 0o040000
 // bypassing the PlatformRuntime seam — in --web --shadow the stub throws,
 // so find-file on a directory never reached dired and auto-save cleanup
 // never hit the remote.
-// dired.ts (makeDiredBuffer→readdir) still bypasses — t-dog-0f5f6b54 follow-up.
-test.failing("openFile consults PlatformRuntime.stat for the directory check (blocked on dired.ts seam)", async () => {
+test("openFile consults PlatformRuntime.stat for the directory check", async () => {
   const stats: string[] = []
   setPlatformRuntime({
     stat: async p => { stats.push(p); return { mode: S_IFDIR | 0o755, size: 0, mtime: 0 } },

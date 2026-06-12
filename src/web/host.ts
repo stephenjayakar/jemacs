@@ -1,5 +1,5 @@
-import { randomBytes, timingSafeEqual } from "node:crypto"
-import { existsSync, watch as fsWatch } from "node:fs"
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
+import { watch as fsWatch } from "node:fs"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Server, ServerWebSocket } from "bun"
@@ -133,7 +133,13 @@ export class WebHost implements UiHost {
     const token = randomBytes(32).toString("hex")
     const distDir = opts.shadow ? shadowDistDir() : webDistDir()
     const entry = opts.shadow ? "editor.js" : "client-bridge.js"
-    if (!existsSync(join(distDir, entry))) {
+    const root = repoRoot()
+    const srcRoots = opts.shadow
+      ? ["src", "lisp", "plugins", "scripts/build-shadow-web.ts"].map(p => join(root, p))
+      : ["src", "scripts/build-web.ts"].map(p => join(root, p))
+    const state = await bundleIsStale(join(distDir, entry), srcRoots)
+    if (state !== "fresh") {
+      console.log(`[jemacs] rebuilding ${opts.shadow ? "shadow" : "web"} bundle (${state})`)
       if (opts.shadow) {
         const { buildShadowWeb } = await import("../../scripts/build-shadow-web")
         await buildShadowWeb()
@@ -210,7 +216,9 @@ export class WebHost implements UiHost {
     }
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 })
     if (url.pathname === "/renderer.css") {
-      return new Response(Bun.file(this.cssPath), { headers: { "Content-Type": "text/css" } })
+      return new Response(Bun.file(this.cssPath), {
+        headers: { "Content-Type": "text/css", "Cache-Control": "no-cache" },
+      })
     }
     if (this.shadow && url.pathname === "/editor.js") {
       return new Response(Bun.file(join(this.distDir, "editor.js")), {
@@ -260,6 +268,10 @@ export class WebHost implements UiHost {
   }
 
   private async loadHtml(): Promise<string> {
+    // Content-addressed cache buster: a tab opened against an older checkout
+    // otherwise keeps stale caret/layout rules under the bare /renderer.css key.
+    const cssVer = createHash("sha256").update(await readFile(this.cssPath)).digest("hex").slice(0, 16)
+    const cssHref = `/renderer.css?v=${cssVer}`
     // Shim `process` BEFORE the module loads — Bun's browser polyfills cover
     // `node:*` modules but not the bare `process` global that path/os/etc read.
     const procShim = `<script>globalThis.process??={env:{},platform:"browser",`
@@ -271,14 +283,16 @@ export class WebHost implements UiHost {
       // renderer and shadow-entry probe for, plus the stylesheet that drives
       // caret positioning (`.jemacs-caret { position:absolute }`).
       return `<!doctype html><html><head><meta charset="utf-8"><title>Jemacs Shadow</title>`
-        + `<link rel="stylesheet" href="/renderer.css">${inject}</head>`
+        + `<link rel="stylesheet" href="${cssHref}">${inject}</head>`
         + `<body><div id="jemacs-root"><div id="jemacs-title"></div><div id="jemacs-windows"></div>`
         + `<div id="jemacs-minibuffer-completions"></div>`
         + `<div id="jemacs-minibuffer"></div><div id="jemacs-echo"></div></div>`
         + `<script type="module" src="/editor.js"></script></body></html>`
     }
     const raw = await readFile(join(this.distDir, "renderer.html"), "utf8")
-    return raw.replace("</head>", `  ${inject}\n</head>`)
+    return raw
+      .replace(`href="/renderer.css"`, `href="${cssHref}"`)
+      .replace("</head>", `  ${inject}\n</head>`)
   }
 
   // ——— WebSocket ———
@@ -349,6 +363,42 @@ export class WebHost implements UiHost {
 
 export async function createWebHost(opts: WebHostOptions = {}): Promise<WebHost> {
   return WebHost.create(opts)
+}
+
+/** t-font-4c5466d4: dev-loop staleness check for `WebHost.create`. Walks
+ *  `roots` for any file with mtime newer than `bundle`. Missing roots are
+ *  ignored so an installed `JEMACS_HOME` (dist/ without src/) degrades to the
+ *  old existence-only check. */
+export async function bundleIsStale(
+  bundle: string,
+  roots: string[],
+): Promise<"missing" | "stale" | "fresh"> {
+  let bundleMtime: number
+  try { bundleMtime = (await stat(bundle)).mtimeMs }
+  catch { return "missing" }
+  for (const root of roots) {
+    if (await anyNewerThan(root, bundleMtime)) return "stale"
+  }
+  return "fresh"
+}
+
+async function anyNewerThan(path: string, mtimeMs: number): Promise<boolean> {
+  let st
+  try { st = await stat(path) } catch { return false }
+  if (st.isDirectory()) {
+    let entries
+    try { entries = await readdir(path, { withFileTypes: true }) } catch { return false }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue
+      if (await anyNewerThan(join(path, e.name), mtimeMs)) return true
+    }
+    return false
+  }
+  return st.mtimeMs > mtimeMs
+}
+
+function repoRoot(): string {
+  return process.env.JEMACS_HOME ?? join(import.meta.dirname, "..", "..")
 }
 
 function webDistDir(): string {

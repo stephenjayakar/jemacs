@@ -89,11 +89,12 @@ test("buildDisplayModel body chunks include customized default face font attrs",
   const buffer = editor.scratch("font-test", "hello", "text")
   buffer.point = buffer.text.length
   const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24, cols: 80 } })
-  expect(model.theme.faces.default?.family).toBe("Fira Code")
+  expect(model.theme.faces.default?.family).toContain("Fira Code")
   const leaf = model.windows.kind === "leaf" ? model.windows.pane : null
   expect(leaf).not.toBeNull()
   const styled = leaf!.body.chunks.find(chunk => chunk.text.includes("hello"))
-  expect(styled?.family).toBe("Fira Code")
+  expect(styled?.family).toContain("Fira Code")
+  expect(styled?.family?.endsWith("monospace")).toBe(true)
   expect(styled?.height).toBe(140)
   resetFace("default")
 })

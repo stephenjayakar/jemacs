@@ -1,8 +1,9 @@
 import { writeFileSync } from "node:fs"
 import { closeSync, openSync, unlinkSync, writeSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { Editor } from "./kernel/editor"
+import { findProjectRoot } from "./lsp/project-root"
 import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
 import { installDefaultModes } from "./modes/default-modes"
@@ -24,11 +25,14 @@ async function main(): Promise<void> {
   const shadow = Bun.argv.includes("--shadow")
   const portIdx = Bun.argv.indexOf("--port")
   const webPort = portIdx >= 0 ? Number(Bun.argv[portIdx + 1]) : undefined
+  const fsRootIdx = Bun.argv.indexOf("--fsRoot")
+  const fsRootFlag = fsRootIdx >= 0 ? Bun.argv[fsRootIdx + 1] : undefined
 
   installDefaultModes()
   const editor = new Editor()
-  const ignored = new Set(["--gui", "--smoke-gui", "--serve-stdio", "--web", "--shadow", "--port"])
+  const ignored = new Set(["--gui", "--smoke-gui", "--serve-stdio", "--web", "--shadow", "--port", "--fsRoot"])
   if (portIdx >= 0 && Bun.argv[portIdx + 1] != null) ignored.add(Bun.argv[portIdx + 1]!)
+  if (fsRootIdx >= 0 && Bun.argv[fsRootIdx + 1] != null) ignored.add(Bun.argv[fsRootIdx + 1]!)
   const args = parseStartupArgs(Bun.argv, ignored)
   const evaluator = installDefaultConfig(editor)
   for (const config of args.configs) await loadStartupConfig(editor, evaluator, config)
@@ -74,7 +78,8 @@ async function main(): Promise<void> {
 
   if (web) {
     const { createWebHost } = await import("./web/host")
-    const host = await createWebHost({ port: webPort, shadow })
+    const fsRoot = await resolveFsRoot(fsRootFlag, file)
+    const host = await createWebHost({ port: webPort, shadow, fsRoot })
     host.attachEditor(editor)
     console.log(`Web: http://127.0.0.1:${host.port}/`)
     await runJemacs(editor, host)
@@ -84,7 +89,18 @@ async function main(): Promise<void> {
   await runJemacs(editor, await createDefaultHost())
 }
 
-main().catch(error => {
-  console.error(error)
-  process.exitCode = 1
-})
+/** Jail root for the shadow web host: explicit `--fsRoot` wins; otherwise the
+ *  project root of the first file argv (so opening a file outside cwd doesn't
+ *  leave it outside the jail); `undefined` lets WebHost fall back to cwd. */
+export async function resolveFsRoot(explicit: string | undefined, firstFile: string | undefined): Promise<string | undefined> {
+  if (explicit) return resolve(explicit)
+  if (firstFile) return findProjectRoot(resolve(firstFile))
+  return undefined
+}
+
+if (import.meta.main) {
+  main().catch(error => {
+    console.error(error)
+    process.exitCode = 1
+  })
+}

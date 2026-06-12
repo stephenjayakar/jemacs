@@ -75,11 +75,11 @@ describe("RemoteRuntime.readFileText", () => {
     expect(h.aRecv).toEqual([])
   })
 
-  test("ENOENT → empty string, matching the node:fs default", async () => {
+  test("ENOENT → throws (so the user sees the miss instead of a silent-empty buffer)", async () => {
     const h = handWired({ "/x.txt": "x" })
-    const p = h.runtime.readFileText("/nope.txt")
+    const p = h.runtime.readFileText("/nope.txt").catch(e => e)
     await settle(h.aLink, h.sLink)
-    expect(await p).toBe("")
+    expect((await p as { code?: string }).code).toBe("ENOENT")
     expect(await h.runtime.fileExists("/nope.txt")).toBe(false)
     expect(await h.runtime.fileExists("/x.txt")).toBe(true)
   })

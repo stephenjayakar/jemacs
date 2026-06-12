@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, existsSync, watch as nodeWatch } from "node:fs"
-import { access, readFile, readdir as nodeReaddir, stat as nodeStat, unlink as nodeUnlink, writeFile } from "node:fs/promises"
+import { access, cp as nodeCp, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, stat as nodeStat, unlink as nodeUnlink, writeFile } from "node:fs/promises"
 import { homedir as nodeHomedir } from "node:os"
 import { join } from "node:path"
 import type { Readable } from "node:stream"
@@ -37,6 +37,14 @@ export type PlatformRuntime = {
    *  through to nodeRuntime; callers already `.catch` the no-op throw. */
   unlink?(path: string): Promise<void>
   readdir(dir: string): Promise<string[]>
+  /** Create a directory. Optional like `unlink` — RemoteRuntime ships these as
+   *  link commands when it implements them; until then dired's mutating ops
+   *  fall through to nodeRuntime (which throws in the browser stub, surfacing
+   *  a clean error rather than silently no-op'ing). */
+  mkdir?(path: string, opts?: { recursive?: boolean }): Promise<void>
+  cp?(src: string, dest: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
+  rename?(src: string, dest: string): Promise<void>
+  rm?(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
   spawnProcess(options: SpawnOptions): SpawnHandle
   whichExecutable(name: string): string | null
   /** Hex sha256 of `text` — the CAS/BufferRef key. */
@@ -182,6 +190,18 @@ export const nodeRuntime: PlatformRuntime = {
   async unlink(path) {
     await nodeUnlink(path)
   },
+  async mkdir(path, opts) {
+    await nodeMkdir(path, opts)
+  },
+  async cp(src, dest, opts) {
+    await nodeCp(src, dest, opts)
+  },
+  async rename(src, dest) {
+    await nodeRename(src, dest)
+  },
+  async rm(path, opts) {
+    await nodeRm(path, opts)
+  },
   async readdir(dir) {
     try {
       return await nodeReaddir(dir)
@@ -244,6 +264,22 @@ export async function unlink(path: string): Promise<void> {
 
 export async function readdir(dir: string): Promise<string[]> {
   return (override?.readdir ?? nodeRuntime.readdir)(dir)
+}
+
+export async function mkdir(path: string, opts?: { recursive?: boolean }): Promise<void> {
+  return (override?.mkdir ?? nodeRuntime.mkdir!)(path, opts)
+}
+
+export async function cp(src: string, dest: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void> {
+  return (override?.cp ?? nodeRuntime.cp!)(src, dest, opts)
+}
+
+export async function rename(src: string, dest: string): Promise<void> {
+  return (override?.rename ?? nodeRuntime.rename!)(src, dest)
+}
+
+export async function rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void> {
+  return (override?.rm ?? nodeRuntime.rm!)(path, opts)
 }
 
 /** Spawn a subprocess in Bun or Node (Electron main uses Node). */

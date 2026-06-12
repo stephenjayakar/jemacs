@@ -92,8 +92,37 @@ export function getFaceRegistrySpec(name: string): FaceStyle | undefined {
   return faces.get(name)?.spec
 }
 
+// CSS generic-family keywords — if the last entry in a font stack is one of
+// these the browser already has a guaranteed fallback.
+const GENERIC_FAMILIES = new Set([
+  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
+])
+
+function hasGenericFamilySuffix(family: string): boolean {
+  const last = family.split(",").pop()?.trim().toLowerCase() ?? ""
+  return GENERIC_FAMILIES.has(last)
+}
+
+const warnedFamilyFallback = new Set<string>()
+
+function ensureGenericFamilyFallback(faceName: string, family: string): string {
+  if (hasGenericFamilySuffix(family)) return family
+  const fallback = faceName === "variable-pitch" ? "sans-serif" : "monospace"
+  if (!warnedFamilyFallback.has(faceName)) {
+    warnedFamilyFallback.add(faceName)
+    console.warn(
+      `[jemacs] face '${faceName}': family "${family}" has no generic fallback; appending ${fallback}`,
+    )
+  }
+  return `${family}, ${fallback}`
+}
+
 export function setFaceAttribute(name: string, attribute: FaceAttribute, value: unknown): void {
   if (!faces.has(name)) defface(name, {})
+  if (attribute === "family" && typeof value === "string") {
+    value = ensureGenericFamilyFallback(name, value)
+  }
   const override = customOverrides.get(name) ?? {}
   const next = { ...override, [attribute]: value } as FaceStyle
   customOverrides.set(name, next)

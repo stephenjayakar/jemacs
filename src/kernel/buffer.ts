@@ -1,6 +1,5 @@
 import { dirname, basename } from "node:path"
-import { copyFile, mkdir, stat } from "node:fs/promises"
-import { fileExists, readFileText, writeFileText } from "../platform/runtime"
+import { cp, fileExists, mkdir, readFileText, stat, writeFileText } from "../platform/runtime"
 import { resolveBackupPath, type BackupDirectoryAlist } from "./backup-path"
 import { isTransientMarkModeEnabled } from "./transient-mark"
 import type { ShadowLink } from "../shadow/link"
@@ -290,7 +289,7 @@ export class BufferModel {
       if (backupPath !== null) {
         const target = backupPath ?? this.path + "~"
         await mkdir(dirname(target), { recursive: true })
-        await copyFile(this.path, target)
+        await cp(this.path, target, { force: true })
       }
       this.backedUp = true
     }
@@ -414,11 +413,7 @@ export class BufferModel {
 }
 
 async function fileModtime(path: string): Promise<number | undefined> {
-  try {
-    return (await stat(path)).mtimeMs
-  } catch {
-    return undefined
-  }
+  return (await stat(path))?.mtime
 }
 
 export function inferMode(path: string, text = ""): string {

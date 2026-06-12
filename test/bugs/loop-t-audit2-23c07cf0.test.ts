@@ -37,7 +37,7 @@ test("shadow HTML serves every mount point shadow-entry probes for", async () =>
     expect(html).toContain(`id="${id}"`)
   }
   // Stylesheet is what gives `.jemacs-caret` absolute positioning.
-  expect(html).toContain(`href="/renderer.css"`)
+  expect(html).toMatch(/href="\/renderer\.css(\?v=[0-9a-f]+)?"/)
 })
 
 test("/favicon.ico is a quiet 204, not a 404", async () => {

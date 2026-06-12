@@ -12,13 +12,15 @@
  */
 
 import type { BunPlugin } from "bun"
-import { mkdir } from "node:fs/promises"
+import { mkdir, readdir } from "node:fs/promises"
 import { join } from "node:path"
 
 const root = join(import.meta.dirname, "..")
 const outdir = join(root, "dist/shadow-web")
 const stubPath = join(root, "src/web/node-stubs.ts")
 const cryptoShimPath = join(root, "src/web/crypto-shim.ts")
+const fontsDir = join(root, "src/web/fonts")
+const fetchFontsScript = join(root, "scripts/fetch-fonts.sh")
 
 /** Specifiers that have no meaningful browser polyfill. Everything else
  *  (`node:path`, `node:os`, `node:url`, `node:crypto`, `node:buffer`,
@@ -85,7 +87,29 @@ export async function buildShadowWeb(): Promise<string> {
   return out?.path ?? join(outdir, "editor.js")
 }
 
+/** `src/web/fonts/*.woff2` is gitignored — a fresh clone has only the LICENSE
+ *  files, so host.ts serves 404 for every @font-face. Run fetch-fonts.sh on
+ *  demand instead of relying on the user to remember a separate step. `run` is
+ *  injectable so tests can assert the trigger without network I/O. */
+export async function ensureFonts(
+  dir: string = fontsDir,
+  run: (script: string) => Promise<number> = sh,
+): Promise<"ok" | "fetched"> {
+  const entries = await readdir(dir).catch(() => [] as string[])
+  if (entries.some(f => f.endsWith(".woff2"))) return "ok"
+  console.log(`No .woff2 in ${dir} — running fetch-fonts.sh`)
+  const code = await run(fetchFontsScript)
+  if (code !== 0) throw new Error(`fetch-fonts.sh exited ${code}`)
+  return "fetched"
+}
+
+async function sh(script: string): Promise<number> {
+  const proc = Bun.spawn(["sh", script], { stdout: "inherit", stderr: "inherit" })
+  return await proc.exited
+}
+
 if (import.meta.main) {
+  await ensureFonts()
   const out = await buildShadowWeb()
   console.log(`Built browser shadow bundle → ${out}`)
 }

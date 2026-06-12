@@ -1,6 +1,5 @@
-import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
-import { readdir } from "node:fs/promises"
+import { join, resolve } from "node:path"
+import { cwd, homedir, isDirectory, readdir, stat } from "../platform/runtime"
 
 export function expandUserPath(input: string): string {
   if (input.startsWith("~/")) return join(homedir(), input.slice(2))
@@ -8,7 +7,7 @@ export function expandUserPath(input: string): string {
   return input
 }
 
-export function splitCompletionInput(input: string, baseDirectory = process.cwd()): { directory: string; prefix: string } {
+export function splitCompletionInput(input: string, baseDirectory = cwd()): { directory: string; prefix: string } {
   const expanded = expandUserPath(input)
   const lastSlash = expanded.lastIndexOf("/")
   if (lastSlash === -1) {
@@ -19,16 +18,16 @@ export function splitCompletionInput(input: string, baseDirectory = process.cwd(
   return { directory, prefix }
 }
 
-export async function fileCompletionCandidates(input: string, baseDirectory = process.cwd()): Promise<string[]> {
+export async function fileCompletionCandidates(input: string, baseDirectory = cwd()): Promise<string[]> {
   const { directory, prefix } = splitCompletionInput(input, baseDirectory)
   const dirPath = directory.startsWith("/") ? directory : resolve(baseDirectory, directory)
-  const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => [])
+  const names = await readdir(dirPath.replace(/\/+$/, "") || "/")
   const pfx = prefix.toLowerCase()
-  return entries
-    .filter(entry => entry.name.toLowerCase().startsWith(pfx))
-    .map(entry => {
-      const path = join(dirPath, entry.name)
-      return entry.isDirectory() ? `${path}/` : path
-    })
-    .sort((a, b) => a.localeCompare(b))
+  const matches = names.filter(n => n.toLowerCase().startsWith(pfx))
+  const out = await Promise.all(matches.map(async name => {
+    const path = join(dirPath, name)
+    const st = await stat(path)
+    return st && isDirectory(st) ? `${path}/` : path
+  }))
+  return out.sort((a, b) => a.localeCompare(b))
 }

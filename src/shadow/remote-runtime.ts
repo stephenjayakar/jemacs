@@ -202,7 +202,8 @@ export function createRemoteRuntime(
 
     async readFileText(path) {
       const e = await stat(path)
-      if (!e || isDir(e.mode)) return ""
+      if (!e) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" })
+      if (isDir(e.mode)) return ""
       return fetch(path, e.sha)
     },
 

@@ -25,7 +25,7 @@ export function effectiveFontSizePx(
 export function renderChunk(
   parent: HTMLElement,
   chunk: SerializedChunk,
-  options: { textScale?: number; defaultFontPx?: number } = {},
+  options: { textScale?: number; defaultFontPx?: number; defaultFamily?: string } = {},
 ): void {
   const span = document.createElement("span")
   span.textContent = chunk.text
@@ -34,7 +34,9 @@ export function renderChunk(
   if (chunk.bold) span.style.fontWeight = "bold"
   if (chunk.italic) span.style.fontStyle = "italic"
   if (chunk.underline) span.style.textDecoration = "underline"
-  if (chunk.family) span.style.fontFamily = chunk.family
+  // Only override when this chunk's family is an actual remap; otherwise let
+  // the body{} font-family cascade.
+  if (chunk.family && chunk.family !== options.defaultFamily) span.style.fontFamily = chunk.family
   const textScale = options.textScale ?? 1
   const defaultPx = options.defaultFontPx ?? DOM_FRAME_BODY_FONT_PX
   const fontPx = effectiveFontSizePx(chunk, textScale, defaultPx)
@@ -47,7 +49,7 @@ export function renderChunk(
 export function renderThemedText(
   el: HTMLElement,
   model: SerializedThemedText,
-  options: { textScale?: number; defaultFontPx?: number } = {},
+  options: { textScale?: number; defaultFontPx?: number; defaultFamily?: string } = {},
 ): void {
   el.replaceChildren()
   for (const chunk of model.chunks) renderChunk(el, chunk, options)
@@ -58,7 +60,7 @@ export function renderThemedText(
 export function renderBodyRows(
   el: HTMLElement,
   model: SerializedThemedText,
-  options: { textScale?: number; defaultFontPx?: number } = {},
+  options: { textScale?: number; defaultFontPx?: number; defaultFamily?: string } = {},
 ): HTMLElement[] {
   el.classList.add("web-body")
   const rows: HTMLElement[] = []
@@ -290,7 +292,7 @@ function fillPane(
   const rowPx = DOM_FRAME_ROW_PX * textScale
   const colPx = DOM_FRAME_COL_PX * textScale
   if (defaultFace?.bg) bodyEl.style.backgroundColor = defaultFace.bg
-  if (defaultFace?.family) bodyEl.style.fontFamily = defaultFace.family
+  const defaultFamily = defaultFace?.family
   const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
   bodyEl.style.fontSize = `${bodyDefaultPx * textScale}px`
   bodyEl.style.lineHeight = String(DOM_FRAME_LINE_HEIGHT_RATIO)
@@ -300,16 +302,16 @@ function fillPane(
     if (!terminalRenderer?.mount(bodyEl, model, theme)) renderTerminalSurface(bodyEl, model.terminalSurface)
   }
   else if (model.cursor) {
-    const rows = renderBodyRows(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx })
+    const rows = renderBodyRows(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
     renderCaret(bodyEl, rows, model.cursor, defaultFace?.fg)
   }
-  else renderThemedText(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx })
+  else renderThemedText(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
   if (modelineFace?.bg) modelineEl.style.backgroundColor = modelineFace.bg
   if (modelineFace?.fg) modelineEl.style.color = modelineFace.fg
   const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
   modelineEl.style.fontSize = `${modelineDefaultPx * textScale}px`
-  if (modelineFace?.family) modelineEl.style.fontFamily = modelineFace.family
-  renderThemedText(modelineEl, model.modeline, { textScale, defaultFontPx: modelineDefaultPx })
+  if (modelineFace?.family && modelineFace.family !== defaultFamily) modelineEl.style.fontFamily = modelineFace.family
+  renderThemedText(modelineEl, model.modeline, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
 }
 
 /** Patch a leaf pane in place, re-rendering only the parts whose serialized
@@ -342,6 +344,7 @@ function patchPane(
     return
   }
   const defaultFace = themeFace(theme, "default")
+  const defaultFamily = defaultFace?.family
   const textScale = next.textScale ?? 1
   if (bodyChanged) {
     const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
@@ -349,15 +352,15 @@ function patchPane(
       if (!terminalRenderer?.mount(dom.bodyEl, next, theme)) renderTerminalSurface(dom.bodyEl, next.terminalSurface)
     }
     else if (next.cursor) {
-      const rows = renderBodyRows(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx })
+      const rows = renderBodyRows(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
       renderCaret(dom.bodyEl, rows, next.cursor, defaultFace?.fg)
     }
-    else renderThemedText(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx })
+    else renderThemedText(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
   }
   if (modelineChanged) {
     const modelineFace = themeFace(theme, next.selected ? "modeLine" : "modeLineInactive")
     const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
-    renderThemedText(dom.modelineEl, next.modeline, { textScale, defaultFontPx: modelineDefaultPx })
+    renderThemedText(dom.modelineEl, next.modeline, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
   }
 }
 
@@ -406,13 +409,13 @@ function renderChildFrame(frame: SerializedChildFrame, theme?: SerializedDisplay
   const modelineFace = themeFace(theme, "modeLine")
   if (defaultFace?.bg) el.style.backgroundColor = defaultFace.bg
   if (defaultFace?.fg) el.style.color = defaultFace.fg
-  if (defaultFace?.family) el.style.fontFamily = defaultFace.family
   if (modelineFace?.bg) el.style.borderColor = modelineFace.bg
   const body = document.createElement("div")
   body.className = "jemacs-child-frame-body"
   renderThemedText(body, frame.pane.body, {
     textScale: frame.pane.textScale,
     defaultFontPx: defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX,
+    defaultFamily: defaultFace?.family,
   })
   el.appendChild(body)
   return el
@@ -491,8 +494,9 @@ export function presentDomFrame(
   applyThemeSurfaces(targets, model)
   const defaultFace = model.theme.faces.default
   const defaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
+  const defaultFamily = defaultFace?.family
   if (!prev || !sameJson(prev.model.title, model.title)) {
-    renderThemedText(targets.title, model.title, { defaultFontPx: defaultPx })
+    renderThemedText(targets.title, model.title, { defaultFontPx: defaultPx, defaultFamily })
   }
 
   const shape = treeShape(model.windows)
@@ -525,21 +529,22 @@ export function presentDomFrame(
 
   if (targets.minibufferCompletions) {
     if (!prev || !sameJson(prev.model.minibufferCompletions, model.minibufferCompletions)) {
-      renderThemedText(targets.minibufferCompletions, model.minibufferCompletions, { defaultFontPx: defaultPx })
+      renderThemedText(targets.minibufferCompletions, model.minibufferCompletions, { defaultFontPx: defaultPx, defaultFamily })
     }
     targets.minibufferCompletions.style.display = model.minibufferCompletionLines > 0 ? "" : "none"
   }
   if (!prev || !sameJson(prev.model.minibuffer, model.minibuffer)) {
-    renderThemedText(targets.minibuffer, model.minibuffer, { defaultFontPx: defaultPx })
+    renderThemedText(targets.minibuffer, model.minibuffer, { defaultFontPx: defaultPx, defaultFamily })
   }
   if (!prev || !sameJson(prev.model.echo, model.echo)) {
-    renderThemedText(targets.echo, model.echo, { defaultFontPx: defaultPx })
+    renderThemedText(targets.echo, model.echo, { defaultFontPx: defaultPx, defaultFamily })
   }
   frameMemo.set(targets.windows, { model, shape, panes, childFramesEl })
 }
 
 function applyThemeSurfaces(targets: DomFrameTargets, model: SerializedDisplayModel): void {
   const defaultFace = model.theme.faces.default
+  const defaultFamily = defaultFace?.family
   const titleFace = model.theme.faces.title ?? defaultFace
   const minibufferFace = model.theme.faces.minibuffer ?? defaultFace
   const bg = defaultFace?.bg
@@ -549,18 +554,23 @@ function applyThemeSurfaces(targets: DomFrameTargets, model: SerializedDisplayMo
     if (!el) continue
     if (bg) el.style.backgroundColor = bg
     if (fg) el.style.color = fg
-    if (defaultFace?.family) el.style.fontFamily = defaultFace.family
   }
-  applyFace(targets.title, titleFace)
-  if (targets.minibufferCompletions) applyFace(targets.minibufferCompletions, minibufferFace)
-  applyFace(targets.minibuffer, minibufferFace)
-  applyFace(targets.echo, minibufferFace)
+  // Default family is applied once at the cascade root; descendants inherit.
+  if (defaultFamily) document.body.style.fontFamily = defaultFamily
+  applyFace(targets.title, titleFace, defaultFamily)
+  if (targets.minibufferCompletions) applyFace(targets.minibufferCompletions, minibufferFace, defaultFamily)
+  applyFace(targets.minibuffer, minibufferFace, defaultFamily)
+  applyFace(targets.echo, minibufferFace, defaultFamily)
 }
 
-function applyFace(el: HTMLElement, face: { fg?: string; bg?: string; family?: string; height?: number } | undefined): void {
+function applyFace(
+  el: HTMLElement,
+  face: { fg?: string; bg?: string; family?: string; height?: number } | undefined,
+  defaultFamily?: string,
+): void {
   if (face?.bg) el.style.backgroundColor = face.bg
   if (face?.fg) el.style.color = face.fg
-  if (face?.family) el.style.fontFamily = face.family
+  if (face?.family && face.family !== defaultFamily) el.style.fontFamily = face.family
   if (face?.height != null) el.style.fontSize = `${face.height / 10}px`
 }
 

@@ -25,7 +25,7 @@ test("setFaceAttribute overrides composed theme default face", () => {
   setFaceAttribute("default", "family", "JetBrains Mono")
   const base = defineTheme("test", { default: { family: "Menlo", height: 120 } })
   const composed = composeTheme(base)
-  expect(composed.faces.default?.family).toBe("JetBrains Mono")
+  expect(composed.faces.default?.family).toBe("JetBrains Mono, monospace")
   expect(composed.faces.default?.height).toBe(120)
   resetFace("default")
 })

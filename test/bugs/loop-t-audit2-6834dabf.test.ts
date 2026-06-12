@@ -83,7 +83,10 @@ beforeAll(async () => {
   })
   // self-reference so `window.jemacs = ...` works whether code uses `window` or `globalThis`
   ;(globalThis as Record<string, unknown>).window = Object.assign(win, { jemacs: undefined })
-  bridge = await import("../../src/web/client-bridge")
+  // Cache-busted specifier: bun shares one module cache across test files, so a
+  // plain import here can return a module whose top-level `connect()` already
+  // ran against *another* file's WebSocket stub (loop-t-flake-18140eac).
+  bridge = (await import("../../src/web/client-bridge?t=6834dabf")) as typeof import("../../src/web/client-bridge")
 })
 
 afterAll(() => {

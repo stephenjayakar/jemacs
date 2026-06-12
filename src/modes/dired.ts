@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path"
-import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises"
+import { cp, cwd, isDirectory, mkdir, readdir, rename, rm, stat } from "../platform/runtime"
 import type { Editor } from "../kernel/editor"
 import { expandUserPath } from "../kernel/completion"
 import { BufferModel } from "../kernel/buffer"
@@ -49,8 +49,8 @@ export async function makeDiredBuffer(path: string): Promise<BufferModel> {
   let dir = resolve(path)
   // fido file-completion can resolve to a file; visit its parent rather than
   // letting readdir throw ENOTDIR (matches Emacs `dired` on a file path).
-  const info = await stat(dir).catch(() => null)
-  if (info && !info.isDirectory()) dir = dirname(dir)
+  const info = await stat(dir)
+  if (info && !isDirectory(info)) dir = dirname(dir)
   const buffer = new BufferModel({ name: `${basename(dir) || dir}/`, path: dir, kind: "directory", mode: "dired" })
   buffer.readOnly = true
   diredMarks.set(buffer, new Map())
@@ -65,11 +65,17 @@ export async function diredOpen(editor: Editor, path: string): Promise<void> {
   const full = resolve(expandUserPath(path))
   try {
     const info = await stat(full)
-    if (info.isDirectory()) await editor.openDirectory(full)
+    if (!info) {
+      // Platform stat() folds ENOENT/ENOTDIR to null; recover the ENOTDIR case
+      // by checking whether the parent component is a regular file.
+      const parent = await stat(dirname(full))
+      editor.message(`${full}: ${parent && !isDirectory(parent) ? "Not a directory" : "No such file or directory"}`)
+      return
+    }
+    if (isDirectory(info)) await editor.openDirectory(full)
     else await editor.openFile(full)
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    editor.message(`${full}: ${code === "ENOTDIR" ? "Not a directory" : (err as Error).message}`)
+    editor.message(`${full}: ${(err as Error).message}`)
   }
 }
 
@@ -318,7 +324,7 @@ export async function diredDoCopy(editor: Editor, buffer: BufferModel, prefixArg
   const target = await editor.completingRead("Copy to: ", {
     completion: "file",
     history: "file",
-    initialValue: buffer.path ?? process.cwd(),
+    initialValue: buffer.path ?? cwd(),
   })
   if (!target) return
   const destDir = resolve(target)
@@ -359,7 +365,7 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
   const target = await editor.completingRead("Move marked files to: ", {
     completion: "file",
     history: "file",
-    initialValue: buffer.path ?? process.cwd(),
+    initialValue: buffer.path ?? cwd(),
   })
   if (!target) return
   const destDir = resolve(target)
@@ -475,10 +481,7 @@ function diredSpecialEntry(entry: DiredEntry): boolean {
 
 async function entryFor(parent: string, name: string): Promise<DiredEntry | null> {
   const path = name === "." ? parent : name === ".." ? dirname(parent) : join(parent, name)
-  try {
-    const info = await stat(path)
-    return { name, path, isDirectory: info.isDirectory(), size: info.size, mtime: info.mtime }
-  } catch {
-    return null
-  }
+  const info = await stat(path)
+  if (!info) return null
+  return { name, path, isDirectory: isDirectory(info), size: info.size, mtime: new Date(info.mtime) }
 }
