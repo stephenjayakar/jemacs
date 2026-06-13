@@ -8,6 +8,7 @@ import {
   computeLineVisualRows,
   syncViewportStartLine,
   visibleLineCountForBudget,
+  visualRowLineRange,
 } from "../../src/display/visual-line-height"
 import type { TextSpan } from "../../src/modes/mode"
 
@@ -56,6 +57,25 @@ test("computeLineVisualRows multiplies cost when a line hard-wraps", () => {
   })
   expect(rows[0]).toBeCloseTo(bodyCost, 5)
   expect(rows[1]!).toBeGreaterThan(bodyCost * 2)
+})
+
+test("computeLineVisualRows can limit work to a sparse line range", () => {
+  const text = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n")
+  const rows = computeLineVisualRows(text, [], theme, undefined, 1, {
+    fromLine: 40,
+    toLine: 42,
+  })
+  expect(rows.length).toBe(100)
+  expect(rows[39]).toBeUndefined()
+  expect(rows[40]).toBeDefined()
+  expect(rows[42]).toBeDefined()
+  expect(rows[43]).toBeUndefined()
+  expect(visibleLineCountForBudget(39, 4, rows.length, rows)).toBe(3)
+})
+
+test("visualRowLineRange bounds GUI visual row work around viewport and cursor", () => {
+  expect(visualRowLineRange(100, 105, 25, 1000)).toEqual({ fromLine: 75, toLine: 205 })
+  expect(visualRowLineRange(0, 999, 25, 1000)).toEqual({ fromLine: 0, toLine: 999 })
 })
 
 test("wrapRowsForContent counts continuation rows", () => {

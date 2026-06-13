@@ -11,7 +11,7 @@ import { terminalSurfaceToThemedText, type TerminalSurfaceModel } from "./termin
 import { plainThemedText, type ThemedChunk, type ThemedText } from "./themed-text"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { paneWrapLayoutFor, wrapBodyRows } from "./display-wrap"
-import { computeLineVisualRows, syncViewportStartLine, visibleLineCountForBudget } from "./visual-line-height"
+import { computeLineVisualRows, syncViewportStartLine, visibleLineCountForBudget, visualRowLineRange } from "./visual-line-height"
 import type { LogicalChildFrame, LogicalModel, LogicalPane, LogicalWindowNode } from "./logical"
 import { pointLineCol } from "./logical"
 
@@ -173,17 +173,20 @@ function layoutLeafPane(
     maxLines,
   )
   const useVisualWeights = hostCapabilities?.perFaceFonts === true
+  const cursorLine = pane.selected ? pointLineCol(dText, dPoint).line - 1 : startLine
+  const lineRange = visualRowLineRange(startLine, cursorLine, maxLines, lineCount)
   const visualRows = useVisualWeights
     ? computeLineVisualRows(dText, dFontLockSpans, logical.theme, pane.buffer, pane.textScale, {
       wrapCols: wrapLayout.wrapCols,
       gutterPrefixLen: wrapLayout.gutterPrefixLen,
       wordWrap: wrapLayout.wordWrap,
       displayLines: dLines,
+      fromLine: lineRange.fromLine,
+      toLine: lineRange.toLine,
     })
     : undefined
   if (pane.selected) {
     // Keep point on-screen — same correction the shim wrote back to the editor.
-    const cursorLine = pointLineCol(dText, dPoint).line - 1
     startLine = syncViewportStartLine(startLine, cursorLine, maxLines, visualRows)
   }
   const displayLines = visualRows

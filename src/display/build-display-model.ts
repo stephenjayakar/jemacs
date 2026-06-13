@@ -5,8 +5,8 @@ import type { DisplayModel } from "./protocol"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { setEditorDisplayContext } from "./scroll"
 import { paneWrapLayoutFor } from "./display-wrap"
-import { computeLineVisualRows } from "./visual-line-height"
-import { buildLogicalModel, type LogicalPane, type LogicalWindowNode } from "./logical"
+import { computeLineVisualRows, visualRowLineRange } from "./visual-line-height"
+import { buildLogicalModel, pointLineCol, type LogicalPane, type LogicalWindowNode } from "./logical"
 import { layoutCharGrid, splitColBudget, splitLineBudget } from "./char-grid-layout"
 
 export type BuildDisplayOptions = {
@@ -95,12 +95,23 @@ function stampPaneGeometry(pane: LogicalPane, rows: number, cols: number | undef
 
 function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number, cols?: number): number[] | undefined {
   if (!pane.buffer) return undefined
-  const wrapLayout = paneWrapLayoutFor(pane.displayText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
-  return computeLineVisualRows(pane.text, pane.fontLockSpans, editor.theme, pane.buffer, pane.textScale, {
+  const dText = pane.displayText
+  const map = pane.displayMap
+  const dPoint = map ? map(pane.point) : pane.point
+  const cursorLine = pointLineCol(dText, dPoint).line - 1
+  const displayLines = dText.split("\n")
+  const lineRange = visualRowLineRange(pane.startLine, cursorLine, maxLines, displayLines.length)
+  const dFontLockSpans = map
+    ? pane.fontLockSpans.map(s => ({ ...s, start: map(s.start), end: map(s.end) }))
+    : pane.fontLockSpans
+  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
+  return computeLineVisualRows(dText, dFontLockSpans, editor.theme, pane.buffer, pane.textScale, {
     wrapCols: wrapLayout.wrapCols,
     gutterPrefixLen: wrapLayout.gutterPrefixLen,
     wordWrap: wrapLayout.wordWrap,
-    displayLines: pane.displayText.split("\n"),
+    displayLines,
+    fromLine: lineRange.fromLine,
+    toLine: lineRange.toLine,
   })
 }
 

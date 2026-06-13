@@ -156,6 +156,18 @@ describe("markdownDisplayFilter", () => {
     expect(buffer.text).toBe("# Title\nSome **bold** text\n")
   })
 
+  test("reuses the hidden-markup filter cache when there are no folded ranges", () => {
+    const buffer = new BufferModel({
+      name: "doc.md",
+      text: "# Title\nSome **bold** text\n",
+      mode: "markdown",
+    })
+    buffer.locals.set("markdown-hide-markup", true)
+    const first = markdownDisplayFilter(buffer)
+    const second = markdownDisplayFilter(buffer)
+    expect(second).toBe(first)
+  })
+
   test("hides inline code backticks when markdown-hide-markup is on", () => {
     const buffer = new BufferModel({
       name: "doc.md",

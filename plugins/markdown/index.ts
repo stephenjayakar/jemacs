@@ -77,6 +77,7 @@ export type FencedCodeBlock = {
 }
 
 export type FoldRange = [number, number]
+const EMPTY_FOLD_RANGES: FoldRange[] = []
 type SubtreeCycle = "folded" | "children" | "subtree"
 type GlobalCycle = 1 | 2 | 3
 type DisplayFilterResult = { text: string; map: (n: number) => number; unmap?: (n: number) => number }
@@ -261,7 +262,7 @@ function markdownChildren(headings: MarkdownHeading[], h: MarkdownHeading, lineC
 }
 
 function foldedRanges(buffer: BufferModel): FoldRange[] {
-  return (buffer.locals.get(MARKDOWN_FOLDED_LOCAL) as FoldRange[] | undefined) ?? []
+  return (buffer.locals.get(MARKDOWN_FOLDED_LOCAL) as FoldRange[] | undefined) ?? EMPTY_FOLD_RANGES
 }
 
 function subtreeStatusMap(buffer: BufferModel): Map<number, SubtreeCycle> {
