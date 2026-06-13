@@ -2,7 +2,7 @@ import { basename, dirname, resolve, sep } from "node:path"
 import { BufferModel } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
-import { isPrintable, Keymap, KeymapStack, keyToken, normalizeSequence, type KeyEventLike } from "./keymap"
+import { emacsKeyDescription, isPrintable, Keymap, KeymapStack, keyToken, normalizeSequence, type KeyEventLike } from "./keymap"
 import { digitFromKey, PrefixArgumentState } from "./prefix-argument"
 import type {
   CompletionCandidate,
@@ -830,14 +830,15 @@ export class Editor {
     }
     request.keys.push(token)
     const sequence = normalizeSequence(request.keys.join(" "))
+    const description = emacsKeyDescription(sequence)
     const result = this.keymaps.lookup(sequence)
     if (result.status === "pending") {
-      this.message(`${request.prompt}${sequence}`)
+      this.message(`${request.prompt}${description}`)
       await this.changed("read-key-sequence-prefix")
       return { status: "pending" }
     }
     this.keySequenceRequest = null
-    request.resolve(sequence)
+    request.resolve(description)
     this.clearMessage()
     await this.changed("read-key-sequence-done")
     return { status: "inserted" }
@@ -1378,10 +1379,18 @@ export class Editor {
 
   describeKey(sequence: string): string {
     const described = this.keymaps.describe(sequence)
-    if (!described) return `${sequence} is undefined`
+    const keyDescription = emacsKeyDescription(sequence)
+    if (!described) return `${keyDescription} is undefined`
     const command = this.commands.get(described.command)
-    const description = command?.description ? ` — ${command.description}` : ""
-    return `${described.sequence} runs ${described.command} from ${described.mapName}${description}`
+    const description = command?.description ? `\n\n${command.description}` : ""
+    return `${emacsKeyDescription(described.sequence)} runs the command ${described.command} (found in ${described.mapName}).${description}`
+  }
+
+  describeKeyBriefly(sequence: string): string {
+    const described = this.keymaps.describe(sequence)
+    const keyDescription = emacsKeyDescription(sequence)
+    if (!described) return `${keyDescription} is undefined`
+    return `${emacsKeyDescription(described.sequence)} runs the command ${described.command}`
   }
 
   message(text: string): string {

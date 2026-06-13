@@ -96,6 +96,31 @@ export function normalizeSequence(sequence: string): string {
   return sequence.trim().split(/\s+/).filter(Boolean).map(normalizeToken).join(" ")
 }
 
+export function emacsKeyDescription(sequence: string): string {
+  return normalizeSequence(sequence).split(" ").filter(Boolean).map(emacsKeyTokenDescription).join(" ")
+}
+
+function emacsKeyTokenDescription(token: string): string {
+  const normalized = normalizeToken(token)
+  const parts = normalized.split("-").filter(Boolean)
+  const key = parts.pop() ?? ""
+  const base = emacsBaseKeyDescription(key, parts.length > 0)
+  return [...parts, base].join("-")
+}
+
+function emacsBaseKeyDescription(key: string, modified: boolean): string {
+  switch (key) {
+    case "enter": return modified ? "<return>" : "RET"
+    case "space": return "SPC"
+    case "backspace": return "DEL"
+    case "tab": return modified ? "<tab>" : "TAB"
+    case "esc": return "ESC"
+    case "linefeed": return "LFD"
+  }
+  if (key.length === 1) return key
+  return `<${key}>`
+}
+
 /** Rewrite each `M-<k>` token as `esc <k>` so ESC-prefix input reaches the same binding. */
 export function metaToEscPrefix(normalized: string): string {
   return normalized

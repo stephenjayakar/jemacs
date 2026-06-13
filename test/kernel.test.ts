@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
 import { BufferModel } from "../src/kernel/buffer"
-import { isPrintable, keyToken, Keymap, KeymapStack } from "../src/kernel/keymap"
+import { emacsKeyDescription, isPrintable, keyToken, Keymap, KeymapStack } from "../src/kernel/keymap"
 import { listWindowLeaves } from "../src/kernel/window"
 import { Editor } from "../src/kernel/editor"
 import { buildDisplayModel } from "../src/display/build-display-model"
@@ -63,6 +63,15 @@ test("tab key encodings map to Emacs-style window cycle bindings", () => {
   const fed = editor.keymaps.feed({ name: "tab", ctrl: true })
   expect(fed.status).toBe("matched")
   if (fed.status === "matched") expect(fed.command).toBe("other-window")
+})
+
+test("key descriptions use Emacs spellings", () => {
+  expect(emacsKeyDescription("enter")).toBe("RET")
+  expect(emacsKeyDescription("space")).toBe("SPC")
+  expect(emacsKeyDescription("backspace")).toBe("DEL")
+  expect(emacsKeyDescription("tab")).toBe("TAB")
+  expect(emacsKeyDescription("f1 k")).toBe("<f1> k")
+  expect(emacsKeyDescription("C-x C-f")).toBe("C-x C-f")
 })
 
 test("mac option key sequences map to meta bindings", () => {
@@ -1205,7 +1214,7 @@ test("describe-key in minibuffer reports global binding for C-a", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
   editor.completingRead("Find file: ", { completion: "file", initialValue: "/tmp" })
-  expect(editor.describeKey("C-a")).toContain("move-beginning-of-line from global-map")
+  expect(editor.describeKey("C-a")).toContain("runs the command move-beginning-of-line (found in global-map)")
   editor.minibufferCancel()
 })
 
@@ -1213,10 +1222,32 @@ test("describe-key reports the winning keymap and command", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
 
-  expect(editor.describeKey("C-x C-f")).toContain("find-file from global-map")
+  expect(editor.describeKey("C-x C-f")).toContain("runs the command find-file (found in global-map)")
   await editor.run("describe-key", ["C-x", "C-f"])
   expect(editor.currentBuffer.name).toBe("*Help*")
-  expect(editor.currentBuffer.text).toContain("C-x C-f runs find-file from global-map")
+  expect(editor.currentBuffer.text).toContain("C-x C-f runs the command find-file (found in global-map)")
+})
+
+test("read-key-sequence returns Emacs key descriptions", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+
+  const read = editor.readKeySequence("Key: ")
+  await editor.handleKey({ name: "enter" })
+  await expect(read).resolves.toBe("RET")
+})
+
+test("read-key-sequence echoes Emacs descriptions for prefixes", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  let echoed = ""
+  editor.events.on("message", ({ text }) => { echoed = text })
+
+  const read = editor.readKeySequence("Key: ")
+  await editor.handleKey({ name: "x", ctrl: true })
+  expect(echoed).toBe("Key: C-x")
+  await editor.handleKey({ name: "f", ctrl: true })
+  await expect(read).resolves.toBe("C-x C-f")
 })
 
 test("describe-key captures a real key sequence instead of dispatching it", async () => {
@@ -1230,7 +1261,40 @@ test("describe-key captures a real key sequence instead of dispatching it", asyn
   await describe
 
   expect(editor.currentBuffer.name).toBe("*Help*")
-  expect(editor.currentBuffer.text).toContain("C-x C-f runs find-file from global-map")
+  expect(editor.currentBuffer.text).toContain("C-x C-f runs the command find-file (found in global-map)")
+})
+
+test("describe-key-briefly reads a full key sequence", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  let echoed = ""
+  editor.events.on("message", ({ text }) => { echoed = text })
+
+  const describe = editor.run("describe-key-briefly")
+  await editor.handleKey({ name: "x", ctrl: true })
+  await editor.handleKey({ name: "f", ctrl: true })
+  await describe
+
+  expect(echoed).toBe("C-x C-f runs the command find-file")
+})
+
+test("my/bind-key uses Emacs key descriptions in the command prompt", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await installStephenConfig(editor)
+  let prompt = ""
+  editor.completingReadFunction = async (_editor, p) => {
+    prompt = p
+    return "goto-line"
+  }
+
+  const bind = editor.run("my/bind-key")
+  await editor.handleKey({ name: "c", ctrl: true })
+  await editor.handleKey({ name: "9" })
+  await bind
+
+  expect(prompt).toBe("Command to bind to 'C-c 9': ")
+  expect(editor.keymap.get("C-c 9")).toBe("goto-line")
 })
 
 test("keymap stack gives minibuffer bindings precedence over global bindings", async () => {

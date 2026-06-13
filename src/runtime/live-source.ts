@@ -1,4 +1,5 @@
 import type { Editor } from "../kernel/editor"
+import { normalizeSequence } from "../kernel/keymap"
 import type { CustomVariable } from "./custom"
 import { getCustomVariable, listCustomVariables } from "./custom"
 import type { Evaluator } from "./evaluator"
@@ -140,15 +141,22 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
   }, "Describe a custom variable and link to its source.")
 
   editor.command("describe-key", async ({ editor, args }) => {
-    const sequence = args.join(" ") || await editor.readKeySequence("Describe key: ")
+    const sequence = args.join(" ") || await editor.readKeySequence("Describe key (or click or menu item): ")
     if (!sequence) return
     const body = editor.describeKey(sequence)
-    const binding = listKeyBindings().find(b => b.sequence === sequence || b.sequence === sequence.replace(/\s+/g, " "))
+    const normalized = normalizeSequence(sequence)
+    const binding = listKeyBindings().find(b => normalizeSequence(b.sequence) === normalized)
     const extra = binding?.source ? `\n\n${formatSourceLine(binding.source)}\nRET — visit source` : ""
     showHelp(editor, body + extra, binding
       ? { kind: "key", map: binding.map, sequence: binding.sequence }
       : { kind: "command", name: editor.keymap.get(sequence) ?? "" })
   }, "Describe a key binding and its source.")
+
+  editor.command("describe-key-briefly", async ({ editor, args }) => {
+    const sequence = args.join(" ") || await editor.readKeySequence("Describe key briefly: ")
+    if (!sequence) return
+    editor.message(editor.describeKeyBriefly(sequence))
+  }, "Print the name of the function a key invokes.")
 
   editor.command("apropos-variable", async ({ editor, args }) => {
     const pattern = args[0] ?? await editor.prompt("Apropos variable: ", "", "apropos")
