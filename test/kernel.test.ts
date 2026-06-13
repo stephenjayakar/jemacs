@@ -1219,6 +1219,20 @@ test("describe-key reports the winning keymap and command", async () => {
   expect(editor.currentBuffer.text).toContain("C-x C-f runs find-file from global-map")
 })
 
+test("describe-key captures a real key sequence instead of dispatching it", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+
+  const describe = editor.run("describe-key")
+  await editor.handleKey({ name: "x", ctrl: true })
+  expect(editor.currentBuffer.name).not.toBe("*Buffer List*")
+  await editor.handleKey({ name: "f", ctrl: true })
+  await describe
+
+  expect(editor.currentBuffer.name).toBe("*Help*")
+  expect(editor.currentBuffer.text).toContain("C-x C-f runs find-file from global-map")
+})
+
 test("keymap stack gives minibuffer bindings precedence over global bindings", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)

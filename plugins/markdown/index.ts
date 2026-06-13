@@ -79,8 +79,20 @@ export type FencedCodeBlock = {
 export type FoldRange = [number, number]
 type SubtreeCycle = "folded" | "children" | "subtree"
 type GlobalCycle = 1 | 2 | 3
-type DisplayFilterResult = { text: string; map: (n: number) => number }
+type DisplayFilterResult = { text: string; map: (n: number) => number; unmap?: (n: number) => number }
 type MarkupOp = { start: number; end: number; display: string }
+type LineRenderMap = {
+  text: string
+  bufToDisp: number[]
+  dispToBuf: number[]
+}
+type DisplayLineMap = {
+  line: number
+  dispStart: number
+  displayLen: number
+  bufToDisp?: number[]
+  dispToBuf?: number[]
+}
 type DisplayFilterCache = {
   text: string
   ranges: FoldRange[]
@@ -348,10 +360,6 @@ function mergeMarkupOps(ops: MarkupOp[]): MarkupOp[] {
   return merged
 }
 
-function markupOpAt(ops: MarkupOp[], pos: number): MarkupOp | undefined {
-  return ops.find(o => pos >= o.start && pos < o.end)
-}
-
 function protectedInlineCodeRanges(line: string, lineStart: number): Array<[number, number]> {
   const out: Array<[number, number]> = []
   for (const m of line.matchAll(/`([^`\n]+)`/g)) {
@@ -496,32 +504,34 @@ function collectMarkupHides(text: string, hideUrls: boolean): MarkupOp[] {
   return mergeMarkupOps(ops)
 }
 
-function renderLineWithMarkup(line: string, lineStart: number, ops: MarkupOp[]): string {
+function renderLineWithMarkupMap(line: string, lineStart: number, ops: MarkupOp[]): LineRenderMap {
   const out: string[] = []
-  for (let col = 0; col < line.length; col++) {
-    const pos = lineStart + col
-    const op = markupOpAt(ops, pos)
-    if (op) {
-      if (pos === op.start) out.push(op.display)
+  const bufToDisp = new Array<number>(line.length + 1)
+  const dispToBuf: number[] = []
+  let opIdx = 0
+  let col = 0
+  let disp = 0
+  while (col < line.length) {
+    while (opIdx < ops.length && ops[opIdx]!.end <= lineStart + col) opIdx++
+    const op = ops[opIdx]
+    if (op && op.start === lineStart + col) {
+      const endCol = Math.min(line.length, op.end - lineStart)
+      for (let c = col; c < endCol; c++) bufToDisp[c] = disp
+      for (let i = 0; i < op.display.length; i++) {
+        out.push(op.display[i]!)
+        dispToBuf[disp++] = col
+      }
+      col = endCol
       continue
     }
+    bufToDisp[col] = disp
     out.push(line[col]!)
+    dispToBuf[disp++] = col
+    col++
   }
-  return out.join("")
-}
-
-function mapColumnThroughMarkup(col: number, lineStart: number, ops: MarkupOp[], dispLineStart: number): number {
-  let disp = dispLineStart
-  for (let c = 0; c < col; c++) {
-    const pos = lineStart + c
-    const op = markupOpAt(ops, pos)
-    if (op) {
-      if (pos === op.start) disp += op.display.length
-      continue
-    }
-    disp++
-  }
-  return disp
+  bufToDisp[line.length] = disp
+  dispToBuf[disp] = line.length
+  return { text: out.join(""), bufToDisp, dispToBuf }
 }
 
 export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult | null {
@@ -557,8 +567,22 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
   const bufStart: number[] = new Array(L)
   const lineLen: number[] = new Array(L)
   for (let o = 0, i = 0; i < L; i++) { bufStart[i] = o; lineLen[i] = lines[i]!.length; o += lineLen[i]! + 1 }
+  const opsByLine: MarkupOp[][] = Array.from({ length: L }, () => [])
+  if (hideMarkup && markupOps.length) {
+    let opIdx = 0
+    for (let i = 0; i < L; i++) {
+      const start = bufStart[i]!
+      const end = start + lineLen[i]!
+      while (opIdx < markupOps.length && markupOps[opIdx]!.end <= start) opIdx++
+      for (let j = opIdx; j < markupOps.length && markupOps[j]!.start < end; j++) {
+        if (markupOps[j]!.end > start) opsByLine[i]!.push(markupOps[j]!)
+      }
+    }
+  }
 
   const dispStart: number[] = new Array(L)
+  const displayLines: DisplayLineMap[] = []
+  const lineDisplayMaps: Array<DisplayLineMap | undefined> = new Array(L)
   const parts: string[] = []
   let dispLen = 0
   let lastVisibleEnd = 0
@@ -566,6 +590,9 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     if (foldHidden[i] || skipHidden[i] === 1) { dispStart[i] = lastVisibleEnd; continue }
     if (skipHidden[i] === 2) {
       dispStart[i] = lastVisibleEnd
+      const entry = { line: i, dispStart: dispLen, displayLen: 0 }
+      displayLines.push(entry)
+      lineDisplayMaps[i] = entry
       parts.push("\n")
       dispLen += 1
       lastVisibleEnd = dispLen
@@ -574,10 +601,20 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     if (dispLen > 0) { parts.push("\n"); dispLen += 1 }
     dispStart[i] = dispLen
     const rendered = hideMarkup
-      ? renderLineWithMarkup(lines[i]!, bufStart[i]!, markupOps)
-      : lines[i]!
-    parts.push(rendered)
-    dispLen += rendered.length
+      ? renderLineWithMarkupMap(lines[i]!, bufStart[i]!, opsByLine[i]!)
+      : null
+    const renderedText = rendered?.text ?? lines[i]!
+    const entry = {
+      line: i,
+      dispStart: dispLen,
+      displayLen: renderedText.length,
+      bufToDisp: rendered?.bufToDisp,
+      dispToBuf: rendered?.dispToBuf,
+    }
+    displayLines.push(entry)
+    lineDisplayMaps[i] = entry
+    parts.push(renderedText)
+    dispLen += renderedText.length
     lastVisibleEnd = dispLen
     if (i + 1 < L && foldHidden[i + 1]) { parts.push("..."); dispLen += 3 }
   }
@@ -594,9 +631,25 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     if (foldHidden[i] || skipHidden[i]) return dispStart[i]! // 1 = invisible, 2 = paragraph break
     const col = nn - bufStart[i]!
     if (!hideMarkup) return dispStart[i]! + Math.min(col, lineLen[i]!)
-    return mapColumnThroughMarkup(col, bufStart[i]!, markupOps, dispStart[i]!)
+    const rendered = lineDisplayMaps[i]
+    return dispStart[i]! + (rendered?.bufToDisp?.[Math.min(col, lineLen[i]!)] ?? Math.min(col, lineLen[i]!))
   }
-  const result = { text, map }
+  const unmap = (n: number): number => {
+    const nn = Math.max(0, Math.min(n, text.length))
+    if (!displayLines.length) return 0
+    let lo = 0, hi = displayLines.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (displayLines[mid]!.dispStart <= nn) lo = mid + 1; else hi = mid
+    }
+    const entry = displayLines[Math.max(0, lo - 1)]!
+    const col = Math.max(0, Math.min(nn - entry.dispStart, entry.displayLen))
+    const lineStart = bufStart[entry.line] ?? src.length
+    const lineLength = lineLen[entry.line] ?? 0
+    const bufCol = entry.dispToBuf?.[col] ?? Math.min(col, lineLength)
+    return Math.max(0, Math.min(lineStart + bufCol, src.length))
+  }
+  const result = { text, map, unmap }
   buffer.locals.set(MARKDOWN_FILTER_CACHE, {
     text: src,
     ranges,
@@ -788,6 +841,24 @@ function applyMarkdownViewModeEnter(buffer: BufferModel): void {
   if (getCustom<boolean>("markdown-hide-markup-in-view-modes") ?? true) {
     setMarkdownHideMarkup(buffer, true)
   }
+}
+
+function markdownToggleCheckboxAtPoint(buffer: BufferModel, point: number): boolean {
+  const clamped = Math.max(0, Math.min(point, buffer.text.length))
+  const lineStart = buffer.text.lastIndexOf("\n", Math.max(0, clamped - 1)) + 1
+  const nextNewline = buffer.text.indexOf("\n", lineStart)
+  const lineEnd = nextNewline === -1 ? buffer.text.length : nextNewline
+  const line = buffer.text.slice(lineStart, lineEnd)
+  const match = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/.exec(line)
+  if (!match) return false
+  const markerStart = lineStart + match[1]!.length - 1
+  const markerEnd = markerStart + 3
+  if (clamped < markerStart || clamped > markerEnd) return false
+  const checkPoint = lineStart + match[1]!.length
+  const next = match[2] === " " ? "x" : " "
+  buffer.replaceRange(checkPoint, checkPoint + 1, next)
+  buffer.point = checkPoint
+  return true
 }
 
 function bindMarkdownModeMap(keymap: Keymap): void {
@@ -1174,6 +1245,7 @@ export function install(editor: Editor): void {
     indentLine: markdownIndentLine,
     fontLock: markdownFontLock,
     displayFilter: markdownDisplayFilter,
+    mouseClick: markdownToggleCheckboxAtPoint,
     onEnter: applyMarkdownFaceRemap,
   })
 

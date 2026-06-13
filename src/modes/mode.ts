@@ -68,7 +68,8 @@ export type Mode = {
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void
   /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */
-  displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number } | null
+  displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
+  mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
 }
 
@@ -82,6 +83,7 @@ const MODE_GENERICS = {
   completeAtPoint: "complete-at-point",
   fontLock: "font-lock",
   displayFilter: "display-filter",
+  mouseClick: "mouse-click",
   beginningOfDefun: "beginning-of-defun-function",
   endOfDefun: "end-of-defun-function",
 } as const

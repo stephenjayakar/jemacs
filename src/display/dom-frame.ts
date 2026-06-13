@@ -305,7 +305,7 @@ function fillPane(
     const rows = renderBodyRows(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
     renderCaret(bodyEl, rows, model.cursor, defaultFace?.fg)
   }
-  else renderThemedText(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
+  else renderBodyRows(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
   if (modelineFace?.bg) modelineEl.style.backgroundColor = modelineFace.bg
   if (modelineFace?.fg) modelineEl.style.color = modelineFace.fg
   const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
@@ -355,7 +355,7 @@ function patchPane(
       const rows = renderBodyRows(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
       renderCaret(dom.bodyEl, rows, next.cursor, defaultFace?.fg)
     }
-    else renderThemedText(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
+    else renderBodyRows(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
   }
   if (modelineChanged) {
     const modelineFace = themeFace(theme, next.selected ? "modeLine" : "modeLineInactive")

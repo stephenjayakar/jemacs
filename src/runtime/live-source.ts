@@ -140,7 +140,7 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
   }, "Describe a custom variable and link to its source.")
 
   editor.command("describe-key", async ({ editor, args }) => {
-    const sequence = args.join(" ") || await editor.prompt("Describe key: ", "", "describe-key")
+    const sequence = args.join(" ") || await editor.readKeySequence("Describe key: ")
     if (!sequence) return
     const body = editor.describeKey(sequence)
     const binding = listKeyBindings().find(b => b.sequence === sequence || b.sequence === sequence.replace(/\s+/g, " "))

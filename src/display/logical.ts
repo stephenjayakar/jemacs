@@ -46,6 +46,8 @@ export type LogicalPane = {
    *  populated only until char-grid-layout / web-layout migrate
    *  (t-audit2-f8e12ae6). */
   displayMap?: (n: number) => number
+  /** Inverse of `displayMap`, used by host mouse hit-testing. */
+  displayUnmap?: (n: number) => number
   /** Font-lock + LSP + overlay-source + isearch spans, buffer-absolute. Region
    *  is *not* included here — derive it from `point`/`mark`. */
   spans: TextSpan[]
@@ -217,6 +219,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     displayText: filt?.text ?? buffer.text,
     displayOffsets,
     displayMap: paneDisplayMap({ displayOffsets }),
+    displayUnmap: filt?.unmap,
     spans,
     fontLockSpans,
     point,
@@ -239,7 +242,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
 
 /** Guard the mode's `displayFilter` so a buggy plugin degrades to identity
  *  instead of taking the frame down (t-audit2-ab15abf8). */
-function safeDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number } | null {
+function safeDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null {
   try {
     return modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null
   } catch (err) {

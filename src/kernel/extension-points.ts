@@ -107,6 +107,8 @@ export type ModeSpec = {
   keymap?: Keymap
   indentLine?: (buffer: BufferModel) => void
   fontLock?: (buffer: BufferModel) => TextSpan[]
+  displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
+  mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void

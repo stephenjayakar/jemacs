@@ -66,6 +66,12 @@ type MinibufferRequest = {
   resolve: (value: string | null) => void
 }
 
+type KeySequenceRequest = {
+  prompt: string
+  keys: string[]
+  resolve: (value: string | null) => void
+}
+
 export type CompletingReadOptions = {
   collection?: string[]
   completion?: "file"
@@ -180,6 +186,7 @@ export class Editor {
   macroRecording: string[] | null = null
   lastKbdMacro: string[] = []
   private lastEchoMessage = ""
+  private keySequenceRequest: KeySequenceRequest | null = null
   lsp: LspManager | null = null
   /** Stack of completing-read overrides; top wins. push/pop instead of save/restore so
    *  enable A → enable B → disable A → disable B doesn't resurrect A's function. */
@@ -319,6 +326,11 @@ export class Editor {
     buffer.point = point
     buffer.deactivateMark()
     this.windowLayout = setWindowLeafPoint(this.windowLayout, windowId, point)
+    const click = modeSystem.modeFeature(buffer.mode, "mouseClick")
+    if (click?.(buffer, point)) {
+      void this.changed("mouse-click")
+      return
+    }
     void this.changed("mouse-click")
   }
 
@@ -682,6 +694,10 @@ export class Editor {
   async handleKey(key: KeyEventLike): Promise<KeyDispatchResult> {
     this.lastKeyEvent = key
 
+    if (this.keySequenceRequest) {
+      return this.handleKeySequenceRead(key)
+    }
+
     if (this.isearch && this.isearchKeyHandler) {
       const isearchResult = await this.isearchKeyHandler(key)
       if (isearchResult) return isearchResult
@@ -790,6 +806,41 @@ export class Editor {
         reject(err)
       }
     })
+  }
+
+  async readKeySequence(prompt: string): Promise<string | null> {
+    if (this.keySequenceRequest) return null
+    return await new Promise(resolve => {
+      this.keySequenceRequest = { prompt, keys: [], resolve }
+      this.message(prompt)
+      void this.changed("read-key-sequence-open")
+    })
+  }
+
+  private async handleKeySequenceRead(key: KeyEventLike): Promise<KeyDispatchResult> {
+    const request = this.keySequenceRequest
+    if (!request) return { status: "unmatched" }
+    const token = keyToken(key)
+    if (token === "C-g") {
+      this.keySequenceRequest = null
+      request.resolve(null)
+      this.message("Quit")
+      await this.changed("read-key-sequence-cancel")
+      return { status: "command", command: "keyboard-quit" }
+    }
+    request.keys.push(token)
+    const sequence = normalizeSequence(request.keys.join(" "))
+    const result = this.keymaps.lookup(sequence)
+    if (result.status === "pending") {
+      this.message(`${request.prompt}${sequence}`)
+      await this.changed("read-key-sequence-prefix")
+      return { status: "pending" }
+    }
+    this.keySequenceRequest = null
+    request.resolve(sequence)
+    this.clearMessage()
+    await this.changed("read-key-sequence-done")
+    return { status: "inserted" }
   }
 
   completingRead(prompt: string, options: CompletingReadOptions): Promise<string | null> {

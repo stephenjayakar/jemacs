@@ -1,6 +1,7 @@
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import type { CommandContext } from "../../src/kernel/command"
 import { setCustom } from "../../src/runtime/custom"
 import { setFaceAttribute } from "../../src/runtime/faces"
 import { enableBuiltinTheme } from "../../src/themes"
@@ -10,6 +11,24 @@ import { install as installTiling } from "../../plugins/tiling"
 import { install as installWindow } from "../../plugins/window"
 import { install as installTreeSitterGrammars } from "../../plugins/tree-sitter-grammars"
 import "../../plugins/markdown"
+
+function installPersonalCommands(editor: Editor): void {
+  const bindKey = async ({ editor, args }: CommandContext) => {
+    const sequence = args[0] ?? await editor.readKeySequence("Press key sequence to bind: ")
+    if (!sequence) return
+    const command = args[1] ?? await editor.completingRead(`Command to bind to ${sequence}: `, {
+      collection: editor.commands.names(),
+      history: "command",
+    })
+    if (!command) return
+    if (!editor.commands.get(command)) throw new Error(`Not an interactive command: ${command}`)
+    editor.key(sequence, command)
+    editor.message(`Bound ${sequence} to ${command}`)
+  }
+  editor.command("my/bind-key", bindKey, "Interactively bind a key.")
+  editor.command("my/bind", bindKey, "Alias for `my/bind-key`.")
+  editor.command("i-bind-key", bindKey, "Alias for `my/bind-key`.")
+}
 
 /** Test fixture mirroring Stephen's personal config (see jemacs-stephen-config). */
 export async function install(editor: Editor): Promise<void> {
@@ -31,6 +50,7 @@ export async function install(editor: Editor): Promise<void> {
   installTiling(editor)
   editor.enableMinorMode("linum-mode")
   editor.enableMinorMode("vertico-mode")
+  installPersonalCommands(editor)
 
   editor.key("C-c t", "xref-find-definitions")
   editor.key("C-c C-t", "lsp-ui-peek-find-implementation")

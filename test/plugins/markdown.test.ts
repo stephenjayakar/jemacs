@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { BufferModel } from "../../src/kernel/buffer"
+import { buildDisplayModel } from "../../src/display/build-display-model"
+import { pointFromWindowClick } from "../../src/display/click-to-point"
+import { findPaneInModel } from "../../src/display/find-pane"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { FIXED_PITCH_FAMILY, getBufferFaceRemap, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
@@ -187,6 +190,66 @@ describe("markdownDisplayFilter", () => {
     const result = markdownDisplayFilter(buffer)
     expect(result?.text).toBe("link↪\n")
   })
+
+  test("unmaps hidden markup display columns back to buffer points", () => {
+    const buffer = new BufferModel({
+      name: "doc.md",
+      text: "# Title\nSome **bold** text\n",
+      mode: "markdown",
+    })
+    buffer.locals.set("markdown-hide-markup", true)
+    const result = markdownDisplayFilter(buffer)!
+    const displayPoint = result.text.indexOf("bold")
+    expect(result.unmap?.(displayPoint)).toBe(buffer.text.indexOf("bold"))
+    expect(result.map(buffer.text.indexOf("bold"))).toBe(displayPoint)
+  })
+})
+
+describe("markdown mouse clicks", () => {
+  test("clicking a task checkbox toggles it", () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "- [ ] task\n- [x] done\n", "markdown")
+    const firstCheck = buffer.text.indexOf("[ ]") + 1
+
+    editor.clickWindow(editor.selectedWindowId, firstCheck)
+
+    expect(buffer.text).toBe("- [x] task\n- [x] done\n")
+  })
+
+  test("click hit-testing accounts for hidden markup and centered visual fill", () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "# Title\nSome **bold** text\n", "markdown")
+    buffer.locals.set("markdown-hide-markup", true)
+    buffer.locals.set("markdown-visual-fill-column-mode", true)
+    buffer.locals.set("markdown-fill-column", 20)
+    buffer.locals.set("markdown-visual-fill-column-center-text", true)
+    const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24, cols: 40 } })
+    const pane = findPaneInModel(model.windows, editor.selectedWindowId)!
+    const displayBoldCol = "Some ".length
+    const point = pointFromWindowClick(
+      buffer.text,
+      pane.clickState,
+      1,
+      pane.clickState.gutterPrefixLen + (pane.clickState.leftPadding ?? 0) + displayBoldCol,
+      pane.bodyLineBudget,
+    )
+
+    expect(point).toBe(buffer.text.indexOf("bold"))
+  })
+})
+
+test("markdown isearch treats [ as a literal character", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "before [link](url)\n", "markdown")
+  buffer.point = 0
+
+  await keySeq(editor, "C-s", "[")
+
+  expect(editor.isearch?.string).toBe("[")
+  expect(buffer.point).toBe(buffer.text.indexOf("[") + 1)
 })
 
 describe("markdown-toggle-markup-hiding", () => {

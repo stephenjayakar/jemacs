@@ -191,6 +191,7 @@ function layoutLeafPane(
     : maxLines
   const syncSpans = bufferHighlightSpans(pane.point, mark, pane.spans)
   const clickState = windowClickState(dText, startLine, displayLines, pane.showLineNumbers)
+  if (pane.displayUnmap) clickState.displayToBuffer = pane.displayUnmap
   // Hosts hard-wrap overflowing rows at column 0, which paints continuation
   // text into the next line's gutter (t-16be1a86). Pre-wrap here so every
   // continuation row carries the gutter's left padding.
@@ -228,7 +229,10 @@ function layoutLeafPane(
   )
   if (visualFill?.center && columnWidth != null && contentWidth != null && columnWidth < contentWidth) {
     const leftMargin = Math.floor((contentWidth - columnWidth) / 2)
-    if (leftMargin > 0) body = padBodyLines(body, " ".repeat(leftMargin))
+    if (leftMargin > 0) {
+      clickState.leftPadding = leftMargin
+      body = padBodyLines(body, " ".repeat(leftMargin))
+    }
   }
 
   return {
