@@ -3,6 +3,7 @@ import { BufferModel } from "../../src/kernel/buffer"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import { pointFromWindowClick } from "../../src/display/click-to-point"
 import { findPaneInModel } from "../../src/display/find-pane"
+import { themedTextPlain } from "../../src/display/themed-text"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { FIXED_PITCH_FAMILY, getBufferFaceRemap, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
@@ -250,6 +251,22 @@ test("markdown isearch treats [ as a literal character", async () => {
 
   expect(editor.isearch?.string).toBe("[")
   expect(buffer.point).toBe(buffer.text.indexOf("[") + 1)
+})
+
+test("markdown isearch owns the minibuffer row while markup hiding is active", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "before [link](url)\n", "markdown")
+  buffer.locals.set("markdown-hide-markup", true)
+  buffer.point = 0
+
+  await keySeq(editor, "C-s", "[")
+  const model = buildDisplayModel(editor, { lastMessage: "I-search: [", viewport: { rows: 24, cols: 80 } })
+
+  expect(editor.isearch?.string).toBe("[")
+  expect(buffer.point).toBe(buffer.text.indexOf("[") + 1)
+  expect(themedTextPlain(model.minibuffer)).toContain("I-search: [")
+  expect(themedTextPlain(model.echo)).not.toContain("I-search")
 })
 
 describe("markdown-toggle-markup-hiding", () => {
