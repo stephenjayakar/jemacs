@@ -2,11 +2,11 @@ import { expect, test } from "bun:test"
 import { makeEditor } from "../plugins/helper"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import { themedTextPlain } from "../../src/display/themed-text"
+import { findWindowLeaf } from "../../src/kernel/window"
 
 // t-41a091bd: M-> puts point on the last body row; wrapBodyRows then adds
 // continuation rows for any long line in view, so the host's fixed-height
-// body truncates the cursor row. syncSelectedWindowViewport's math is fine —
-// the row budget is consumed by wrapping it can't see.
+// body can truncate the cursor row if viewport math and wrapping disagree.
 test("end-of-buffer: cursor stays within bodyLineBudget when a visible line wraps", async () => {
   const editor = makeEditor()
   const lines = Array.from({ length: 48 }, (_, i) => `line ${i}`)
@@ -53,4 +53,18 @@ test("end-of-buffer: cursor stays visible inside one long wrapped line", async (
   expect(cursorRow).toBeGreaterThanOrEqual(0)
   expect(cursorRow).toBeLessThan(pane!.bodyLineBudget)
   expect(rows.length).toBe(pane!.bodyLineBudget)
+})
+
+test("wrapped JSON value before point counts against the cursor boundary", () => {
+  const editor = makeEditor()
+  const text = `{\n  "payload": "${"x".repeat(320)}",\n  "ok": true\n}\n`
+  const buffer = editor.scratch("data.json", text, "json")
+  buffer.point = text.indexOf('  "ok"')
+
+  const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 8, cols: 40 } })
+  const leaf = findWindowLeaf(editor.windowLayout, editor.selectedWindowId)!
+  const pane = model.windows.kind === "leaf" ? model.windows.pane : null
+  const firstRow = themedTextPlain(pane!.body).split("\n")[0]!
+  expect(leaf.startLine).toBeGreaterThanOrEqual(2)
+  expect(firstRow).toContain('"ok"')
 })

@@ -5,7 +5,7 @@ import type { DisplayModel } from "./protocol"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { setEditorDisplayContext } from "./scroll"
 import { paneWrapLayoutFor } from "./display-wrap"
-import { computeLineVisualRows, visualRowLineRange } from "./visual-line-height"
+import { computeLineVisualRows, computeWrappedLineRows, hasNonUnitVisualRows, visualRowLineRange } from "./visual-line-height"
 import { buildLogicalModel, pointLineCol, type LogicalPane, type LogicalWindowNode } from "./logical"
 import { layoutCharGrid, splitColBudget, splitLineBudget } from "./char-grid-layout"
 
@@ -30,9 +30,13 @@ export function buildDisplayModel(editor: Editor, options: BuildDisplayOptions):
   // *after* the logical build so `LogicalPane.startLine` matches the wrap
   // input the legacy path used for visual-row weighting.
   if (selected) {
-    const visualRows = hostCapabilities?.perFaceFonts === true
-      ? selectedVisualRows(editor, selected.pane, selected.maxLines, selected.cols)
-      : undefined
+    const visualRows = selectedVisualRows(
+      editor,
+      selected.pane,
+      selected.maxLines,
+      selected.cols,
+      hostCapabilities?.perFaceFonts === true,
+    )
     editor.syncSelectedWindowViewport(selected.maxLines, visualRows)
   }
   return model
@@ -93,18 +97,28 @@ function stampPaneGeometry(pane: LogicalPane, rows: number, cols: number | undef
   locals.set("window-body-cols", Math.max(1, cols ?? fallbackCols ?? 80))
 }
 
-function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number, cols?: number): number[] | undefined {
-  if (!pane.buffer) return undefined
+function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number, cols: number | undefined, useFontMetrics: boolean): number[] | undefined {
   const dText = pane.displayText
   const map = pane.displayMap
   const dPoint = map ? map(pane.point) : pane.point
   const cursorLine = pointLineCol(dText, dPoint).line - 1
   const displayLines = dText.split("\n")
   const lineRange = visualRowLineRange(pane.startLine, cursorLine, maxLines, displayLines.length)
+  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
+  if (!useFontMetrics) {
+    const wrappedRows = computeWrappedLineRows(displayLines, {
+      wrapCols: wrapLayout.wrapCols,
+      gutterPrefixLen: wrapLayout.gutterPrefixLen,
+      wordWrap: wrapLayout.wordWrap,
+      fromLine: lineRange.fromLine,
+      toLine: lineRange.toLine,
+    })
+    return hasNonUnitVisualRows(wrappedRows) ? wrappedRows : undefined
+  }
+  if (!pane.buffer) return undefined
   const dFontLockSpans = map
     ? pane.fontLockSpans.map(s => ({ ...s, start: map(s.start), end: map(s.end) }))
     : pane.fontLockSpans
-  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
   return computeLineVisualRows(dText, dFontLockSpans, editor.theme, pane.buffer, pane.textScale, {
     wrapCols: wrapLayout.wrapCols,
     gutterPrefixLen: wrapLayout.gutterPrefixLen,

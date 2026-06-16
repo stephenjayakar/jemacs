@@ -105,6 +105,28 @@ export function computeLineVisualRows(
 /** @deprecated Use `computeLineVisualRows`. Kept as alias for tests. */
 export const computeLineVisualWeights = computeLineVisualRows
 
+/** Terminal/char-grid visual row cost per logical line from wrapping alone.
+ *  GUI hosts layer font-height costs on top via `computeLineVisualRows`; TUI
+ *  still needs these wrap costs so viewport boundary checks use screen rows. */
+export function computeWrappedLineRows(
+  lines: readonly string[],
+  wrap?: LineWrapOptions,
+): number[] | undefined {
+  if (wrap?.wrapCols == null) return undefined
+  if (!lines.length) return []
+  const fromLine = Math.max(0, Math.min(wrap.fromLine ?? 0, lines.length - 1))
+  const toLine = Math.max(fromLine, Math.min(wrap.toLine ?? lines.length - 1, lines.length - 1))
+  const rows: number[] = new Array(lines.length)
+  for (let i = fromLine; i <= toLine; i++) {
+    rows[i] = wrapRowsForContent(lines[i] ?? "", wrap.wrapCols, wrap.gutterPrefixLen ?? 0, wrap.wordWrap)
+  }
+  return rows
+}
+
+export function hasNonUnitVisualRows(rows: readonly number[] | undefined): boolean {
+  return rows?.some(row => row != null && Math.abs(row - 1) > 1e-6) ?? false
+}
+
 export function visualRowLineRange(startLine: number, cursorLine: number, maxLines: number, lineCount: number): { fromLine: number; toLine: number } {
   const visibleStart = Math.max(0, Math.min(startLine, Math.max(0, lineCount - 1)))
   const cursor = Math.max(0, Math.min(cursorLine, Math.max(0, lineCount - 1)))

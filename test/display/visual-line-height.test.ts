@@ -6,6 +6,7 @@ import { DOM_FRAME_LINE_HEIGHT_RATIO, DOM_FRAME_ROW_PX } from "../../src/display
 import { wrapRowsForContent } from "../../src/display/display-wrap"
 import {
   computeLineVisualRows,
+  computeWrappedLineRows,
   syncViewportStartLine,
   visibleLineCountForBudget,
   visualRowLineRange,
@@ -81,6 +82,15 @@ test("visualRowLineRange bounds GUI visual row work around viewport and cursor",
 test("wrapRowsForContent counts continuation rows", () => {
   expect(wrapRowsForContent(10, 80, 0)).toBe(1)
   expect(wrapRowsForContent(200, 80, 0)).toBe(3)
+})
+
+test("computeWrappedLineRows counts terminal wrap rows without font metrics", () => {
+  const rows = computeWrappedLineRows(["short", "X".repeat(200)], {
+    wrapCols: 40,
+    gutterPrefixLen: 0,
+  })
+  expect(rows![0]).toBe(1)
+  expect(rows![1]).toBe(5)
 })
 
 test("wrapRowsForContent honors word-wrap boundaries", () => {

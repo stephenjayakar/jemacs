@@ -11,7 +11,14 @@ import { terminalSurfaceToThemedText, type TerminalSurfaceModel } from "./termin
 import { plainThemedText, type ThemedChunk, type ThemedText } from "./themed-text"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { paneWrapLayoutFor, wrapBodyRows } from "./display-wrap"
-import { computeLineVisualRows, syncViewportStartLine, visibleLineCountForBudget, visualRowLineRange } from "./visual-line-height"
+import {
+  computeLineVisualRows,
+  computeWrappedLineRows,
+  hasNonUnitVisualRows,
+  syncViewportStartLine,
+  visibleLineCountForBudget,
+  visualRowLineRange,
+} from "./visual-line-height"
 import type { LogicalChildFrame, LogicalModel, LogicalPane, LogicalWindowNode } from "./logical"
 import { pointLineCol } from "./logical"
 
@@ -175,6 +182,13 @@ function layoutLeafPane(
   const useVisualWeights = hostCapabilities?.perFaceFonts === true
   const cursorLine = pane.selected ? pointLineCol(dText, dPoint).line - 1 : startLine
   const lineRange = visualRowLineRange(startLine, cursorLine, maxLines, lineCount)
+  const wrappedRows = useVisualWeights ? undefined : computeWrappedLineRows(dLines, {
+    wrapCols: wrapLayout.wrapCols,
+    gutterPrefixLen: wrapLayout.gutterPrefixLen,
+    wordWrap: wrapLayout.wordWrap,
+    fromLine: lineRange.fromLine,
+    toLine: lineRange.toLine,
+  })
   const visualRows = useVisualWeights
     ? computeLineVisualRows(dText, dFontLockSpans, logical.theme, pane.buffer, pane.textScale, {
       wrapCols: wrapLayout.wrapCols,
@@ -184,7 +198,7 @@ function layoutLeafPane(
       fromLine: lineRange.fromLine,
       toLine: lineRange.toLine,
     })
-    : undefined
+    : hasNonUnitVisualRows(wrappedRows) ? wrappedRows : undefined
   if (pane.selected) {
     // Keep point on-screen — same correction the shim wrote back to the editor.
     startLine = syncViewportStartLine(startLine, cursorLine, maxLines, visualRows)
