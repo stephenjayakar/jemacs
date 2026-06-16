@@ -74,6 +74,16 @@ type KeySequenceRequest = {
   resolve: (value: string | null) => void
 }
 
+type BufferSelectionOptions = {
+  recordRecency?: boolean
+  recordWindowHistory?: boolean
+}
+
+type WindowBufferHistory = {
+  previous: string[]
+  next: string[]
+}
+
 export const LARGE_FILE_WARNING_THRESHOLD = 10 * 1024 * 1024
 export const LARGE_FILE_LITERAL_LOCAL = "buffer-file-literally"
 const LARGE_FILE_LOADING_LOCAL = "file-loading"
@@ -212,6 +222,7 @@ export class Editor {
   private readonly displayNames = new Map<string, string>()
   /** Buffer ids most-recently-selected first; killBuffer's fallback source. */
   private readonly bufferRecency: string[] = []
+  private readonly windowBufferHistory = new Map<string, WindowBufferHistory>()
   private _currentBufferId!: string
   private recordBufferRecency = true
   private autoSaveTimer: ReturnType<typeof setInterval> | null = null
@@ -288,6 +299,7 @@ export class Editor {
     if (!findWindowLeaf(this._windowLayout, this.selectedWindowId)) {
       this.selectedWindowId = listWindowLeaves(this._windowLayout)[0]!.id
     }
+    this.pruneWindowBufferHistories()
     this.currentBufferId = findWindowLeaf(this._windowLayout, this.selectedWindowId)!.bufferId
     this.restoreSelectedWindowPoint()
     if (reason) void this.changed(reason)
@@ -377,6 +389,7 @@ export class Editor {
       this.selectedWindowId = listWindowLeaves(this.windowLayout)[0]!.id
       this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
     }
+    this.pruneWindowBufferHistories()
     this.restoreSelectedWindowPoint()
   }
 
@@ -458,9 +471,11 @@ export class Editor {
     buffer.point = Math.min(leaf.point, buffer.text.length)
   }
 
-  private setSelectedWindowBuffer(bufferId: string, options: { recordRecency?: boolean } = {}): void {
+  private setSelectedWindowBuffer(bufferId: string, options: BufferSelectionOptions = {}): void {
+    const oldBufferId = this.selectedWindowLeaf()?.bufferId ?? this.currentBufferId
     this.persistSelectedWindowPoint()
     const record = options.recordRecency ?? true
+    if (options.recordWindowHistory ?? record) this.recordWindowBufferSwitch(oldBufferId, bufferId)
     const previous = this.recordBufferRecency
     this.recordBufferRecency = record
     try {
@@ -470,6 +485,68 @@ export class Editor {
     }
     this.windowLayout = setWindowLeafBuffer(this.windowLayout, this.selectedWindowId, bufferId, this.buffers.get(bufferId)?.point ?? 0)
     this.restoreSelectedWindowPoint()
+  }
+
+  private windowHistory(windowId = this.selectedWindowId): WindowBufferHistory {
+    let history = this.windowBufferHistory.get(windowId)
+    if (!history) {
+      history = { previous: [], next: [] }
+      this.windowBufferHistory.set(windowId, history)
+    }
+    return history
+  }
+
+  private pushHistoryBuffer(stack: string[], bufferId: string): void {
+    const buffer = this.buffers.get(bufferId)
+    if (!buffer || buffer.kind === "minibuffer") return
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] === bufferId) stack.splice(i, 1)
+    }
+    stack.unshift(bufferId)
+    stack.length = Math.min(stack.length, 64)
+  }
+
+  private popHistoryBuffer(stack: string[], currentBufferId: string): string | null {
+    while (stack.length) {
+      const id = stack.shift()!
+      const buffer = this.buffers.get(id)
+      if (buffer && buffer.kind !== "minibuffer" && id !== currentBufferId) return id
+    }
+    return null
+  }
+
+  private recordWindowBufferSwitch(fromId: string, toId: string): void {
+    if (fromId === toId) return
+    const history = this.windowHistory()
+    this.pushHistoryBuffer(history.previous, fromId)
+    history.next = []
+    this.removeHistoryBuffer(history.previous, toId)
+    this.removeHistoryBuffer(history.next, toId)
+  }
+
+  private removeHistoryBuffer(stack: string[], bufferId: string): void {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] === bufferId) stack.splice(i, 1)
+    }
+  }
+
+  private removeBufferFromWindowHistories(bufferId: string): void {
+    for (const history of this.windowBufferHistory.values()) {
+      this.removeHistoryBuffer(history.previous, bufferId)
+      this.removeHistoryBuffer(history.next, bufferId)
+    }
+  }
+
+  private pruneWindowBufferHistories(): void {
+    const liveWindows = new Set(listWindowLeaves(this.windowLayout).map(leaf => leaf.id))
+    for (const [windowId, history] of this.windowBufferHistory) {
+      if (!liveWindows.has(windowId)) {
+        this.windowBufferHistory.delete(windowId)
+        continue
+      }
+      history.previous = history.previous.filter(id => this.buffers.get(id)?.kind !== "minibuffer")
+      history.next = history.next.filter(id => this.buffers.get(id)?.kind !== "minibuffer")
+    }
   }
 
   get currentBuffer(): BufferModel {
@@ -505,11 +582,34 @@ export class Editor {
   }
 
   cycleBuffer(delta: number): BufferModel {
+    if (delta === 0) return this.currentBuffer
+    const direction = delta > 0 ? "previous" : "next"
+    let result = this.currentBuffer
+    for (let step = 0; step < Math.abs(delta); step++) {
+      result = this.cycleBufferOne(direction)
+    }
+    return result
+  }
+
+  private cycleBufferOne(direction: "previous" | "next"): BufferModel {
+    const currentId = this.currentBufferId
+    const history = this.windowHistory()
+    const historyStack = direction === "previous" ? history.previous : history.next
+    const oppositeStack = direction === "previous" ? history.next : history.previous
+    const historyTarget = this.popHistoryBuffer(historyStack, currentId)
+    if (historyTarget) {
+      this.pushHistoryBuffer(oppositeStack, currentId)
+      return this.switchToBuffer(historyTarget, { recordRecency: false, recordWindowHistory: false })
+    }
+
     const values = this.bufferCycleOrder()
-    const i = values.findIndex(b => b.id === this.currentBufferId)
+    const i = values.findIndex(b => b.id === currentId)
     const start = i === -1 ? 0 : i
+    const delta = direction === "previous" ? 1 : -1
     const next = ((start + delta) % values.length + values.length) % values.length
-    return this.switchToBuffer(values[next]!.id, { recordRecency: false })
+    const target = values[next]!
+    if (target.id !== currentId) this.pushHistoryBuffer(oppositeStack, currentId)
+    return this.switchToBuffer(target.id, { recordRecency: false, recordWindowHistory: false })
   }
 
   get minibufferDepthLevel(): number {
@@ -567,7 +667,7 @@ export class Editor {
     }
   }
 
-  switchToBuffer(idOrName: string, options: { recordRecency?: boolean } = {}): BufferModel {
+  switchToBuffer(idOrName: string, options: BufferSelectionOptions = {}): BufferModel {
     const found = this.buffers.get(idOrName)
       ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
       ?? this.addBuffer(new BufferModel({ name: idOrName }))
@@ -1162,6 +1262,7 @@ export class Editor {
     this.buffers.delete(target.id)
     const ri = this.bufferRecency.indexOf(target.id)
     if (ri !== -1) this.bufferRecency.splice(ri, 1)
+    this.removeBufferFromWindowHistories(target.id)
     this.uniquifyBufferNames()
     this.windowLayout = removeBufferFromWindows(this.windowLayout, target.id, fallbackId)
     if (findWindowLeaf(this.windowLayout, this.selectedWindowId) == null) {

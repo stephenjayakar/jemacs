@@ -435,6 +435,34 @@ test("previous-buffer returns to dired after visiting an existing file from dire
   }
 })
 
+test("previous-buffer returns to dired after visiting multiple files from dired", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-dired-prev-multiple-"))
+  try {
+    const a = join(dir, "a.txt")
+    const b = join(dir, "b.txt")
+    await writeFile(a, "a\n")
+    await writeFile(b, "b\n")
+    const editor = installEditor()
+    const dired = await editor.openDirectory(dir)
+    dired.point = dired.text.indexOf("a.txt")
+
+    await editor.run("dired-find-file")
+    expect(editor.currentBuffer.path).toBe(a)
+
+    await editor.run("previous-buffer")
+    expect(editor.currentBuffer.id).toBe(dired.id)
+
+    dired.point = dired.text.indexOf("b.txt")
+    await editor.run("dired-find-file")
+    expect(editor.currentBuffer.path).toBe(b)
+
+    await editor.run("previous-buffer")
+    expect(editor.currentBuffer.id).toBe(dired.id)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("tab-bar-switch-to-next-tab honors positive numeric prefix and wraps", async () => {
   const editor = installEditor()
   await createThreeTabs(editor)
