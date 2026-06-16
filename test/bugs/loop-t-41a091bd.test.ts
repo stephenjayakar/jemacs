@@ -39,3 +39,18 @@ test("end-of-buffer: cursor on last body row when nothing wraps (trailing newlin
   expect(rows.length).toBe(pane!.bodyLineBudget)
   expect(rows.at(-1)).toBe("█")
 })
+
+test("end-of-buffer: cursor stays visible inside one long wrapped line", async () => {
+  const editor = makeEditor()
+  editor.scratch("t.txt", "X".repeat(400), "text").point = 0
+
+  await editor.run("end-of-buffer")
+
+  const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 8, cols: 40 } })
+  const pane = model.windows.kind === "leaf" ? model.windows.pane : null
+  const rows = themedTextPlain(pane!.body).split("\n")
+  const cursorRow = rows.findIndex(r => r.includes("█"))
+  expect(cursorRow).toBeGreaterThanOrEqual(0)
+  expect(cursorRow).toBeLessThan(pane!.bodyLineBudget)
+  expect(rows.length).toBe(pane!.bodyLineBudget)
+})

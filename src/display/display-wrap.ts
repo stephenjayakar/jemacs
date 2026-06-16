@@ -76,12 +76,13 @@ export function wrapBodyRows(
   maxRows?: number,
   keepTop = false,
   wordWrap = false,
+  keepRowContaining?: string,
 ): ThemedText {
   if (cols == null || cols <= padLen + 1) return body
   const logicalRows = splitLogicalRows(body)
   const rows = logicalRows.flatMap(row => wrapStyledLine(row, cols, padLen, wordWrap))
   const kept = maxRows != null && rows.length > maxRows
-    ? keepTop ? rows.slice(0, maxRows) : rows.slice(rows.length - maxRows)
+    ? keptWrappedRows(rows, maxRows, keepTop, keepRowContaining)
     : rows
   const out: ThemedChunk[] = []
   for (let i = 0; i < kept.length; i++) {
@@ -92,6 +93,24 @@ export function wrapBodyRows(
 }
 
 type StyledChar = { ch: string; style: Omit<ThemedChunk, "text"> }
+
+function keptWrappedRows(
+  rows: StyledChar[][],
+  maxRows: number,
+  keepTop: boolean,
+  keepRowContaining?: string,
+): StyledChar[][] {
+  const keepRow = keepRowContaining
+    ? rows.findIndex(row => row.some(c => c.ch === keepRowContaining))
+    : -1
+  if (keepRow >= 0) {
+    const first = keepTop && keepRow < maxRows
+      ? 0
+      : Math.max(0, Math.min(keepRow - maxRows + 1, rows.length - maxRows))
+    return rows.slice(first, first + maxRows)
+  }
+  return keepTop ? rows.slice(0, maxRows) : rows.slice(rows.length - maxRows)
+}
 
 function splitLogicalRows(body: ThemedText): StyledChar[][] {
   const rows: StyledChar[][] = [[]]

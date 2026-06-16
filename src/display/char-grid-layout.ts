@@ -229,6 +229,7 @@ function layoutLeafPane(
     maxLines,
     keepWrappedTop,
     wordWrap,
+    pane.selected ? "█" : undefined,
   )
   if (visualFill?.center && columnWidth != null && contentWidth != null && columnWidth < contentWidth) {
     const leftMargin = Math.floor((contentWidth - columnWidth) / 2)
