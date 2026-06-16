@@ -4,7 +4,6 @@ import type { BufferModel } from "../kernel/buffer"
 import { findWindowLeaf, type WindowNode } from "../kernel/window"
 import { defcustom, getCustom } from "../runtime/custom"
 import type { HostCapabilities } from "./protocol"
-import { syncViewportStartLine } from "./visual-line-height"
 import {
   contentAreaLines,
   defaultTerminalRows,
@@ -47,6 +46,31 @@ export function scrollDownCommand(editor: Editor, arg: number | null): void {
   runScrollCommand(editor, arg, -1)
 }
 
+/** Viewport-relative line scroll for mouse wheel input; unlike C-v/M-v, it is not point-anchored. */
+export function scrollWindowByLines(editor: Editor, lines: number): void {
+  const leaf = editor.selectedWindowLeaf()
+  if (!leaf) return
+  const delta = Number.isFinite(lines) ? Math.trunc(lines) : 0
+  if (delta === 0) return
+
+  const buffer = editor.currentBuffer
+  const lineCount = buffer.text.split("\n").length
+  if (lineCount === 0) return
+
+  const bodyBudget = selectedWindowBodyBudget(editor)
+  const visualRows = visualRowsForBuffer(editor, buffer)
+  const maxStart = maxStartLine(bodyBudget, lineCount, visualRows)
+  const newStart = Math.max(0, Math.min(maxStart, leaf.startLine + delta))
+  editor.setSelectedWindowStartLine(newStart)
+
+  const oldPointLine = buffer.lineCol().line - 1
+  const visibleAfter = visibleLinesAtStart(newStart, bodyBudget, lineCount, visualRows)
+  const topLine = newStart
+  const bottomLine = newStart + visibleAfter - 1
+  const newPointLine = Math.max(topLine, Math.min(bottomLine, oldPointLine))
+  setBufferPointToLine(buffer, newPointLine, buffer.lineCol().col)
+}
+
 function runScrollCommand(editor: Editor, arg: number | null, direction: 1 | -1): void {
   const scrollErrorTopBottom = getCustom<boolean>("scroll-error-top-bottom") ?? false
   try {
@@ -85,13 +109,7 @@ function windowScroll(editor: Editor, prefixArg: number | null, direction: 1 | -
     : prefixArg! * direction
 
   const oldPointLine = buffer.lineCol().line - 1
-  let startLine = leaf.startLine
-
-  // If point is not visible, move window start toward point (half-window recenter).
-  const visibleBefore = visibleLinesAtStart(startLine, bodyBudget, lineCount, visualRows)
-  if (oldPointLine < startLine || oldPointLine >= startLine + visibleBefore) {
-    startLine = syncViewportStartLine(startLine, oldPointLine, bodyBudget, visualRows)
-  }
+  const startLine = scrollAnchorStartLine(oldPointLine, bodyBudget, lineCount, visualRows)
 
   if (n < 0 && startLine === 0) throw new ScrollBoundary("beginning")
 
@@ -186,6 +204,27 @@ function visibleLinesAtStart(
 ): number {
   if (!visualRows?.length) return Math.min(bodyBudget, Math.max(1, lineCount - startLine))
   return visibleLineCountForBudget(startLine, bodyBudget, lineCount, visualRows)
+}
+
+function scrollAnchorStartLine(
+  pointLine: number,
+  bodyBudget: number,
+  lineCount: number,
+  visualRows?: readonly number[],
+): number {
+  const cursorLine = Math.max(0, Math.min(lineCount - 1, pointLine))
+  const halfWindow = Math.max(0, Math.floor(bodyBudget / 2))
+  if (!visualRows?.length) return Math.max(0, Math.min(lineCount - 1, cursorLine - halfWindow))
+
+  let startLine = cursorLine
+  let remainingRows = halfWindow
+  while (startLine > 0) {
+    const previousLineRows = visualRows[startLine - 1] ?? 1
+    if (previousLineRows > remainingRows + 1e-6) break
+    remainingRows -= previousLineRows
+    startLine--
+  }
+  return startLine
 }
 
 // Emacs lets C-v advance until the last line is alone at the top; only signal
