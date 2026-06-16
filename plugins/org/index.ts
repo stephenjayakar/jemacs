@@ -1,7 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import type { TextSpan } from "../../src/modes/mode"
+import type { FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 
@@ -259,9 +259,9 @@ function gotoHeading(buffer: BufferModel, dir: 1 | -1): boolean {
   return true
 }
 
-export function orgFontLock(buffer: BufferModel): TextSpan[] {
+export function orgFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
-  for (const h of orgParseHeadlines(buffer.text)) {
+  for (const h of orgParseHeadlinesInRange(buffer.text, range)) {
     const starsEnd = h.start + h.level
     spans.push({ start: h.start, end: starsEnd, face: "comment" })
     let titleStart = starsEnd + 1
@@ -275,6 +275,29 @@ export function orgFontLock(buffer: BufferModel): TextSpan[] {
     if (titleStart < h.end) spans.push({ start: titleStart, end: h.end, face: "function" })
   }
   return spans
+}
+
+function orgParseHeadlinesInRange(text: string, range?: FontLockRange): OrgHeadline[] {
+  if (!range) return orgParseHeadlines(text)
+  const out: OrgHeadline[] = []
+  const lines = text.slice(range.start, range.end).split("\n")
+  let offset = range.start
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const m = HEADLINE_RE.exec(line)
+    if (m) {
+      out.push({
+        line: range.startLine + i,
+        start: offset,
+        end: offset + line.length,
+        level: m[1]!.length,
+        keyword: (m[2] as "TODO" | "DONE" | undefined) ?? null,
+        title: m[3] ?? "",
+      })
+    }
+    offset += line.length + 1
+  }
+  return out
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {

@@ -42,6 +42,9 @@ setModeSystem({ makeDirectoryBuffer: makeDiredBuffer })
 defcustom("make-backup-files", "boolean", true,
   "Non-nil means make a backup of a file the first time it is saved.")
 
+defcustom("large-file-warning-threshold", "number", 10 * 1024 * 1024,
+  "Files larger than this many bytes are visited literally, skipping expensive mode setup. Set to 0 to disable.")
+
 /** Emacs `substitute-in-file-name`: typing an absolute path or `~` after the
  *  prefilled directory restarts from there, so `/a/b//etc/x` → `/etc/x`.
  *  A leading `~` is expanded so node:path `resolve()` doesn't treat it as a
@@ -97,6 +100,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("find-file", findFile, "Open a file into a buffer.")
 
+  editor.command("find-file-literally", async ({ editor, args }) => {
+    const input = args[0] ?? await editor.completingRead("Find file literally: ", {
+      completion: "file",
+      history: "file",
+      initialValue: directoryInitialValue(editor.currentBuffer.directory() ?? process.cwd()),
+    })
+    if (!input) return
+    const path = substituteInFileName(input)
+    await editor.openFile(path, { literally: true })
+    editor.message(`Opened ${path} literally`)
+  }, "Visit a file literally, without major-mode setup or file hooks.")
+
   editor.command("find-file-read-only", async ({ editor, args }) => {
     const input = args[0] ?? await editor.completingRead("Find file read-only: ", {
       completion: "file",
@@ -105,10 +120,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     })
     if (!input) return
     const path = substituteInFileName(input)
-    const buffer = await editor.openFile(path)
-    buffer.readOnly = true
+    const buffer = await editor.openFile(path, { readOnly: true })
     editor.message(`Opened ${path} read-only`)
   }, "Open a file into a buffer read-only.")
+
+  editor.command("normal-mode", async ({ editor, buffer }) => {
+    await editor.normalMode(buffer)
+  }, "Re-infer and enable the normal major mode for the current buffer.")
 
   editor.command("write-file", async ({ buffer, editor, args }) => {
     const path = args[0] ?? await editor.prompt("Write file: ", buffer.path ?? "", "write-file")

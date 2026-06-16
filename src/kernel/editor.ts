@@ -1,11 +1,12 @@
 import { basename, dirname, resolve, sep } from "node:path"
-import { BufferModel } from "./buffer"
+import { BufferModel, inferMode } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
 import { emacsKeyDescription, isPrintable, Keymap, KeymapStack, keyToken, normalizeSequence, type KeyEventLike } from "./keymap"
 import { digitFromKey, PrefixArgumentState } from "./prefix-argument"
 import type {
   CompletionCandidate,
+  FontLockRange,
   MinorModeSpec as MinorMode,
   TextSpan,
   Theme,
@@ -44,6 +45,7 @@ import { modeHookName, runHooks } from "./hooks"
 import type { LspManager } from "../lsp/manager"
 import { fileExists, isDirectory, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
+import { getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
 import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
 import type { SourceLocation } from "../runtime/source"
@@ -71,6 +73,11 @@ type KeySequenceRequest = {
   keys: string[]
   resolve: (value: string | null) => void
 }
+
+export const LARGE_FILE_WARNING_THRESHOLD = 10 * 1024 * 1024
+export const LARGE_FILE_LITERAL_LOCAL = "buffer-file-literally"
+const LARGE_FILE_LOADING_LOCAL = "file-loading"
+const LARGE_FILE_SIZE_LOCAL = "large-file-size"
 
 export type CompletingReadOptions = {
   collection?: string[]
@@ -145,7 +152,7 @@ function isRedispatchKeyResult(value: unknown): value is { redispatchKey: KeyEve
 
 export class Editor {
   readonly buffers = new Map<string, BufferModel>()
-  private readonly fontLockCache = new WeakMap<BufferModel, { text: string; spans: TextSpan[] }>()
+  private readonly fontLockCache = new WeakMap<BufferModel, { text: string; key: string; spans: TextSpan[] }>()
   private readonly overlaySources: Array<(buffer: BufferModel) => TextSpan[]> = []
   readonly commands = new CommandRegistry()
   readonly keymap = new Keymap("global-map")
@@ -304,7 +311,7 @@ export class Editor {
   }
 
   private lineAtPoint(point: number): number {
-    return Math.max(0, this.currentBuffer.text.slice(0, Math.max(0, Math.min(point, this.currentBuffer.text.length))).split("\n").length - 1)
+    return this.currentBuffer.lineAt(Math.max(0, Math.min(point, this.currentBuffer.text.length)))
   }
 
   selectWindow(windowId: string): void {
@@ -538,25 +545,82 @@ export class Editor {
 
   /** Visit a path: reuse an existing buffer, else create one via `make`. The factory is what
    *  decouples the kernel from modes/ — `modeSystem.makeDirectoryBuffer` supplies the dired one. */
-  async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string): Promise<BufferModel> {
+  async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string, options: { skipFileHooks?: boolean; skipLsp?: boolean } = {}): Promise<BufferModel> {
     const existing = [...this.buffers.values()].find(b => b.path === full)
     if (existing) return this.switchToBuffer(existing.id)
     const buffer = await make(full)
     this.addBuffer(buffer)
-    if (buffer.kind === "file") this.lsp?.attachBuffer(buffer)
+    if (buffer.kind === "file" && !options.skipLsp) this.lsp?.attachBuffer(buffer)
     this.setSelectedWindowBuffer(buffer.id)
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     this.enterMode(buffer, mode ?? buffer.mode)
     await this.changed("visit-path")
-    if (buffer.kind === "file") await this.runHook("find-file-hook", buffer)
+    if (buffer.kind === "file" && !options.skipFileHooks) await this.runHook("find-file-hook", buffer)
     return buffer
   }
 
-  async openFile(path: string): Promise<BufferModel> {
+  async openFile(path: string, options: { readOnly?: boolean; literally?: boolean } = {}): Promise<BufferModel> {
     const full = resolve(path)
     const st = await stat(full)
     if (st && isDirectory(st)) return this.openDirectory(full)
-    return this.visitPath(full, BufferModel.fromFile)
+    if (options.literally || shouldOpenLiterally(st?.size)) {
+      return this.openFileLiterally(full, st?.mtime, st?.size ?? 0, options)
+    }
+    const buffer = await this.visitPath(full, BufferModel.fromFile)
+    if (options.readOnly) buffer.readOnly = true
+    return buffer
+  }
+
+  private async openFileLiterally(full: string, mtime: number | undefined, size: number, options: { readOnly?: boolean } = {}): Promise<BufferModel> {
+    const existing = [...this.buffers.values()].find(b => b.path === full)
+    if (existing) return this.switchToBuffer(existing.id)
+    const buffer = new BufferModel({ name: basename(full), path: full, text: "", kind: "file", mode: "text" })
+    buffer.locals.set(LARGE_FILE_LITERAL_LOCAL, true)
+    buffer.locals.set("so-long-mode", true)
+    buffer.locals.set(LARGE_FILE_LOADING_LOCAL, true)
+    buffer.locals.set(LARGE_FILE_SIZE_LOCAL, size)
+    buffer.readOnly = true
+    this.addBuffer(buffer)
+    this.setSelectedWindowBuffer(buffer.id)
+    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
+    await this.changed("visit-large-file")
+    this.message(`Opening ${buffer.name} literally (${formatBytes(size)})`)
+
+    void readFileText(full).then(text => {
+      buffer.setText(text, false, false)
+      buffer.markSaved(mtime)
+      buffer.readOnly = options.readOnly ?? false
+      buffer.locals.delete(LARGE_FILE_LOADING_LOCAL)
+      this.message(`Opened ${buffer.name} literally (${formatBytes(size)}); M-x normal-mode to enable major mode`)
+      void this.changed("large-file-loaded")
+    }).catch(err => {
+      buffer.locals.delete(LARGE_FILE_LOADING_LOCAL)
+      buffer.setText(`File load failed: ${(err as Error).message}\n`, false, false)
+      buffer.readOnly = true
+      this.message((err as Error).message)
+      void this.changed("large-file-load-failed")
+    })
+
+    return buffer
+  }
+
+  async normalMode(buffer = this.currentBuffer): Promise<void> {
+    if (buffer.locals.get(LARGE_FILE_LOADING_LOCAL)) {
+      this.message(`Still loading ${this.bufferDisplayName(buffer)}`)
+      return
+    }
+    const wasLiteral = buffer.locals.get(LARGE_FILE_LITERAL_LOCAL) === true
+    const mode = inferMode(buffer.path ?? buffer.name, buffer.text)
+    buffer.locals.delete(LARGE_FILE_LITERAL_LOCAL)
+    buffer.locals.delete("so-long-mode")
+    buffer.locals.delete(LARGE_FILE_SIZE_LOCAL)
+    this.enterMode(buffer, mode)
+    if (wasLiteral && buffer.kind === "file") {
+      this.lsp?.attachBuffer(buffer)
+      await this.runHook("find-file-hook", buffer)
+    }
+    this.message(`Normal mode: ${buffer.mode}`)
+    await this.changed("normal-mode")
   }
 
   async openDirectory(path: string): Promise<BufferModel> {
@@ -966,14 +1030,24 @@ export class Editor {
     return true
   }
 
-  fontLock(buffer = this.currentBuffer): TextSpan[] {
+  fontLock(buffer = this.currentBuffer, range?: FontLockRange): TextSpan[] {
+    if (buffer.locals.get(LARGE_FILE_LOADING_LOCAL)) return []
+    if (buffer.locals.get(LARGE_FILE_LITERAL_LOCAL)) return []
     const fontLock = modeSystem.modeFeature(buffer.mode, "fontLock")
     const cached = this.fontLockCache.get(buffer)
+    const key = range ? `${range.start}:${range.end}` : "all"
     let spans: TextSpan[]
-    if (cached && cached.text === buffer.text) spans = cached.spans
+    if (cached && cached.text === buffer.text && cached.key === key) spans = cached.spans
     else {
-      spans = fontLock?.(buffer) ?? []
-      this.fontLockCache.set(buffer, { text: buffer.text, spans })
+      try {
+        spans = fontLock?.(buffer, range) ?? []
+      } catch (err) {
+        if (process.env.JEMACS_DEBUG_FONT_LOCK === "1") {
+          console.error(`font-lock for mode '${buffer.mode}' threw:`, err)
+        }
+        spans = []
+      }
+      this.fontLockCache.set(buffer, { text: buffer.text, key, spans })
     }
     const lspSpans = this.lsp?.diagnosticSpans(buffer) ?? []
     const overlaySpans = this.overlaySources.flatMap(src => src(buffer))
@@ -1454,6 +1528,19 @@ function commonPrefix(values: string[]): string {
     while (!value.startsWith(prefix)) prefix = prefix.slice(0, -1)
   }
   return prefix
+}
+
+function shouldOpenLiterally(size: number | undefined): boolean {
+  if (size == null) return false
+  const threshold = getCustom<number>("large-file-warning-threshold") ?? LARGE_FILE_WARNING_THRESHOLD
+  return threshold > 0 && size > threshold
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MiB`
+  return `${(size / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
 function transientInfix(definition: TransientDefinition, key: string): TransientInfix | undefined {

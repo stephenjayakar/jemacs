@@ -7,7 +7,7 @@ import { Keymap } from "../kernel/keymap"
 import { trackedContext, type PluginContext } from "../runtime/plugin-context"
 import { spawnProcess } from "../platform/runtime"
 import { killNew } from "../runtime/kill-ring"
-import { defineMode, modeLineage, type TextSpan } from "./mode"
+import { defineMode, modeLineage, type FontLockRange, type TextSpan } from "./mode"
 import { defineMinorMode } from "./minor-mode"
 
 export type DiffHunkStyle = "unified" | "context" | "normal"
@@ -321,16 +321,21 @@ export function installDiffCommands(editor: Editor, ctx?: PluginContext): void {
   }, "Convert the current unified diff hunk to context format.")
 }
 
-export function diffFontLock(buffer: BufferModel): TextSpan[] {
+export function diffFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const refined = buffer.locals.get(DIFF_REFINE_LOCAL) as TextSpan[] | undefined
-  return [...diffFontLockText(buffer.text), ...(refined ?? [])]
+  const { text, offset } = fontLockSlice(buffer, range)
+  const base = diffFontLockText(text, offset)
+  const refine = range && refined
+    ? refined.filter(span => span.end >= range.start && span.start <= range.end)
+    : refined ?? []
+  return [...base, ...refine]
 }
 
-export function diffFontLockText(text: string): TextSpan[] {
+export function diffFontLockText(text: string, offset = 0): TextSpan[] {
   const spans: TextSpan[] = []
   for (const line of textLines(text)) {
-    const s = line.start
-    const e = line.end
+    const s = offset + line.start
+    const e = offset + line.end
     const text = line.text
     if (!text) continue
     const hunk = /^(@@ .+? @@)(.*)$/.exec(text)
@@ -358,6 +363,15 @@ export function diffFontLockText(text: string): TextSpan[] {
     }
   }
   return spans
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }
 
 const parseCache = new WeakMap<BufferModel, { text: string; files: DiffFile[] }>()

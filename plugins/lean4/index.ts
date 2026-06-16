@@ -2,7 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { BufferModel } from "../../src/kernel/buffer"
 import type { LspWorkspace } from "../../src/lsp/workspace"
-import { defineMode, enterMode, type TextSpan } from "../../src/modes/mode"
+import { defineMode, enterMode, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { lspMakeTextDocumentIdentifier } from "../../src/lsp/lsp-protocol"
 import { pointToPosition } from "../../src/lsp/positions"
@@ -24,17 +24,18 @@ export const LEAN_KEYWORDS = new Set(
 
 const DECL_KEYWORDS = "def|theorem|lemma|axiom|instance|structure|inductive"
 
-export function leanFontLock(buffer: BufferModel): TextSpan[] {
+export function leanFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
-  const text = buffer.text
+  const { text, offset } = fontLockSlice(buffer, range)
   for (const m of text.matchAll(/--[^\n]*/g)) {
-    spans.push({ start: m.index!, end: m.index! + m[0].length, face: "comment" })
+    spans.push({ start: offset + m.index!, end: offset + m.index! + m[0].length, face: "comment" })
   }
   for (const m of text.matchAll(/"(?:\\.|[^"\\])*"/g)) {
-    if (!covered(spans, m.index!)) spans.push({ start: m.index!, end: m.index! + m[0].length, face: "string" })
+    const start = offset + m.index!
+    if (!covered(spans, start)) spans.push({ start, end: start + m[0].length, face: "string" })
   }
   for (const m of text.matchAll(/\b[A-Za-z_][A-Za-z0-9_']*\b/g)) {
-    const start = m.index!
+    const start = offset + m.index!
     if (LEAN_KEYWORDS.has(m[0]) && !covered(spans, start)) {
       spans.push({ start, end: start + m[0].length, face: "keyword" })
     }
@@ -42,10 +43,19 @@ export function leanFontLock(buffer: BufferModel): TextSpan[] {
   const declRe = new RegExp(`\\b(?:${DECL_KEYWORDS})\\s+([A-Za-z_][A-Za-z0-9_'.]*)`, "g")
   for (const m of text.matchAll(declRe)) {
     const name = m[1]!
-    const start = m.index! + m[0].lastIndexOf(name)
+    const start = offset + m.index! + m[0].lastIndexOf(name)
     if (!covered(spans, start, "comment")) spans.push({ start, end: start + name.length, face: "function" })
   }
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }
 
 function covered(spans: TextSpan[], at: number, face?: TextSpan["face"]): boolean {

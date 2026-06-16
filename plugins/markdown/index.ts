@@ -4,7 +4,7 @@ import { addHook } from "../../src/kernel/hooks"
 import { Keymap } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { defface, faceRemapAddRelative, FIXED_PITCH_FAMILY, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
-import { defineMode, enterMode, getMode, modeFeature, type FaceName, type TextSpan } from "../../src/modes/mode"
+import { defineMode, enterMode, getMode, modeFeature, type FaceName, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { registeredTreeSitterLanguages, treeSitterFontLock } from "../../src/modes/tree-sitter"
 import { registerTreeSitterGrammars } from "../tree-sitter-grammars"
 
@@ -763,8 +763,8 @@ function markdownHeaderFace(level: number): FaceName {
   return `markdown-header-face-${Math.min(6, Math.max(1, level))}` as FaceName
 }
 
-function overlayMarkdownHeaderFaces(text: string, spans: TextSpan[]): TextSpan[] {
-  const headings = markdownParseHeadings(text)
+function overlayMarkdownHeaderFaces(text: string, spans: TextSpan[], range?: FontLockRange): TextSpan[] {
+  const headings = markdownParseHeadingsInRange(text, range)
   if (!headings.length) return spans
   const headerSpans = headings.map(h => ({
     start: h.start,
@@ -777,48 +777,81 @@ function overlayMarkdownHeaderFaces(text: string, spans: TextSpan[]): TextSpan[]
   return [...filtered, ...headerSpans].sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
-function fenceLineSpan(text: string, line: number): TextSpan | null {
-  const lines = text.split("\n")
-  if (line < 0 || line >= lines.length) return null
-  let start = 0
-  for (let i = 0; i < line; i++) start += lines[i]!.length + 1
-  const end = start + lines[line]!.length
+function markdownParseHeadingsInRange(text: string, range?: FontLockRange): MarkdownHeading[] {
+  if (!range) return markdownParseHeadings(text)
+  const start = Math.max(0, range.start)
+  const lines = text.slice(start, range.end).split("\n")
+  const headings: MarkdownHeading[] = []
+  let offset = start
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const atx = line.match(/^(\s*)(#{1,6})\s+(.*)$/)
+    if (atx) {
+      headings.push({
+        line: range.startLine + i,
+        start: offset,
+        end: offset + line.length,
+        level: atx[2]!.length,
+        title: atx[3] ?? "",
+      })
+    } else if (i + 1 < lines.length && line.trim()) {
+      const setext = SETEXT_UNDERLINE_RE.exec(lines[i + 1]!)
+      if (setext && !line.match(/^#{1,6}\s/)) {
+        headings.push({
+          line: range.startLine + i,
+          start: offset,
+          end: offset + line.length,
+          level: setext[2]!.startsWith("=") ? 1 : 2,
+          title: line.trim(),
+        })
+      }
+    }
+    offset += line.length + 1
+  }
+  return headings
+}
+
+function fenceLineSpan(buffer: BufferModel, line: number): TextSpan | null {
+  if (line < 0 || line >= buffer.lineCount) return null
+  const [start, end] = buffer.lineBounds(line)
   return { start, end, face: "string" }
 }
 
-function markdownFontLock(buffer: BufferModel): TextSpan[] {
+function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const mdLang = buffer.mode === "gfm" ? "gfm" : "markdown"
-  const blocks = parseFencedCodeBlocks(buffer.text)
+  const blocks = parseFencedCodeBlocks(buffer.text).filter(block => !range || block.bodyEnd >= range.start && block.bodyStart <= range.end)
   const native = markdownFontifyCodeBlocksNatively(buffer)
   const bodyRegions = blocks.map(b => [b.bodyStart, b.bodyEnd] as const)
 
-  let spans = treeSitterFontLock(mdLang, buffer)
+  let spans = treeSitterFontLock(mdLang, buffer, range)
   if (bodyRegions.length) {
     spans = spans.filter(s => !spanInsideRegions(s.start, s.end, bodyRegions))
   }
 
   for (const block of blocks) {
-    const openSpan = fenceLineSpan(buffer.text, block.openLine)
-    const closeSpan = fenceLineSpan(buffer.text, block.closeLine)
+    const openSpan = fenceLineSpan(buffer, block.openLine)
+    const closeSpan = fenceLineSpan(buffer, block.closeLine)
     if (openSpan) spans.push(openSpan)
     if (closeSpan) spans.push(closeSpan)
 
-    const body = buffer.text.slice(block.bodyStart, block.bodyEnd)
+    const bodyStart = range ? Math.max(block.bodyStart, range.start) : block.bodyStart
+    const bodyEnd = range ? Math.min(block.bodyEnd, range.end) : block.bodyEnd
+    const body = buffer.text.slice(bodyStart, bodyEnd)
     if (!body) continue
     if (native) {
       for (const span of markdownFontifyCodeBlockNatively(block.lang, body)) {
         spans.push({
-          start: block.bodyStart + span.start,
-          end: block.bodyStart + span.end,
+          start: bodyStart + span.start,
+          end: bodyStart + span.end,
           face: span.face,
         })
       }
     } else {
-      spans.push({ start: block.bodyStart, end: block.bodyEnd, face: "string" })
+      spans.push({ start: bodyStart, end: bodyEnd, face: "string" })
     }
   }
 
-  return overlayMarkdownHeaderFaces(buffer.text, spans)
+  return overlayMarkdownHeaderFaces(buffer.text, spans, range)
 }
 
 function applyMarkdownFaceRemap(buffer: BufferModel): void {

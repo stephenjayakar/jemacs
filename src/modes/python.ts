@@ -27,9 +27,9 @@ export function installPythonMode(): void {
     commentStart: "#",
     keymap,
     indentLine: pythonIndentLine,
-    fontLock: buffer => {
-      const ts = createTreeSitterFontLock("python")(buffer)
-      return ts.length ? ts : codeFontLock(buffer, pythonKeywords, "#")
+    fontLock: (buffer, range) => {
+      const ts = createTreeSitterFontLock("python")(buffer, range)
+      return ts.length ? ts : codeFontLock(buffer, pythonKeywords, "#", range)
     },
     completeAtPoint: pythonCompleteAtPoint,
     beginningOfDefun: pythonBeginningOfDefun,

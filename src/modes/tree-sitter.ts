@@ -2,7 +2,7 @@ import { createRequire } from "node:module"
 import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { BufferModel } from "../kernel/buffer"
-import type { FaceName, TextSpan } from "./mode"
+import type { FaceName, FontLockRange, TextSpan } from "./mode"
 
 const require = createRequire(import.meta.url)
 
@@ -98,15 +98,16 @@ const queries = new Map<string, import("tree-sitter").Query>()
  *  call can `tree.edit()` + reparse incrementally instead of from scratch. */
 const trees = new WeakMap<BufferModel, { tree: import("tree-sitter").Tree; text: string; language: string }>()
 
-export function treeSitterFontLock(language: string, buffer: BufferModel): TextSpan[] {
+export function treeSitterFontLock(language: string, buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const spec = languageSpecs.get(language)
   if (!spec) return []
   try {
     const ParserCtor = resolveParserCtor()
     const parser = parserFor(language, spec.language, ParserCtor)
     const tree = parseIncremental(parser, language, buffer)
-    if (spec.highlightsPath) return highlightWithQuery(spec, tree.rootNode, ParserCtor)
-    return spec.highlight?.(tree.rootNode, buffer.text) ?? []
+    if (spec.highlightsPath) return highlightWithQuery(spec, tree.rootNode, ParserCtor, range)
+    const spans = spec.highlight?.(tree.rootNode, buffer.text) ?? []
+    return range ? spans.filter(span => span.end >= range.start && span.start <= range.end) : spans
   } catch (error) {
     if (process.env.JEMACS_DEBUG_FONT_LOCK === "1") {
       console.error(`tree-sitter font-lock failed for ${language}:`, error)
@@ -116,8 +117,8 @@ export function treeSitterFontLock(language: string, buffer: BufferModel): TextS
   }
 }
 
-export function createTreeSitterFontLock(language: string): (buffer: BufferModel) => TextSpan[] {
-  return buffer => treeSitterFontLock(language, buffer)
+export function createTreeSitterFontLock(language: string): (buffer: BufferModel, range?: FontLockRange) => TextSpan[] {
+  return (buffer, range) => treeSitterFontLock(language, buffer, range)
 }
 
 function parseIncremental(parser: Parser, language: string, buffer: BufferModel): import("tree-sitter").Tree {
@@ -203,12 +204,16 @@ function queryFor(spec: TreeSitterLanguageSpec, ParserCtor: ParserCtorType): imp
   return query
 }
 
-function highlightWithQuery(spec: TreeSitterLanguageSpec, root: SyntaxNode, ParserCtor: ParserCtorType): TextSpan[] {
+function highlightWithQuery(spec: TreeSitterLanguageSpec, root: SyntaxNode, ParserCtor: ParserCtorType, range?: FontLockRange): TextSpan[] {
   const query = queryFor(spec, ParserCtor)
   if (!query) return []
   const candidates: Array<{ start: number, end: number, face: FaceName, priority: number }> = []
+  const options = range ? {
+    startIndex: range.start,
+    endIndex: range.end,
+  } : undefined
 
-  for (const capture of query.captures(root)) {
+  for (const capture of query.captures(root, options)) {
     const face = captureFace(capture.name)
     if (!face || face === "default") continue
     candidates.push({

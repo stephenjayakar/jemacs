@@ -50,6 +50,13 @@ export type TextSpan = {
   style?: FaceStyle
 }
 
+export type FontLockRange = {
+  startLine: number
+  endLine: number
+  start: number
+  end: number
+}
+
 export type CompletionCandidate = {
   text: string
   start: number
@@ -64,7 +71,7 @@ export type Mode = {
   hooks?: Array<(buffer: BufferModel) => void>
   onEnter?: (buffer: BufferModel) => void
   indentLine?: (buffer: BufferModel) => void
-  fontLock?: (buffer: BufferModel) => TextSpan[]
+  fontLock?: (buffer: BufferModel, range?: FontLockRange) => TextSpan[]
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void
   /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */

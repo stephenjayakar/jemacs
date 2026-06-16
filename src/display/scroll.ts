@@ -163,7 +163,13 @@ function visualRowsForBuffer(editor: Editor, buffer: BufferModel): number[] | un
   const showLineNumbers = editor.showLineNumbers(buffer)
   const wrapLayout = paneWrapLayout(buffer, viewport.cols, showLineNumbers, startLine, bodyBudget)
   const displayLines = displayTextForBuffer(buffer).split("\n")
-  const spans = [...editor.fontLock(buffer)]
+  const endLine = Math.min(buffer.lineCount, startLine + Math.max(bodyBudget, 1) + 80)
+  const spans = [...editor.fontLock(buffer, {
+    startLine,
+    endLine,
+    start: buffer.lineStarts[startLine] ?? 0,
+    end: endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length,
+  })]
   return computeLineVisualRows(buffer.text, spans, editor.theme, buffer, textScaleFactor(buffer), {
     wrapCols: wrapLayout.wrapCols,
     gutterPrefixLen: wrapLayout.gutterPrefixLen,

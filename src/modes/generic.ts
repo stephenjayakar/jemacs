@@ -1,5 +1,5 @@
 import type { BufferModel } from "../kernel/buffer"
-import { defineMode, type CompletionCandidate, type Mode, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type Mode, type TextSpan } from "./mode"
 import { createTreeSitterFontLock } from "./tree-sitter"
 
 const javascriptKeywords = new Set("async await break case catch class const continue default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield".split(" "))
@@ -37,17 +37,17 @@ function defineCodeMode(name: string, keywords: Set<string>, commentStart: strin
     parent,
     commentStart,
     indentLine: buffer => braceIndentLine(buffer, indentWidth),
-    fontLock: buffer => codeFontLock(buffer, keywords, commentStart),
+    fontLock: (buffer, range) => codeFontLock(buffer, keywords, commentStart, range),
     completeAtPoint: buffer => wordCompleteAtPoint(buffer, keywords),
   })
 }
 
-function hybridCodeFontLock(name: string, keywords: Set<string>, commentStart: string): (buffer: BufferModel) => TextSpan[] {
+function hybridCodeFontLock(name: string, keywords: Set<string>, commentStart: string): (buffer: BufferModel, range?: FontLockRange) => TextSpan[] {
   const treeSitter = createTreeSitterFontLock(name)
-  return buffer => {
-    const ts = treeSitter(buffer)
+  return (buffer, range) => {
+    const ts = treeSitter(buffer, range)
     if (ts.length) return ts
-    return codeFontLock(buffer, keywords, commentStart)
+    return codeFontLock(buffer, keywords, commentStart, range)
   }
 }
 
@@ -75,13 +75,13 @@ export function braceIndentLine(buffer: BufferModel, width: number): void {
   buffer.point = line.start + Math.max(desired, column + desired - oldIndent)
 }
 
-export function codeFontLock(buffer: BufferModel, keywords: Set<string>, commentStart: string): TextSpan[] {
+export function codeFontLock(buffer: BufferModel, keywords: Set<string>, commentStart: string, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
-  const text = buffer.text
+  const { text, offset } = fontLockSlice(buffer, range)
   for (let i = 0; i < text.length;) {
     if (text.startsWith(commentStart, i)) {
       const end = lineEnd(text, i)
-      spans.push({ start: i, end, face: "comment" })
+      spans.push({ start: offset + i, end: offset + end, face: "comment" })
       i = end
       continue
     }
@@ -94,16 +94,16 @@ export function codeFontLock(buffer: BufferModel, keywords: Set<string>, comment
         else if (text[end] === quote) { end++; break }
         else end++
       }
-      spans.push({ start: i, end, face: "string" })
+      spans.push({ start: offset + i, end: offset + end, face: "string" })
       i = end
       continue
     }
     i++
   }
-  addWords(text, /\b\d+(?:\.\d+)?\b/g, "number", spans)
-  addWords(text, /\b[A-Za-z_]\w*\b/g, "keyword", spans, word => keywords.has(word))
-  addWords(text, /\b(?:function|func|fn|def)\s+([A-Za-z_]\w*)/g, "function", spans, undefined, 1)
-  addWords(text, /\b(?:class|struct|interface|trait|enum|message|service|model)\s+([A-Za-z_]\w*)/g, "type", spans, undefined, 1)
+  addWords(text, /\b\d+(?:\.\d+)?\b/g, "number", spans, undefined, 0, offset)
+  addWords(text, /\b[A-Za-z_]\w*\b/g, "keyword", spans, word => keywords.has(word), 0, offset)
+  addWords(text, /\b(?:function|func|fn|def)\s+([A-Za-z_]\w*)/g, "function", spans, undefined, 1, offset)
+  addWords(text, /\b(?:class|struct|interface|trait|enum|message|service|model)\s+([A-Za-z_]\w*)/g, "type", spans, undefined, 1, offset)
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
@@ -128,12 +128,12 @@ function wordCompleteAtPoint(buffer: BufferModel, keywords: Set<string>): Comple
   return [...words].filter(word => word.startsWith(symbol.text) && word !== symbol.text).sort().map(text => ({ text, start: symbol.start, end: symbol.end }))
 }
 
-function addWords(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0): void {
+function addWords(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0, offset = 0): void {
   for (const match of text.matchAll(regex)) {
     const word = match[group] ?? match[0]
     if (pred && !pred(word)) continue
     const base = match.index ?? 0
-    const start = group ? base + match[0].lastIndexOf(word) : base
+    const start = offset + (group ? base + match[0].lastIndexOf(word) : base)
     if (!insideStringOrComment(spans, start)) spans.push({ start, end: start + word.length, face })
   }
 }
@@ -145,4 +145,13 @@ function insideStringOrComment(spans: TextSpan[], point: number): boolean {
 function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }

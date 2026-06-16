@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type TextSpan } from "./mode"
 
 const shellKeywords = new Set([
   "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "select", "then", "time", "until", "while",
@@ -84,13 +84,13 @@ export function shellScriptEndOfDefun(buffer: BufferModel): void {
   buffer.point = buffer.text.length
 }
 
-export function shellScriptFontLock(buffer: BufferModel): TextSpan[] {
+export function shellScriptFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
-  const text = buffer.text
+  const { text, offset } = fontLockSlice(buffer, range)
   for (let i = 0; i < text.length;) {
     if (text[i] === "#") {
       const end = lineEnd(text, i)
-      spans.push({ start: i, end, face: "comment" })
+      spans.push({ start: offset + i, end: offset + end, face: "comment" })
       i = end
       continue
     }
@@ -103,16 +103,16 @@ export function shellScriptFontLock(buffer: BufferModel): TextSpan[] {
         else if (text[end] === quote) { end++; break }
         else end++
       }
-      spans.push({ start: i, end, face: "string" })
+      spans.push({ start: offset + i, end: offset + end, face: "string" })
       i = end
       continue
     }
     i++
   }
-  addWords(text, /\b\d+\b/g, "number", spans)
-  addWords(text, /\b[A-Za-z_][\w-]*\b/g, "keyword", spans, word => shellKeywords.has(word))
-  addWords(text, /\b[A-Za-z_][\w-]*\b/g, "builtin", spans, word => shellBuiltins.has(word))
-  addWords(text, functionDefunRegex, "function", spans, undefined, 1)
+  addWords(text, /\b\d+\b/g, "number", spans, undefined, 0, offset)
+  addWords(text, /\b[A-Za-z_][\w-]*\b/g, "keyword", spans, word => shellKeywords.has(word), 0, offset)
+  addWords(text, /\b[A-Za-z_][\w-]*\b/g, "builtin", spans, word => shellBuiltins.has(word), 0, offset)
+  addWords(text, functionDefunRegex, "function", spans, undefined, 1, offset)
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
@@ -153,12 +153,12 @@ function findCurrentDefunStart(buffer: BufferModel): number {
   return target
 }
 
-function addWords(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0): void {
+function addWords(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0, offset = 0): void {
   for (const match of text.matchAll(regex)) {
     const word = match[group] ?? match[0]
     if (pred && !pred(word)) continue
     const base = match.index ?? 0
-    const start = group ? base + match[0].lastIndexOf(word) : base
+    const start = offset + (group ? base + match[0].lastIndexOf(word) : base)
     if (!insideStringOrComment(spans, start)) spans.push({ start, end: start + word.length, face })
   }
 }
@@ -170,4 +170,13 @@ function insideStringOrComment(spans: TextSpan[], point: number): boolean {
 function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }

@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type TextSpan } from "./mode"
 
 const emacsLispKeywords = new Set([
   "and", "catch", "cond", "condition-case", "defconst", "defcustom", "defface", "defgroup", "define-derived-mode", "define-key", "define-minor-mode", "defmacro", "defun", "defvar", "function", "if", "interactive", "lambda", "let", "let*", "or", "prog1", "prog2", "progn", "quote", "save-excursion", "save-restriction", "setq", "setq-default", "unwind-protect", "while",
@@ -80,13 +80,13 @@ export function emacsLispEndOfDefun(buffer: BufferModel): void {
   buffer.point = buffer.text.length
 }
 
-export function emacsLispFontLock(buffer: BufferModel): TextSpan[] {
+export function emacsLispFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
-  const text = buffer.text
+  const { text, offset } = fontLockSlice(buffer, range)
   for (let i = 0; i < text.length;) {
     if (text[i] === ";") {
       const end = lineEnd(text, i)
-      spans.push({ start: i, end, face: "comment" })
+      spans.push({ start: offset + i, end: offset + end, face: "comment" })
       i = end
       continue
     }
@@ -97,17 +97,17 @@ export function emacsLispFontLock(buffer: BufferModel): TextSpan[] {
         else if (text[end] === "\"") { end++; break }
         else end++
       }
-      spans.push({ start: i, end, face: "string" })
+      spans.push({ start: offset + i, end: offset + end, face: "string" })
       i = end
       continue
     }
     i++
   }
-  addSymbols(text, /\b-?\d+(?:\.\d+)?\b/g, "number", spans)
-  addSymbols(text, /\((?:cl-)?(?:defun|defmacro)\s+([^\s()]+)/g, "function", spans, undefined, 1)
-  addSymbols(text, /\((?:defvar|defconst|defcustom)\s+([^\s()]+)/g, "constant", spans, undefined, 1)
-  addSymbols(text, /\b[\w-]+\b/g, "keyword", spans, word => emacsLispKeywords.has(word))
-  addSymbols(text, /\b[\w-]+\b/g, "builtin", spans, word => emacsLispBuiltins.has(word))
+  addSymbols(text, /\b-?\d+(?:\.\d+)?\b/g, "number", spans, undefined, 0, offset)
+  addSymbols(text, /\((?:cl-)?(?:defun|defmacro)\s+([^\s()]+)/g, "function", spans, undefined, 1, offset)
+  addSymbols(text, /\((?:defvar|defconst|defcustom)\s+([^\s()]+)/g, "constant", spans, undefined, 1, offset)
+  addSymbols(text, /\b[\w-]+\b/g, "keyword", spans, word => emacsLispKeywords.has(word), 0, offset)
+  addSymbols(text, /\b[\w-]+\b/g, "builtin", spans, word => emacsLispBuiltins.has(word), 0, offset)
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
@@ -186,12 +186,12 @@ function lispSymbolBoundsAt(buffer: BufferModel): { start: number; end: number; 
   return { start, end, text: buffer.text.slice(start, end) }
 }
 
-function addSymbols(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0): void {
+function addSymbols(text: string, regex: RegExp, face: TextSpan["face"], spans: TextSpan[], pred?: (word: string) => boolean, group = 0, offset = 0): void {
   for (const match of text.matchAll(regex)) {
     const word = match[group] ?? match[0]
     if (pred && !pred(word)) continue
     const base = match.index ?? 0
-    const start = group ? base + match[0].lastIndexOf(word) : base
+    const start = offset + (group ? base + match[0].lastIndexOf(word) : base)
     if (!insideStringOrComment(spans, start)) spans.push({ start, end: start + word.length, face })
   }
 }
@@ -208,4 +208,13 @@ function columnAt(text: string, index: number): number {
 function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }

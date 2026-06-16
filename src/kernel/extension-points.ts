@@ -55,6 +55,17 @@ export type TextSpan = {
   style?: FaceStyle
 }
 
+export type FontLockRange = {
+  /** 0-indexed first line included in the requested highlight window. */
+  startLine: number
+  /** 0-indexed line just past the requested highlight window. */
+  endLine: number
+  /** Buffer offset for `startLine`. */
+  start: number
+  /** Buffer offset at or just after the end of the requested window. */
+  end: number
+}
+
 export type CompletionCandidate = {
   text: string
   start: number
@@ -106,7 +117,7 @@ export type ModeSpec = {
   name: string
   keymap?: Keymap
   indentLine?: (buffer: BufferModel) => void
-  fontLock?: (buffer: BufferModel) => TextSpan[]
+  fontLock?: (buffer: BufferModel, range?: FontLockRange) => TextSpan[]
   displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
   mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]

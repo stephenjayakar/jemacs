@@ -6,7 +6,7 @@ import { isearchLazyHighlightSpans, isearchMatchSpan } from "../kernel/isearch"
 import { type ChildFrameParameters, type WindowLeaf, type WindowNode } from "../kernel/window"
 import { diagnosticsForBuffer } from "../lsp/diagnostics"
 import { positionToPoint } from "../lsp/positions"
-import { modeFeature, type TextSpan } from "../modes/mode"
+import { modeFeature, type FontLockRange, type TextSpan } from "../modes/mode"
 import { applyTheme, type Theme } from "./theme"
 import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
@@ -198,7 +198,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
   }
 
   const point = selected ? buffer.point : leaf.point
-  const fontLockSpans = [...editor.fontLock(buffer)]
+  const fontLockSpans = [...editor.fontLock(buffer, visibleFontLockRange(buffer, leaf))]
   const spans = [...fontLockSpans]
   if (selected && editor.isearch) {
     const match = isearchMatchSpan(buffer, editor.isearch)
@@ -238,6 +238,23 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     textScale: textScaleFactor(buffer),
     locals,
   }
+}
+
+function visibleFontLockRange(buffer: BufferModel, leaf: WindowLeaf): FontLockRange {
+  const rows = numberLocal(buffer, "window-body-rows") ?? 80
+  const margin = Math.max(80, rows * 4)
+  const startLine = Math.max(0, leaf.startLine - margin)
+  const endLine = Math.min(buffer.lineCount, leaf.startLine + rows + margin)
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount
+    ? buffer.lineStarts[endLine]!
+    : buffer.text.length
+  return { startLine, endLine, start, end }
+}
+
+function numberLocal(buffer: BufferModel, key: string): number | null {
+  const value = buffer.locals.get(key)
+  return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
 /** Guard the mode's `displayFilter` so a buggy plugin degrades to identity

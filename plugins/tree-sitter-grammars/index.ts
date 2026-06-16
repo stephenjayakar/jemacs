@@ -1,7 +1,7 @@
 import { createRequire } from "node:module"
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
-import type { FaceName, TextSpan } from "../../src/modes/mode"
+import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, getMode } from "../../src/modes/mode"
 import { createTreeSitterFontLock, queryPath, registerTreeSitterLanguage } from "../../src/modes/tree-sitter"
 import { codeFontLock } from "../../src/modes/generic"
@@ -255,10 +255,11 @@ function hybridFontLock(
   buffer: BufferModel,
   keywords: Set<string>,
   commentStart: string,
+  range?: FontLockRange,
 ): TextSpan[] {
-  const ts = createTreeSitterFontLock(language)(buffer)
+  const ts = createTreeSitterFontLock(language)(buffer, range)
   if (ts.length) return ts
-  return codeFontLock(buffer, keywords, commentStart)
+  return codeFontLock(buffer, keywords, commentStart, range)
 }
 
 let registered = false
@@ -320,7 +321,7 @@ function patchModeFontLock(
   if (!mode) return
   defineMode({
     ...mode,
-    fontLock: buffer => hybridFontLock(language, buffer, keywords, commentStart),
+    fontLock: (buffer, range) => hybridFontLock(language, buffer, keywords, commentStart, range),
   })
 }
 

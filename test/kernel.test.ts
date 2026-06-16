@@ -4,7 +4,7 @@ import { dirname } from "node:path"
 import { BufferModel } from "../src/kernel/buffer"
 import { emacsKeyDescription, isPrintable, keyToken, Keymap, KeymapStack } from "../src/kernel/keymap"
 import { listWindowLeaves } from "../src/kernel/window"
-import { Editor } from "../src/kernel/editor"
+import { Editor, LARGE_FILE_LITERAL_LOCAL } from "../src/kernel/editor"
 import { buildDisplayModel } from "../src/display/build-display-model"
 import { getTextScaleAmount, textScaleFactor } from "../src/core/text-scale"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
@@ -1595,6 +1595,52 @@ test("font-lock cache stays stable when only point moves", async () => {
   buffer.point = buffer.text.length
   const second = editor.fontLock(buffer)
   expect(second).toEqual(first)
+})
+
+test("font-lock can be requested for a visible range", async () => {
+  const { defineMode } = await import("../src/modes/mode")
+  const editor = new Editor()
+  const calls: Array<{ start: number; end: number } | undefined> = []
+  defineMode({
+    name: "range-font-lock",
+    fontLock: (_buffer, range) => {
+      calls.push(range ? { start: range.start, end: range.end } : undefined)
+      return range ? [{ start: range.start, end: range.start + 1, face: "keyword" }] : []
+    },
+  })
+  const buffer = editor.scratch("range.txt", "a\nb\nc\n", "range-font-lock")
+
+  const spans = editor.fontLock(buffer, { startLine: 1, endLine: 2, start: 2, end: 4 })
+
+  expect(calls).toEqual([{ start: 2, end: 4 }])
+  expect(spans).toEqual([{ start: 2, end: 3, face: "keyword" }])
+})
+
+test("large files open literally and can return to normal mode", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  setCustom("large-file-warning-threshold", 16)
+  const path = "/tmp/jemacs-large-literal.py"
+  await Bun.write(path, "def f():\n    return 'loaded'\n")
+  try {
+    const buffer = await editor.openFile(path)
+    expect(buffer.mode).toBe("text")
+    expect(buffer.locals.get(LARGE_FILE_LITERAL_LOCAL)).toBe(true)
+
+    for (let i = 0; i < 50 && buffer.text === ""; i++) await Bun.sleep(10)
+    expect(buffer.text).toContain("loaded")
+    expect(buffer.dirty).toBe(false)
+    expect(editor.fontLock(buffer)).toEqual([])
+
+    await editor.normalMode(buffer)
+    expect(buffer.mode).toBe("python")
+    expect(buffer.locals.get(LARGE_FILE_LITERAL_LOCAL)).toBeUndefined()
+    expect(editor.fontLock(buffer).some(span => buffer.text.slice(span.start, span.end) === "def")).toBe(true)
+  } finally {
+    resetCustom("large-file-warning-threshold")
+  }
 })
 
 test("theme support renders font-lock spans as styled TUI chunks", async () => {

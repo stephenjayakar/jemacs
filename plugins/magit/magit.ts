@@ -4,7 +4,7 @@ import { basename, isAbsolute, join } from "node:path"
 import type { Editor, TransientDefinition } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
-import { defineMode, modeLineage, type TextSpan } from "../../src/modes/mode"
+import { defineMode, modeLineage, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { nextWindowId } from "../../src/kernel/window"
 import { spawnProcess } from "../../src/platform/runtime"
@@ -362,15 +362,25 @@ function prefixCount(prefix: unknown): number {
 }
 
 /** Diff-mode highlighting plus Magit section headers for status/revision buffers. */
-export function magitDiffFontLock(buffer: BufferModel): TextSpan[] {
+export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const sectionSpans: TextSpan[] = []
-  let offset = 0
-  for (const line of buffer.text.split("\n")) {
+  const { text, offset: base } = fontLockSlice(buffer, range)
+  let offset = base
+  for (const line of text.split("\n")) {
     const end = offset + line.length
     if (/^(Head|Merge|Unstaged|Staged|Stashes|Recent)\b/.test(line)) sectionSpans.push({ start: offset, end, face: "keyword" })
     offset = end + 1
   }
-  return [...sectionSpans, ...diffFontLockText(buffer.text)]
+  return [...sectionSpans, ...diffFontLockText(text, base)]
+}
+
+function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
+  if (!range) return { text: buffer.text, offset: 0 }
+  const startLine = Math.max(0, Math.min(range.startLine, buffer.lineCount - 1))
+  const endLine = Math.max(startLine, Math.min(range.endLine, buffer.lineCount))
+  const start = buffer.lineStarts[startLine] ?? 0
+  const end = endLine < buffer.lineCount ? buffer.lineStarts[endLine]! : buffer.text.length
+  return { text: buffer.text.slice(start, end), offset: start }
 }
 
 /** Extract the 7+ hex sha at point from a `--graph --oneline` line. */
