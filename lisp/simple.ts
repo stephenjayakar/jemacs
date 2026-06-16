@@ -105,8 +105,6 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     const line = Math.max(1, Number(value) || 1)
     const lines = buffer.text.split("\n")
     const offset = lines.slice(0, line - 1).reduce((offset, text) => offset + text.length + 1, 0)
-    buffer.setMark()
-    editor.message("Mark set")
     buffer.point = Math.min(offset, buffer.text.length)
   }, "Move point to a line number.")
 

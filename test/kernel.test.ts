@@ -409,7 +409,7 @@ test("forward-word and backward-word preserve negative-prefix return semantics",
   expect(buffer.point).toBe(7)
 })
 
-test("goto-line uses numeric prefix and sets mark before moving", async () => {
+test("goto-line uses numeric prefix without setting mark", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
   const buffer = editor.currentBuffer
@@ -419,8 +419,26 @@ test("goto-line uses numeric prefix and sets mark before moving", async () => {
   editor.prefixArg.addDigit(3)
   await editor.run("goto-line")
   expect(buffer.point).toBe(4)
-  expect(buffer.mark).toBe(2)
-  expect(buffer.markActive).toBe(true)
+  expect(buffer.mark).toBeNull()
+  expect(buffer.markActive).toBe(false)
+})
+
+test("Stephen C-x l goto-line moves without activating mark", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await installStephenConfig(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("a\nb\nc\nd", false)
+  buffer.point = 2
+  editor.prompt = async () => "3"
+
+  expect(editor.keymap.get("C-x l")).toBe("goto-line")
+  await editor.handleKey({ name: "x", ctrl: true })
+  await editor.handleKey({ name: "l" })
+
+  expect(buffer.point).toBe(4)
+  expect(buffer.mark).toBeNull()
+  expect(buffer.markActive).toBe(false)
 })
 
 test("goto-line clamps zero and negative prefixes to line one", async () => {
@@ -429,17 +447,21 @@ test("goto-line clamps zero and negative prefixes to line one", async () => {
   const buffer = editor.currentBuffer
   buffer.setText("a\nb\nc", false)
   buffer.point = buffer.text.length
+  buffer.mark = 2
+  buffer.markActive = false
 
   editor.prefixArg.addDigit(0)
   await editor.run("goto-line")
   expect(buffer.point).toBe(0)
-  expect(buffer.mark).toBe(5)
+  expect(buffer.mark).toBe(2)
+  expect(buffer.markActive).toBe(false)
 
   buffer.point = buffer.text.length
   editor.prefixArg.toggleNegative()
   await editor.run("goto-line")
   expect(buffer.point).toBe(0)
-  expect(buffer.mark).toBe(5)
+  expect(buffer.mark).toBe(2)
+  expect(buffer.markActive).toBe(false)
 })
 
 test("set-fill-column is the C-x f command and updates fill-column", async () => {
