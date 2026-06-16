@@ -69,10 +69,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }
 
   const cycleBuffer = (editor: Editor, delta: number) => {
-    const values = [...editor.buffers.values()].filter(b => b.kind !== "minibuffer")
-    const i = values.findIndex(b => b.id === editor.currentBufferId)
-    const next = ((i + delta) % values.length + values.length) % values.length
-    return editor.switchToBuffer(values[next]!.id)
+    return editor.cycleBuffer(delta)
   }
 
   const resolveBufferName = (editor: Editor, name: string) =>
@@ -235,12 +232,12 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("tab-bar-switch-to-prev-tab", ({ editor, prefixArgument }) => switchTab(editor, -(prefixArgument ?? 1)), "Switch to the previous tab.")
 
   editor.command("next-buffer", ({ editor, prefixArgument }) => {
-    const b = cycleBuffer(editor, prefixArgument ?? 1)
+    const b = cycleBuffer(editor, -(prefixArgument ?? 1))
     editor.message(`Switched to ${editor.bufferDisplayName(b)}`)
   }, "Switch to the next buffer.")
 
   editor.command("previous-buffer", ({ editor, prefixArgument }) => {
-    const b = cycleBuffer(editor, -(prefixArgument ?? 1))
+    const b = cycleBuffer(editor, prefixArgument ?? 1)
     editor.message(`Switched to ${editor.bufferDisplayName(b)}`)
   }, "Switch to the previous buffer.")
 

@@ -213,12 +213,14 @@ export class Editor {
   /** Buffer ids most-recently-selected first; killBuffer's fallback source. */
   private readonly bufferRecency: string[] = []
   private _currentBufferId!: string
+  private recordBufferRecency = true
   private autoSaveTimer: ReturnType<typeof setInterval> | null = null
 
   get currentBufferId(): string { return this._currentBufferId }
   set currentBufferId(id: string) {
     this._currentBufferId = id
     if (this.buffers.get(id)?.kind === "minibuffer") return
+    if (!this.recordBufferRecency) return
     const i = this.bufferRecency.indexOf(id)
     if (i !== -1) this.bufferRecency.splice(i, 1)
     this.bufferRecency.unshift(id)
@@ -456,9 +458,16 @@ export class Editor {
     buffer.point = Math.min(leaf.point, buffer.text.length)
   }
 
-  private setSelectedWindowBuffer(bufferId: string): void {
+  private setSelectedWindowBuffer(bufferId: string, options: { recordRecency?: boolean } = {}): void {
     this.persistSelectedWindowPoint()
-    this.currentBufferId = bufferId
+    const record = options.recordRecency ?? true
+    const previous = this.recordBufferRecency
+    this.recordBufferRecency = record
+    try {
+      this.currentBufferId = bufferId
+    } finally {
+      this.recordBufferRecency = previous
+    }
     this.windowLayout = setWindowLeafBuffer(this.windowLayout, this.selectedWindowId, bufferId, this.buffers.get(bufferId)?.point ?? 0)
     this.restoreSelectedWindowPoint()
   }
@@ -476,6 +485,31 @@ export class Editor {
     const id = this.bufferRecency.find(candidateId => candidateId !== buffer.id && this.buffers.get(candidateId)?.kind !== "minibuffer")
     if (id) return this.buffers.get(id) ?? null
     return [...this.buffers.values()].find(candidate => candidate.id !== buffer.id && candidate.kind !== "minibuffer") ?? null
+  }
+
+  bufferCycleOrder(): BufferModel[] {
+    const seen = new Set<string>()
+    const order: BufferModel[] = []
+    for (const id of this.bufferRecency) {
+      const buffer = this.buffers.get(id)
+      if (!buffer || buffer.kind === "minibuffer" || seen.has(id)) continue
+      seen.add(id)
+      order.push(buffer)
+    }
+    for (const buffer of this.buffers.values()) {
+      if (buffer.kind === "minibuffer" || seen.has(buffer.id)) continue
+      seen.add(buffer.id)
+      order.push(buffer)
+    }
+    return order
+  }
+
+  cycleBuffer(delta: number): BufferModel {
+    const values = this.bufferCycleOrder()
+    const i = values.findIndex(b => b.id === this.currentBufferId)
+    const start = i === -1 ? 0 : i
+    const next = ((start + delta) % values.length + values.length) % values.length
+    return this.switchToBuffer(values[next]!.id, { recordRecency: false })
   }
 
   get minibufferDepthLevel(): number {
@@ -533,11 +567,11 @@ export class Editor {
     }
   }
 
-  switchToBuffer(idOrName: string): BufferModel {
+  switchToBuffer(idOrName: string, options: { recordRecency?: boolean } = {}): BufferModel {
     const found = this.buffers.get(idOrName)
       ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
       ?? this.addBuffer(new BufferModel({ name: idOrName }))
-    this.setSelectedWindowBuffer(found.id)
+    this.setSelectedWindowBuffer(found.id, options)
     if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = found.id
     void this.changed("switch-buffer")
     return found

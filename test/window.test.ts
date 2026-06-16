@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
 import {
@@ -372,14 +375,18 @@ test("next-buffer honors positive numeric prefix and wraps", async () => {
   editor.scratch("c", "c", "text")
   editor.switchToBuffer("a")
 
+  await editor.run("next-buffer")
+  expect(editor.currentBuffer.name).toBe("*messages*")
+
+  editor.switchToBuffer("a")
   editor.prefixArg.addDigit(2)
   await editor.run("next-buffer")
-  expect(editor.currentBuffer.name).toBe("c")
+  expect(editor.currentBuffer.name).toBe("*scratch*")
 
   editor.switchToBuffer("a")
   editor.prefixArg.addDigit(7)
   await editor.run("next-buffer")
-  expect(editor.currentBuffer.name).toBe("c")
+  expect(editor.currentBuffer.name).toBe("*scratch*")
 })
 
 test("next-buffer with zero prefix keeps the selected buffer", async () => {
@@ -406,6 +413,26 @@ test("previous-buffer honors positive and negative numeric prefixes", async () =
   editor.prefixArg.toggleNegative()
   await editor.run("previous-buffer")
   expect(editor.currentBuffer.name).toBe("b")
+})
+
+test("previous-buffer returns to dired after visiting an existing file from dired", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-dired-prev-"))
+  try {
+    const file = join(dir, "a.txt")
+    await writeFile(file, "a\n")
+    const editor = installEditor()
+    const fileBuffer = await editor.openFile(file)
+    const dired = await editor.openDirectory(dir)
+    dired.point = dired.text.indexOf("a.txt")
+
+    await editor.run("dired-find-file")
+    expect(editor.currentBuffer.id).toBe(fileBuffer.id)
+
+    await editor.run("previous-buffer")
+    expect(editor.currentBuffer.id).toBe(dired.id)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("tab-bar-switch-to-next-tab honors positive numeric prefix and wraps", async () => {
