@@ -3,6 +3,7 @@ import { BufferModel } from "../../src/kernel/buffer"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
 import { getMode } from "../../src/modes/mode"
 import { setCustom } from "../../src/runtime/custom"
+import { currentKill } from "../../src/runtime/kill-ring"
 import {
   install,
   makeXTerm,
@@ -63,6 +64,9 @@ describe("jterm: install wiring", () => {
     // char-mode / copy-mode toggle
     expect(editor.commands.get("jterm-char-mode")).toBeDefined()
     expect(editor.commands.get("jterm-copy-mode")).toBeDefined()
+    expect(editor.commands.get("jterm-copy-mode-done")).toBeDefined()
+    expect(editor.commands.get("jterm-clear-scrollback")).toBeDefined()
+    expect(editor.commands.get("jterm-reset-cursor-point")).toBeDefined()
 
     // send / interrupt / kill / clear / reset
     expect(editor.commands.get("jterm-send-raw")).toBeDefined()
@@ -79,10 +83,13 @@ describe("jterm: install wiring", () => {
     // Mode is registered
     const map = getMode("jterm-mode")?.keymap
     expect(map).toBeDefined()
-    expect(map?.get("a")).toBe("jterm-send-raw")
+    expect(map?.get("a")).toBeUndefined()
     expect(map?.get("C-c C-c")).toBe("jterm-interrupt")
-    expect(map?.get("C-c C-j")).toBe("jterm-copy-mode")
-    expect(map?.get("C-c C-l")).toBe("jterm-clear")
+    expect(map?.get("C-c C-t")).toBe("jterm-copy-mode")
+    expect(map?.get("C-c C-l")).toBe("jterm-clear-scrollback")
+    const copyMap = getMode("jterm-copy-mode")?.keymap
+    expect(copyMap?.get("RET")).toBe("jterm-copy-mode-done")
+    expect(copyMap?.get("C-a")).toBe("jterm-beginning-of-line")
   })
 
   test("does not collide with term-v2 commands", () => {
@@ -111,7 +118,7 @@ describe("jterm: char-mode / copy-mode", () => {
     expect(session.charMode).toBe(true)
   })
 
-  test("copy-mode clears read-only + raw keymap + paste-handler + surface", async () => {
+  test("copy-mode uses read-only text mirror + copy keymap", async () => {
     const editor = makeEditor()
     install(editor)
     const buffer = editor.scratch("*jterm*", "", "jterm-mode")
@@ -123,11 +130,49 @@ describe("jterm: char-mode / copy-mode", () => {
     expect(buffer.readOnly).toBe(true)
 
     await editor.run("jterm-copy-mode")
-    expect(buffer.readOnly).toBe(false)
+    expect(buffer.readOnly).toBe(true)
+    expect(buffer.mode).toBe("jterm-copy-mode")
     expect(editor.overridingTerminalLocalMap).toBeNull()
     expect(buffer.locals.has("paste-handler")).toBe(false)
     expect(buffer.locals.get(TERMINAL_SURFACE_LOCAL)).toBeUndefined()
     expect(session.charMode).toBe(false)
+  })
+
+  test("copy-mode toggles back to char-mode on C-c C-t", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
+    const pty = fakePty()
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
+
+    await editor.run("jterm-char-mode")
+    await editor.handleKey({ name: "c", ctrl: true, sequence: "\x03" })
+    await editor.handleKey({ name: "t", ctrl: true, sequence: "\x14" })
+    expect(buffer.mode).toBe("jterm-copy-mode")
+    expect(editor.overridingTerminalLocalMap).toBeNull()
+
+    await editor.handleKey({ name: "c", ctrl: true, sequence: "\x03" })
+    await editor.handleKey({ name: "t", ctrl: true, sequence: "\x14" })
+    expect(buffer.mode).toBe("jterm-mode")
+    expect(editor.overridingTerminalLocalMap).toBe(jtermRawMap)
+  })
+
+  test("copy-mode done copies region or line and returns to char-mode", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("*jterm*", "alpha\nbeta", "jterm-mode")
+    sessions.set(buffer, new JTermSession(editor, buffer, fakePty(), makeXTerm(4, 20), 4, 20, "jterm"))
+
+    await editor.run("jterm-char-mode")
+    await editor.run("jterm-copy-mode")
+    buffer.point = 0
+    buffer.setMark()
+    buffer.point = 5
+    await editor.run("jterm-copy-mode-done")
+
+    expect(currentKill(editor)).toBe("alpha")
+    expect(buffer.mode).toBe("jterm-mode")
+    expect(editor.overridingTerminalLocalMap).toBe(jtermRawMap)
   })
 
   test("keyboard-quit tears down the char-mode override", async () => {

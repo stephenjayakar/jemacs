@@ -41,8 +41,18 @@ test("describe-function includes source line and help topic", async () => {
   const help = editor.currentBuffer
   expect(help.name).toBe("*Help*")
   expect(help.mode).toBe("help")
+  expect(help.readOnly).toBe(true)
   expect(help.text).toContain("Source:")
   expect(help.locals.get(HELP_TOPIC_KEY)).toEqual({ kind: "command", name: "save-buffer" })
+})
+
+test("default help buffers are read-only", async () => {
+  const editor = new Editor()
+  boot(editor)
+  await editor.run("describe-bindings")
+  expect(editor.currentBuffer.name).toBe("*Help*")
+  expect(editor.currentBuffer.mode).toBe("help")
+  expect(editor.currentBuffer.readOnly).toBe(true)
 })
 
 test("describe-variable shows custom variable source", async () => {

@@ -102,6 +102,7 @@ export class JTermSession {
   /** True between jterm-char-mode and jterm-copy-mode. Controls whether
    *  the buffer is read-only and whether the raw keymap is the override. */
   charMode = false
+  cursorPoint = 0
 
   private txBuf = ""
   private txScheduled = false
@@ -289,6 +290,7 @@ export class JTermSession {
     }
     this.lastRenderedText = text
     this.buffer.point = mirror.point
+    this.cursorPoint = mirror.point
     const spansChanged = !textSpansEqual(previousSpans, mirror.spans)
     if (spansChanged) this.buffer.locals.set(JTERM_SPANS_LOCAL, mirror.spans)
 

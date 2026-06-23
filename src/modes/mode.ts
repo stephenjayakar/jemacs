@@ -1,67 +1,13 @@
 import type { BufferModel } from "../kernel/buffer"
-import type { FaceStyle } from "../display/theme-types"
 import { Keymap } from "../kernel/keymap"
+import type { CompletionCandidate, FontLockRange, TextSpan } from "../kernel/extension-points"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
 import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
-export type FaceName =
-  | "default"
-  | "keyword"
-  | "string"
-  | "comment"
-  | "builtin"
-  | "function"
-  | "type"
-  | "number"
-  | "constant"
-  | "directory"
-  | "region"
-  | "isearch"
-  | "lazyHighlight"
-  | "modeLine"
-  | "modeLineInactive"
-  | "minibuffer"
-  | "minibufferPrompt"
-  | "title"
-  | "error"
-  | "lineNumber"
-  | "lineNumberCurrent"
-  | "diffHeader"
-  | "diffFileHeader"
-  | "diffIndex"
-  | "diffHunkHeader"
-  | "diffRemoved"
-  | "diffAdded"
-  | "diffChanged"
-  | "diffContext"
-  | "diffFunction"
-  | "diffNonexistent"
-  | "diffRefineChanged"
-  | "diffRefineRemoved"
-  | "diffRefineAdded"
-
-export type TextSpan = {
-  start: number
-  end: number
-  face: FaceName
-  style?: FaceStyle
-}
-
-export type FontLockRange = {
-  startLine: number
-  endLine: number
-  start: number
-  end: number
-}
-
-export type CompletionCandidate = {
-  text: string
-  start: number
-  end: number
-}
+export type { CompletionCandidate, FaceName, FontLockRange, TextSpan } from "../kernel/extension-points"
 
 export type Mode = {
   name: string

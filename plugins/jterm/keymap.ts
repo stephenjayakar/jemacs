@@ -9,11 +9,10 @@ export class JTermRawMap extends Keymap {
     this.bind("C-c C-c", "jterm-interrupt")
     this.bind("C-c C-k", "jterm-kill")
     this.bind("C-c C-s", "jterm-send-string")
-    this.bind("C-c C-j", "jterm-copy-mode")
-    this.bind("C-c C-w", "jterm-copy-mode")
+    this.bind("C-c C-t", "jterm-copy-mode")
     this.bind("C-c C-y", "jterm-yank")
-    this.bind("C-c C-l", "jterm-clear")
-    this.bind("C-c C-r", "jterm-reset")
+    this.bind("C-c C-l", "jterm-clear-scrollback")
+    this.bind("C-c C-r", "jterm-reset-cursor-point")
   }
   override get(seq: string): string | undefined {
     const n = normalizeSequence(seq)

@@ -92,7 +92,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("describe-bindings", ({ editor }) => {
     const lines = editor.keymap.all().map(([k, v]) => `${k.padEnd(16)} ${v}`)
-    editor.scratch("*Help*", lines.join("\n"), "text")
+    editor.scratch("*Help*", lines.join("\n"), "help")
   }, "Describe key bindings of the current keymap.")
 
   editor.command("view-echo-area-messages", ({ editor }) => {
@@ -112,7 +112,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const lines = editor.commands.entries()
       .filter(c => re.test(c.name) || re.test(c.description ?? ""))
       .map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)
-    editor.scratch("*Help*", lines.join("\n") || "No matches", "text")
+    editor.scratch("*Help*", lines.join("\n") || "No matches", "help")
   }, "Show commands matching a pattern.")
 
   editor.command("help-command", ({ editor }) => {
@@ -131,7 +131,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       "C-h e    view-echo-area-messages",
       "C-h C-h  help-for-help",
     ]
-    editor.scratch("*Help*", lines.join("\n"), "text")
+    editor.scratch("*Help*", lines.join("\n"), "help")
   }, "Describe help commands.")
 
   editor.command("count-lines-page", ({ buffer, editor }) => {

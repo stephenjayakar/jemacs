@@ -6,5 +6,10 @@ export function installHelpMode(): void {
   keymap.bind("return", "help-follow")
   keymap.bind("enter", "help-follow")
   keymap.bind("RET", "help-follow")
-  defineMode({ name: "help", parent: "text", keymap })
+  defineMode({
+    name: "help",
+    parent: "text",
+    keymap,
+    onEnter: buffer => { buffer.readOnly = true },
+  })
 }

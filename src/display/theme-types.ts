@@ -1,4 +1,4 @@
-import type { FaceName } from "../modes/mode"
+import type { FaceName } from "../kernel/extension-points"
 
 export type FaceStyle = {
   fg?: string

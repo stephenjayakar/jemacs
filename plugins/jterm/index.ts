@@ -4,6 +4,7 @@ import type { BufferModel } from "../../src/kernel/buffer"
 import { defineMode, getMode } from "../../src/modes/mode"
 import { Keymap, type KeyEventLike } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
+import { currentKill, killNew } from "../../src/runtime/kill-ring"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
 import { JTermSession, jtermSpans, spawnSession } from "./session"
 import { jtermRawMap } from "./keymap-adapter"
@@ -20,6 +21,8 @@ const PASTE_HANDLER_LOCAL = "paste-handler"
 const JTERM_SESSION_LOCAL = "jterm-session"
 const JTERM_MODE = "jterm-mode"
 const JTERM_MODE_MAP = "jterm-mode-map"
+const JTERM_COPY_MODE = "jterm-copy-mode"
+const JTERM_COPY_MODE_MAP = "jterm-copy-mode-map"
 
 /** Per-buffer WeakMap of session → editor. Kept independent of term-v2's
  *  `sessions` map so both plugins can coexist. */
@@ -84,24 +87,31 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     fontLock: jtermSpans,
   })
 
-  // Char-mode: every printable key goes raw; C-c is the prefix. The exact
-  // set mirrors term-v2's term-map so muscle memory transfers.
-  const lower = "abcdefghijklmnopqrstuvwxyz".split("")
-  const punct = `!"#$%&'()*+,-./:;<=>?@[\\]^_\`{|}~`.split("")
-  for (const k of [...lower, ...lower.map(c => `S-${c}`), ..."0123456789", ...punct,
-                   "space", "enter", "backspace", "tab", "up", "down", "left", "right",
-                   "home", "end", "pageup", "pagedown", "insert", "delete"]) {
-    editor.defineKey(JTERM_MODE_MAP, k, "jterm-send-raw")
-  }
+  const copyMap = getMode(JTERM_COPY_MODE)?.keymap ?? new Keymap(JTERM_COPY_MODE_MAP)
+  defineMode({
+    name: JTERM_COPY_MODE,
+    parent: "text",
+    keymap: copyMap,
+    fontLock: jtermSpans,
+  })
+
   editor.defineKey(JTERM_MODE_MAP, "C-c C-c", "jterm-interrupt")
   editor.defineKey(JTERM_MODE_MAP, "C-c C-k", "jterm-kill")
   editor.defineKey(JTERM_MODE_MAP, "C-c C-s", "jterm-send-string")
-  editor.defineKey(JTERM_MODE_MAP, "C-c C-j", "jterm-copy-mode")
-  editor.defineKey(JTERM_MODE_MAP, "C-c C-w", "jterm-copy-mode")
-  editor.defineKey(JTERM_MODE_MAP, "C-c C-t", "jterm-char-mode")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-t", "jterm-copy-mode")
   editor.defineKey(JTERM_MODE_MAP, "C-c C-y", "jterm-yank")
-  editor.defineKey(JTERM_MODE_MAP, "C-c C-l", "jterm-clear")
-  editor.defineKey(JTERM_MODE_MAP, "C-c C-r", "jterm-reset")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-l", "jterm-clear-scrollback")
+  editor.defineKey(JTERM_MODE_MAP, "C-c C-r", "jterm-reset-cursor-point")
+
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-c C-t", "jterm-copy-mode")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "return", "jterm-copy-mode-done")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "enter", "jterm-copy-mode-done")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "RET", "jterm-copy-mode-done")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-c C-r", "jterm-reset-cursor-point")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-a", "jterm-beginning-of-line")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-e", "jterm-end-of-line")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-c C-n", "jterm-next-prompt")
+  editor.defineKey(JTERM_COPY_MODE_MAP, "C-c C-p", "jterm-previous-prompt")
 
   // Top-level entry points. We bind the most common ones to the global map
   // so users can M-x jterm or just hit the key.
@@ -135,6 +145,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!session) return editor.message("No jterm session in this buffer")
     session.charMode = true
     buffer.readOnly = true
+    editor.enterMode(buffer, JTERM_MODE)
+    buffer.point = session.cursorPoint
     // Install the per-buffer paste handler so terminal paste goes to the pty
     // (run-core.ts:38 consults buffer.locals["paste-handler"] before insert).
     buffer.locals.set(PASTE_HANDLER_LOCAL, (text: string) => {
@@ -146,25 +158,39 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     void editor.changed("jterm-char-mode")
   }, "Switch the current jterm buffer to terminal character mode.")
 
-  editor.command("jterm-copy-mode", ({ buffer, editor }) => {
+  editor.command("jterm-copy-mode", async ({ buffer, editor }) => {
     const session = sessions.get(buffer)
     if (!session) return editor.message("No jterm session in this buffer")
+    if (!session.charMode) {
+      await editor.run("jterm-char-mode")
+      return
+    }
     session.charMode = false
-    buffer.readOnly = false
+    buffer.readOnly = true
+    editor.enterMode(buffer, JTERM_COPY_MODE)
     buffer.locals.delete(PASTE_HANDLER_LOCAL)
     if (editor.overridingTerminalLocalMap === jtermRawMap) editor.overridingTerminalLocalMap = null
-    // Hide the cell-grid surface so the pane renders the text mirror in copy-mode
-    // (matches term-v2's behavior; users can scroll / select / yank).
+    // Hide the cell-grid surface so the pane renders the text mirror in copy-mode.
     buffer.locals.delete(TERMINAL_SURFACE_LOCAL)
     void editor.changed("jterm-copy-mode")
-  }, "Switch the current jterm buffer to copy/edit mode (scrollback is editable).")
+  }, "Toggle vterm-style copy mode for the current jterm buffer.")
+
+  editor.command("jterm-copy-mode-done", async ({ buffer, editor }) => {
+    const session = sessions.get(buffer)
+    if (!session) return editor.message("No jterm session in this buffer")
+    const hadRegion = buffer.selectedText().length > 0
+    const text = hadRegion ? buffer.selectedText() : buffer.lineBoundsAt().text
+    killNew(editor, text)
+    buffer.markActive = false
+    await editor.run("jterm-char-mode")
+    editor.message(hadRegion ? "Copied region" : "Copied line")
+  }, "Copy the region or current line, then leave jterm copy mode.")
 
   // Universal escape: a stuck char-mode override soft-locks the whole editor,
   // so keyboard-quit must always be able to tear it down.
   ctx.advice("keyboard-quit", {
     after: ({ editor }) => {
       if (editor.overridingTerminalLocalMap === jtermRawMap) editor.overridingTerminalLocalMap = null
-      // Also drop the read-only flag so a follow-up C-g from copy-mode works.
       const buf = editor.activeBuffer
       if (buf?.locals.has(PASTE_HANDLER_LOCAL)) {
         // user is mid-paste-route in char-mode: fall back to copy-mode
@@ -193,10 +219,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("jterm-yank", ({ buffer, editor }) => {
     const session = sessions.get(buffer)
     if (!session) return editor.message("No jterm session in this buffer")
-    // The Emacs kill-ring lives on the editor; default the yank to the most
-    // recent text kill, mirroring emacs -nw's yank behavior.
-    const lastText = editor.locals.get("last-yank")
-    if (typeof lastText === "string" && lastText.length > 0) {
+    const lastText = currentKill(editor)
+    if (lastText) {
       session.writeRaw(`\x1b[200~${lastText}\x1b[201~`)
     } else {
       editor.message("Yank: ring is empty")
@@ -214,13 +238,41 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`jterm: killed (pid ${session.pty.pid})`)
   }, "Kill the jterm pty and dispose the session.")
 
-  editor.command("jterm-clear", ({ buffer }) => {
+  editor.command("jterm-clear-scrollback", ({ buffer }) => {
     sessions.get(buffer)?.writeRaw("\x1b[2J\x1b[H")
-  }, "Send the standard clear-screen escape to the jterm pty.")
+  }, "Clear the jterm screen and scrollback.")
+
+  editor.command("jterm-clear", ({ editor }) => {
+    void editor.run("jterm-clear-scrollback")
+  }, "Compatibility alias for jterm-clear-scrollback.")
 
   editor.command("jterm-reset", ({ buffer }) => {
     sessions.get(buffer)?.writeRaw("\x1bc")
   }, "Send a full terminal reset (ESC c) to the jterm pty.")
+
+  editor.command("jterm-reset-cursor-point", ({ buffer }) => {
+    const session = sessions.get(buffer)
+    if (session) buffer.point = session.cursorPoint
+  }, "Move point back to the current jterm cursor position.")
+
+  editor.command("jterm-beginning-of-line", ({ buffer }) => {
+    const { start, text } = buffer.lineBoundsAt()
+    const promptEnd = promptEndColumn(text)
+    const target = start + promptEnd
+    buffer.point = buffer.point === target ? start : target
+  }, "Move to the first character after the shell prompt, or to bol if already there.")
+
+  editor.command("jterm-end-of-line", ({ buffer }) => {
+    buffer.point = buffer.lineBoundsAt().end
+  }, "Move to end of line in jterm copy mode.")
+
+  editor.command("jterm-next-prompt", ({ buffer }) => {
+    movePrompt(buffer, 1)
+  }, "Move to the next shell prompt in jterm copy mode.")
+
+  editor.command("jterm-previous-prompt", ({ buffer }) => {
+    movePrompt(buffer, -1)
+  }, "Move to the previous shell prompt in jterm copy mode.")
 
   // ---- window lifecycle ----
 
@@ -255,4 +307,22 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       if (session && session.alive) session.kill()
     }
   })
+}
+
+function promptEndColumn(line: string): number {
+  const match = line.match(/^.*(?:[$#>%]|\u276f) ?/)
+  return match?.[0].length ?? 0
+}
+
+function movePrompt(buffer: BufferModel, direction: 1 | -1): void {
+  const currentLine = buffer.lineAt(buffer.point)
+  for (let line = currentLine + direction; line >= 0 && line < buffer.lineCount; line += direction) {
+    const [start, end] = buffer.lineBounds(line)
+    const text = buffer.text.slice(start, end)
+    const col = promptEndColumn(text)
+    if (col > 0) {
+      buffer.point = start + col
+      return
+    }
+  }
 }
