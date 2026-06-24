@@ -1,13 +1,13 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import type { CompletionCandidate, FontLockRange, TextSpan } from "../kernel/extension-points"
+import type { CompletionCandidate, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
 import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
-export type { CompletionCandidate, FaceName, FontLockRange, TextSpan } from "../kernel/extension-points"
+export type { CompletionCandidate, FaceName, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
 
 export type Mode = {
   name: string
@@ -22,6 +22,8 @@ export type Mode = {
   endOfDefun?: (buffer: BufferModel) => boolean | void
   /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */
   displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
+  tableSurface?: (buffer: BufferModel) => TableSurfaceModel | null
+  paneAction?: (buffer: BufferModel, action: PaneAction) => boolean | void
   mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
 }
@@ -36,6 +38,8 @@ const MODE_GENERICS = {
   completeAtPoint: "complete-at-point",
   fontLock: "font-lock",
   displayFilter: "display-filter",
+  tableSurface: "table-surface",
+  paneAction: "pane-action",
   mouseClick: "mouse-click",
   beginningOfDefun: "beginning-of-defun-function",
   endOfDefun: "end-of-defun-function",

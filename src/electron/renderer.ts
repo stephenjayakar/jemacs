@@ -29,6 +29,9 @@ function present(model: SerializedDisplayModel): void {
     (windowId, row, col) => {
       window.jemacs.sendInput({ type: "mouse", windowId, row, col, button: 0 })
     },
+    (windowId, action, payload) => {
+      window.jemacs.sendInput({ type: "pane-action", windowId, action, payload })
+    },
     xtermPanes,
   )
 }

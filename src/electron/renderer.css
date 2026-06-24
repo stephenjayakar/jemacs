@@ -38,6 +38,28 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 @keyframes jemacs-blink { 50% { opacity: 0; } }
 .window-body.terminal-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
 .window-body.xterm-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
+.window-body.rich-table-surface { padding: 0; overflow: auto; white-space: normal; font-family: var(--jemacs-sans); }
+.rich-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; line-height: 1.35; }
+.rich-table thead th { position: sticky; top: 0; z-index: 1; padding: 5px 8px; border-bottom: 1px solid rgba(127,127,127,.28); background: color-mix(in srgb, currentColor 7%, transparent); font-weight: 700; white-space: nowrap; }
+.rich-table thead th.sortable { cursor: pointer; user-select: none; }
+.rich-table tbody td { padding: 3px 8px; border-bottom: 1px solid rgba(127,127,127,.12); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 44ch; }
+.rich-table tbody tr.selected-row td { background: rgba(80, 133, 239, .16); }
+.rich-table tbody tr.marked-row td:first-child::before { content: "* "; color: #d7ba7d; font-weight: 700; }
+.rich-table tbody tr:hover td { background: rgba(127,127,127,.10); }
+.rich-table .align-right { text-align: right; }
+.rich-table .align-center { text-align: center; }
+.rich-table-actions { width: 1%; text-align: right; white-space: nowrap; }
+.rich-table-actions button { margin-left: 4px; padding: 1px 6px; border: 1px solid rgba(127,127,127,.35); border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.rich-table-actions button:hover { background: rgba(127,127,127,.16); }
+.rich-table-empty { padding: 16px 12px; opacity: .75; }
+.rich-table-bar { position: relative; display: inline-block; min-width: 5.5ch; width: 100%; max-width: 9ch; border-radius: 3px; overflow: hidden; background: rgba(127,127,127,.14); text-align: right; }
+.rich-table-bar-fill { position: absolute; inset: 0 auto 0 0; background: rgba(80, 133, 239, .35); }
+.rich-table-bar-label { position: relative; display: block; padding: 0 4px; }
+.rich-table-badge { display: inline-block; min-width: 2ch; padding: 0 5px; border-radius: 999px; text-align: center; background: rgba(127,127,127,.18); }
+.rich-table-badge.running { background: rgba(77, 171, 97, .24); }
+.rich-table-badge.sleeping { background: rgba(127,127,127,.18); }
+.rich-table-badge.stopped { background: rgba(215, 186, 125, .24); }
+.rich-table-badge.zombie { background: rgba(244, 71, 71, .22); }
 .xterm-pane { width: 100%; height: 100%; overflow: hidden; }
 .xterm-pane .xterm { height: 100%; padding: 0; }
 .xterm-pane .xterm-viewport { overflow-y: hidden !important; }

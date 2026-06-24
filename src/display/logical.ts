@@ -6,7 +6,7 @@ import { isearchLazyHighlightSpans, isearchMatchSpan } from "../kernel/isearch"
 import { type ChildFrameParameters, type WindowLeaf, type WindowNode } from "../kernel/window"
 import { diagnosticsForBuffer } from "../lsp/diagnostics"
 import { positionToPoint } from "../lsp/positions"
-import { modeFeature, type FontLockRange, type TextSpan } from "../modes/mode"
+import { modeFeature, type FontLockRange, type TableSurfaceModel, type TextSpan } from "../modes/mode"
 import { applyTheme, type Theme } from "./theme"
 import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
@@ -65,6 +65,8 @@ export type LogicalPane = {
   terminalModeline?: ThemedText
   /** Raw terminal grid from `buffer.locals[TERMINAL_SURFACE_LOCAL]` (dims unchecked). */
   terminalSurface?: TerminalSurfaceModel
+  /** Optional rich table/list pane model. Plain text remains the fallback. */
+  tableSurface?: TableSurfaceModel
   readOnly: boolean
   showLineNumbers: boolean
   textScale: number
@@ -233,6 +235,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
       ? themedModeline(terminalModelineText(editor, buffer, dirty, leaf.dedicated), selected, editor.theme)
       : undefined,
     terminalSurface: surface,
+    tableSurface: safeTableSurface(buffer),
     readOnly: buffer.readOnly,
     showLineNumbers: buffer.kind !== "minibuffer" && editor.showLineNumbers(buffer),
     textScale: textScaleFactor(buffer),
@@ -265,6 +268,15 @@ function safeDisplayFilter(buffer: BufferModel): { text: string; map: (n: number
   } catch (err) {
     console.error(`display-filter for mode '${buffer.mode}' threw:`, err)
     return null
+  }
+}
+
+function safeTableSurface(buffer: BufferModel): TableSurfaceModel | undefined {
+  try {
+    return modeFeature(buffer.mode, "tableSurface")?.(buffer) ?? undefined
+  } catch (err) {
+    console.error(`table-surface for mode '${buffer.mode}' threw:`, err)
+    return undefined
   }
 }
 

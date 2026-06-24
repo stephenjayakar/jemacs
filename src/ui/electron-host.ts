@@ -25,6 +25,7 @@ export class ElectronHost implements UiHost {
     perFaceFonts: true,
     terminalSurfaces: true,
     terminalRawStreams: true,
+    richTables: true,
   }
 
   private window: BrowserWindow | null = null

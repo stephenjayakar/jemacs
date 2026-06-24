@@ -5,6 +5,7 @@ import { pointFromWindowClick } from "./display/click-to-point"
 import { findPaneInModel } from "./display/find-pane"
 import type { DisplayModel, InputHandler, UiHost } from "./display/protocol"
 import { scrollWindowByLines } from "./display/scroll"
+import { modeSystem } from "./kernel/extension-points"
 
 export type JemacsHostBinding = {
   present: () => void
@@ -62,6 +63,17 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
           const requestedLines = Number.isFinite(input.lines) ? Math.trunc(input.lines) : 1
           scrollWindowByLines(editor, requestedLines)
           await editor.changed("wheel-scroll")
+        }
+      } else if (input.type === "pane-action") {
+        const leaf = findWindowLeaf(editor.windowLayout, input.windowId)
+        const buffer = leaf && editor.buffers.get(leaf.bufferId)
+        if (buffer) {
+          editor.selectWindow(input.windowId)
+          const handled = modeSystem.modeFeature(buffer.mode, "paneAction")?.(buffer, {
+            action: input.action,
+            payload: input.payload,
+          })
+          if (handled) await editor.changed(`pane-action:${input.action}`)
         }
       }
     } catch (error) {

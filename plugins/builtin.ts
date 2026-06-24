@@ -35,6 +35,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["eldoc", () => import("./eldoc")],
   ["project", () => import("./project")],
   ["compile", () => import("./compile").then(m => ({ install: (e, ctx) => m.install(e, {}, ctx) }))],
+  ["jproced", () => import("./jproced").then(m => ({ install: (e, ctx) => m.install(e, {}, ctx) }))],
   ["completion-preview", () => import("./completion-preview")],
   ["magit", () => import("./magit")],
   ["dogfood", () => import("./dogfood")],

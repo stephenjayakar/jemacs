@@ -1,12 +1,14 @@
 import type { KeyEventLike } from "../kernel/keymap"
 import type { WindowClickState } from "./click-to-point"
 import type { TextSpan } from "../modes/mode"
+import type { TableSurfaceModel } from "../kernel/extension-points"
 import type { Theme } from "./theme"
 import type { ThemedText } from "./themed-text"
 import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ViewportSize } from "./viewport"
 
 export type DisplayChunk = ThemedText
+export type { TableSurfaceModel } from "../kernel/extension-points"
 
 export type WindowPaneModel = {
   id: string
@@ -16,6 +18,8 @@ export type WindowPaneModel = {
   body: DisplayChunk
   /** Optional host-renderable terminal grid. `body` remains the copy-mode/fallback text. */
   terminalSurface?: TerminalSurfaceModel
+  /** Optional host-renderable table. `body` remains the copy/search/TUI fallback text. */
+  tableSurface?: TableSurfaceModel
   modeline: DisplayChunk
   /** Maps body cell coordinates to buffer point (see `pointFromWindowClick`). */
   clickState: WindowClickState
@@ -79,6 +83,8 @@ export type HostCapabilities = {
   terminalSurfaces?: boolean
   /** When true, terminal panes can render raw PTY streams and only need surface metadata. */
   terminalRawStreams?: boolean
+  /** When true, the host can render rich table/list panes. */
+  richTables?: boolean
 }
 
 export type TerminalData = {
@@ -91,6 +97,7 @@ export type NormalizedInput =
   | { type: "paste"; text: string }
   | { type: "mouse"; windowId: string; row: number; col: number; button?: number }
   | { type: "wheel"; windowId: string; lines: number }
+  | { type: "pane-action"; windowId: string; action: string; payload?: Record<string, string | number | boolean> }
 
 export type InputHandler = (input: NormalizedInput) => void | Promise<void>
 export type ResizeHandler = (viewport: ViewportSize) => void

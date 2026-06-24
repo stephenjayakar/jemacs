@@ -89,6 +89,48 @@ export type Theme = {
   faces: Partial<Record<FaceName, FaceStyle>>
 }
 
+export type TableCellModel = {
+  text: string
+  title?: string
+  face?: string
+  value?: string | number | boolean
+  bar?: number
+  badge?: string
+}
+
+export type TableColumnModel = {
+  key: string
+  label: string
+  align?: "left" | "right" | "center"
+  width?: number
+  minWidth?: number
+  maxWidth?: number
+  sortable?: boolean
+  sortDirection?: "asc" | "desc"
+}
+
+export type TableRowModel = {
+  id: string
+  line: number
+  selected?: boolean
+  marked?: boolean
+  depth?: number
+  cells: Record<string, TableCellModel>
+  actions?: Array<{ id: string; label: string; title?: string }>
+}
+
+export type TableSurfaceModel = {
+  kind: "table"
+  columns: TableColumnModel[]
+  rows: TableRowModel[]
+  emptyText?: string
+}
+
+export type PaneAction = {
+  action: string
+  payload?: Record<string, string | number | boolean>
+}
+
 // ── Host / display state the kernel receives but does not compute ───────────
 
 /** Viewport state a host hands to `clickWindow` so kernel can map cell→point. */
@@ -119,6 +161,8 @@ export type ModeSpec = {
   indentLine?: (buffer: BufferModel) => void
   fontLock?: (buffer: BufferModel, range?: FontLockRange) => TextSpan[]
   displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
+  tableSurface?: (buffer: BufferModel) => TableSurfaceModel | null
+  paneAction?: (buffer: BufferModel, action: PaneAction) => boolean | void
   mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
   beginningOfDefun?: (buffer: BufferModel) => boolean | void

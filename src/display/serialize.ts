@@ -1,4 +1,4 @@
-import type { ChildFrameModel, DisplayModel, WindowDisplayNode } from "./protocol"
+import type { ChildFrameModel, DisplayModel, TableSurfaceModel, WindowDisplayNode } from "./protocol"
 import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ThemedText } from "./themed-text"
 
@@ -53,6 +53,7 @@ export type SerializedPane = {
    *  characters into that row (pre-wrap). */
   cursor?: { row: number; colOffset: number }
   terminalSurface?: TerminalSurfaceModel
+  tableSurface?: TableSurfaceModel
   modeline: SerializedThemedText
   clickState: { startLine: number; gutterPrefixLen: number; displayText?: string; leftPadding?: number }
   bodyLineBudget: number
@@ -116,6 +117,7 @@ function serializePane(pane: DisplayModel["childFrames"][number]["pane"]): Seria
     dedicated: pane.dedicated,
     body: serializeThemedText(pane.body),
     terminalSurface: pane.terminalSurface ? serializeTerminalSurface(pane.terminalSurface) : undefined,
+    tableSurface: pane.tableSurface ? serializeTableSurface(pane.tableSurface) : undefined,
     modeline: serializeThemedText(pane.modeline),
     clickState: {
       startLine: pane.clickState.startLine,
@@ -126,6 +128,19 @@ function serializePane(pane: DisplayModel["childFrames"][number]["pane"]): Seria
     syncText: pane.syncText,
     syncPoint: pane.syncPoint,
     textScale: pane.textScale,
+  }
+}
+
+function serializeTableSurface(surface: TableSurfaceModel): TableSurfaceModel {
+  return {
+    kind: "table",
+    columns: surface.columns.map(column => ({ ...column })),
+    rows: surface.rows.map(row => ({
+      ...row,
+      cells: Object.fromEntries(Object.entries(row.cells).map(([key, cell]) => [key, { ...cell }])),
+      actions: row.actions?.map(action => ({ ...action })),
+    })),
+    emptyText: surface.emptyText,
   }
 }
 

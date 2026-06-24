@@ -218,6 +218,11 @@ function charOffsetAtX(rowEl: HTMLElement, clientX: number, rowLeft: number, col
 }
 
 export type DomFrameMouseHandler = (windowId: string, row: number, col: number) => void
+export type DomFramePaneActionHandler = (
+  windowId: string,
+  action: string,
+  payload?: Record<string, string | number | boolean>,
+) => void
 export type DomTerminalRenderer = {
   mount(body: HTMLElement, pane: SerializedPane, theme?: SerializedDisplayModel["theme"]): boolean
 }
@@ -228,6 +233,7 @@ type PaneSlot = { pane: SerializedPane; dom: PaneDom }
 export function renderWindows(
   node: SerializedWindowNode,
   onMouse?: DomFrameMouseHandler,
+  onPaneAction?: DomFramePaneActionHandler,
   terminalRenderer?: DomTerminalRenderer,
   grow = 1,
   theme?: SerializedDisplayModel["theme"],
@@ -241,7 +247,7 @@ export function renderWindows(
     modeline.className = "window-modeline"
     pane.append(body, modeline)
     const dom: PaneDom = { paneEl: pane, bodyEl: body, modelineEl: modeline }
-    fillPane(dom, node.pane, grow, theme, terminalRenderer)
+    fillPane(dom, node.pane, grow, theme, terminalRenderer, onPaneAction)
     body.addEventListener("mousedown", event => {
       if (event.button !== 0 || !onMouse) return
       const textScale = Number(pane.dataset.textScale ?? "1") || 1
@@ -264,8 +270,8 @@ export function renderWindows(
   split.style.flexGrow = String(Math.max(0.05, grow))
   const firstRatio = node.firstRatio ?? 0.5
   split.append(
-    renderWindows(node.first, onMouse, terminalRenderer, firstRatio, theme, slots),
-    renderWindows(node.second, onMouse, terminalRenderer, 1 - firstRatio, theme, slots),
+    renderWindows(node.first, onMouse, onPaneAction, terminalRenderer, firstRatio, theme, slots),
+    renderWindows(node.second, onMouse, onPaneAction, terminalRenderer, 1 - firstRatio, theme, slots),
   )
   return split
 }
@@ -278,6 +284,7 @@ function fillPane(
   grow: number,
   theme: SerializedDisplayModel["theme"] | undefined,
   terminalRenderer: DomTerminalRenderer | undefined,
+  onPaneAction?: DomFramePaneActionHandler,
 ): void {
   const { paneEl, bodyEl, modelineEl } = dom
   paneEl.className = `window-pane${model.selected ? " selected" : ""}`
@@ -296,10 +303,14 @@ function fillPane(
   const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
   bodyEl.style.fontSize = `${bodyDefaultPx * textScale}px`
   bodyEl.style.lineHeight = String(DOM_FRAME_LINE_HEIGHT_RATIO)
+  bodyEl.classList.remove("terminal-surface", "xterm-surface", "rich-table-surface", "web-body")
   if (model.terminalSurface) {
     bodyEl.style.setProperty("--jemacs-terminal-row-px", `${rowPx}px`)
     bodyEl.style.setProperty("--jemacs-terminal-col-px", `${colPx}px`)
     if (!terminalRenderer?.mount(bodyEl, model, theme)) renderTerminalSurface(bodyEl, model.terminalSurface)
+  }
+  else if (model.tableSurface) {
+    renderTableSurface(bodyEl, model, theme, onPaneAction)
   }
   else if (model.cursor) {
     const rows = renderBodyRows(bodyEl, model.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
@@ -323,11 +334,13 @@ function patchPane(
   grow: number,
   theme: SerializedDisplayModel["theme"] | undefined,
   terminalRenderer: DomTerminalRenderer | undefined,
+  onPaneAction?: DomFramePaneActionHandler,
 ): void {
   const chromeChanged = prev.selected !== next.selected || prev.textScale !== next.textScale
   const bodyChanged = !sameJson(prev.body, next.body)
     || !sameJson(prev.cursor, next.cursor)
     || !sameJson(prev.terminalSurface, next.terminalSurface)
+    || !sameJson(prev.tableSurface, next.tableSurface)
   const modelineChanged = !sameJson(prev.modeline, next.modeline)
   // Terminal fast path: same-shape grid → mutate cells in place.
   if (!chromeChanged && !modelineChanged
@@ -340,7 +353,7 @@ function patchPane(
   }
   if (!chromeChanged && !bodyChanged && !modelineChanged) return
   if (chromeChanged || (bodyChanged && modelineChanged)) {
-    fillPane(dom, next, grow, theme, terminalRenderer)
+    fillPane(dom, next, grow, theme, terminalRenderer, onPaneAction)
     return
   }
   const defaultFace = themeFace(theme, "default")
@@ -351,6 +364,7 @@ function patchPane(
     if (next.terminalSurface) {
       if (!terminalRenderer?.mount(dom.bodyEl, next, theme)) renderTerminalSurface(dom.bodyEl, next.terminalSurface)
     }
+    else if (next.tableSurface) renderTableSurface(dom.bodyEl, next, theme, onPaneAction)
     else if (next.cursor) {
       const rows = renderBodyRows(dom.bodyEl, next.body, { textScale, defaultFontPx: bodyDefaultPx, defaultFamily })
       renderCaret(dom.bodyEl, rows, next.cursor, defaultFace?.fg)
@@ -362,6 +376,137 @@ function patchPane(
     const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
     renderThemedText(dom.modelineEl, next.modeline, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
   }
+}
+
+function renderTableSurface(
+  el: HTMLElement,
+  pane: SerializedPane,
+  theme: SerializedDisplayModel["theme"] | undefined,
+  onPaneAction?: DomFramePaneActionHandler,
+): void {
+  const surface = pane.tableSurface
+  if (!surface) return
+  el.replaceChildren()
+  el.classList.add("rich-table-surface")
+  const table = document.createElement("table")
+  table.className = "rich-table"
+
+  const colgroup = document.createElement("colgroup")
+  for (const column of surface.columns) {
+    const col = document.createElement("col")
+    if (column.width) col.style.width = `${column.width}ch`
+    if (column.minWidth) col.style.minWidth = `${column.minWidth}ch`
+    if (column.maxWidth) col.style.maxWidth = `${column.maxWidth}ch`
+    colgroup.appendChild(col)
+  }
+  table.appendChild(colgroup)
+
+  const hasActions = surface.rows.some(row => row.actions?.length)
+  const thead = document.createElement("thead")
+  const headerRow = document.createElement("tr")
+  for (const column of surface.columns) {
+    const th = document.createElement("th")
+    th.className = `align-${column.align ?? "left"}`
+    th.textContent = column.label + (column.sortDirection ? column.sortDirection === "desc" ? " v" : " ^" : "")
+    if (column.sortable) {
+      th.classList.add("sortable")
+      th.addEventListener("click", event => {
+        event.stopPropagation()
+        onPaneAction?.(pane.id, "sort", { key: column.key })
+      })
+    }
+    headerRow.appendChild(th)
+  }
+  if (hasActions) {
+    const th = document.createElement("th")
+    th.className = "rich-table-actions"
+    headerRow.appendChild(th)
+  }
+  thead.appendChild(headerRow)
+  table.appendChild(thead)
+
+  const tbody = document.createElement("tbody")
+  if (!surface.rows.length) {
+    const tr = document.createElement("tr")
+    const td = document.createElement("td")
+    td.className = "rich-table-empty"
+    td.colSpan = surface.columns.length + (hasActions ? 1 : 0)
+    td.textContent = surface.emptyText ?? ""
+    tr.appendChild(td)
+    tbody.appendChild(tr)
+  }
+  for (const row of surface.rows) {
+    const tr = document.createElement("tr")
+    tr.dataset.rowId = row.id
+    tr.dataset.line = String(row.line)
+    if (row.selected) tr.classList.add("selected-row")
+    if (row.marked) tr.classList.add("marked-row")
+    tr.addEventListener("click", event => {
+      if (event.target instanceof HTMLElement && event.target.closest("button")) return
+      event.stopPropagation()
+      onPaneAction?.(pane.id, "select-row", { line: row.line })
+    })
+    surface.columns.forEach((column, index) => {
+      const td = document.createElement("td")
+      td.className = `align-${column.align ?? "left"}`
+      const cell = row.cells[column.key] ?? { text: "" }
+      if (cell.title) td.title = cell.title
+      if (cell.face) {
+        td.dataset.face = cell.face
+        applyTableCellFace(td, cell.face, theme)
+      }
+      if (index === 0 && row.depth) td.style.paddingLeft = `${8 + row.depth * 14}px`
+      if (typeof cell.bar === "number") {
+        const bar = document.createElement("span")
+        bar.className = "rich-table-bar"
+        const fill = document.createElement("span")
+        fill.className = "rich-table-bar-fill"
+        fill.style.width = `${Math.max(0, Math.min(100, cell.bar))}%`
+        const label = document.createElement("span")
+        label.className = "rich-table-bar-label"
+        label.textContent = cell.text
+        bar.append(fill, label)
+        td.appendChild(bar)
+      } else if (cell.badge) {
+        const badge = document.createElement("span")
+        badge.className = `rich-table-badge ${cell.badge}`
+        badge.textContent = cell.text
+        td.appendChild(badge)
+      } else {
+        td.textContent = cell.text
+      }
+      tr.appendChild(td)
+    })
+    if (hasActions) {
+      const td = document.createElement("td")
+      td.className = "rich-table-actions"
+      for (const action of row.actions ?? []) {
+        const button = document.createElement("button")
+        button.type = "button"
+        button.textContent = action.label
+        if (action.title) button.title = action.title
+        button.addEventListener("click", event => {
+          event.stopPropagation()
+          onPaneAction?.(pane.id, action.id, { pid: row.id, line: row.line })
+        })
+        td.appendChild(button)
+      }
+      tr.appendChild(td)
+    }
+    tbody.appendChild(tr)
+  }
+  table.appendChild(tbody)
+  el.appendChild(table)
+}
+
+function applyTableCellFace(
+  el: HTMLElement,
+  face: string,
+  theme: SerializedDisplayModel["theme"] | undefined,
+): void {
+  const resolved = themeFace(theme, face)
+  if (resolved?.fg) el.style.color = resolved.fg
+  if (resolved?.bg) el.style.backgroundColor = resolved.bg
 }
 
 function patchTerminalSurface(body: HTMLElement, prev: TerminalSurfaceModel, next: TerminalSurfaceModel): void {
@@ -487,6 +632,7 @@ export function presentDomFrame(
   targets: DomFrameTargets,
   model: SerializedDisplayModel,
   onMouse?: DomFrameMouseHandler,
+  onPaneAction?: DomFramePaneActionHandler,
   terminalRenderer?: DomTerminalRenderer,
 ): void {
   cancelPendingCaretRafs()
@@ -506,7 +652,7 @@ export function presentDomFrame(
     panes = prev.panes
     forEachLeaf(model.windows, (next, grow) => {
       const slot = panes.get(next.id)!
-      patchPane(slot.pane, next, slot.dom, grow, model.theme, terminalRenderer)
+      patchPane(slot.pane, next, slot.dom, grow, model.theme, terminalRenderer, onPaneAction)
       slot.pane = next
     })
     if (sameJson(prev.model.childFrames, model.childFrames)) {
@@ -522,7 +668,7 @@ export function presentDomFrame(
     panes = new Map()
     childFramesEl = (model.childFrames ?? []).map(f => renderChildFrame(f, model.theme))
     targets.windows.replaceChildren(
-      renderWindows(model.windows, onMouse, terminalRenderer, 1, model.theme, panes),
+      renderWindows(model.windows, onMouse, onPaneAction, terminalRenderer, 1, model.theme, panes),
       ...childFramesEl,
     )
   }
