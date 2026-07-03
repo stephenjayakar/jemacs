@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import { findPaneInModel } from "../../src/display/find-pane"
+import { modeFeature } from "../../src/modes/mode"
 import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
+import { setCustom } from "../../src/runtime/custom"
 import { makeEditor } from "./helper"
 import { install, parsePs, type JProcedProcess, type JProcedProvider } from "../../plugins/jproced"
 
@@ -100,6 +102,70 @@ test("jproced opens a filtered listing and exposes a rich table surface", async 
   expect(pane?.tableSurface?.columns.some(column => column.sortable)).toBe(true)
 })
 
+test("jproced plain header marks the active sort column", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([proc(10, 1, "launchd"), proc(20, 1, "bun")]) })
+
+  await editor.run("jproced")
+
+  expect(editor.currentBuffer.text.split("\n")[0]).toContain("%CPU▼")
+})
+
+test("jproced tree mode renders glyph indentation instead of raw depth", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([
+    proc(10, 1, "root"),
+    proc(20, 10, "child"),
+    proc(30, 20, "grandchild"),
+  ]) })
+  await editor.run("jproced")
+  await editor.run("jproced-filter-interactive", ["all"])
+  await editor.run("jproced-toggle-tree")
+
+  const text = editor.currentBuffer.text
+  expect(text).toContain("└─")
+  expect(text).not.toMatch(/\b1\s+2\.0\b/)
+  expect(text).not.toMatch(/\b2\s+3\.0\b/)
+})
+
+test("jproced plain percent cells include bars while table cells stay numeric", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([proc(20, 1, "bun", { pcpu: 12.5 })]) })
+  setCustom("jproced-enable-color-flag", true)
+
+  await editor.run("jproced")
+
+  expect(editor.currentBuffer.text).toMatch(/[▁▂▃▄▅▆▇█]/)
+
+  const model = buildDisplayModel(editor, {
+    viewport: { rows: 30, cols: 120 },
+    hostCapabilities: { unit: "pixels", mouse: true, clipboard: true, osc52: false, richTables: true },
+  })
+  const pane = findPaneInModel(model.windows, editor.selectedWindowId)
+  expect(pane?.tableSurface?.rows[0]?.cells.pcpu.text).toBe("12.5")
+  expect(pane?.tableSurface?.rows[0]?.cells.pcpu.text).not.toMatch(/[▁▂▃▄▅▆▇█]/)
+})
+
+test("jproced mouse click on the header sorts by that column", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([
+    proc(10, 1, "high", { pcpu: 30 }),
+    proc(20, 1, "low", { pcpu: 10 }),
+    proc(30, 1, "mid", { pcpu: 20 }),
+  ]) })
+  await editor.run("jproced")
+
+  const buffer = editor.currentBuffer
+  expect(processIds(buffer.text)).toEqual([10, 30, 20])
+
+  const click = modeFeature("jproced-mode", "mouseClick")
+  expect(click).toBeDefined()
+  click?.(buffer, buffer.text.indexOf("PID"))
+
+  expect(processIds(buffer.text)).toEqual([10, 20, 30])
+  expect(buffer.text.split("\n")[0]).toContain("PID▲")
+})
+
 test("jproced marks processes and sends signal or renice operations to marked targets", async () => {
   const calls: Array<{ pid: number; signal: string | number }> = []
   const spawnCalls: SpawnOptions[] = []
@@ -137,3 +203,7 @@ test("jproced tree mode and parent/child marking preserve process relationships"
   expect(buffer.text).toMatch(/^\* .*child/m)
   expect(buffer.text).toMatch(/^\* .*grandchild/m)
 })
+
+function processIds(text: string): number[] {
+  return text.split("\n").slice(1).filter(Boolean).map(line => Number(line.trim().split(/\s+/)[1]))
+}

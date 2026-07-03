@@ -1,7 +1,7 @@
 import type { Editor } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
 import { Keymap } from "../../src/kernel/keymap"
-import { defineMode, type PaneAction, type TableSurfaceModel, type TextSpan } from "../../src/modes/mode"
+import { defineMode, type FaceName, type PaneAction, type TableSurfaceModel, type TextSpan } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { killNew } from "../../src/runtime/kill-ring"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
@@ -50,6 +50,7 @@ type SortDirection = "asc" | "desc"
 type Mark = "*"
 
 type RenderedColumn = JProcedColumnRule & { offset: number; width: number }
+type FormattedCell = { text: string; numeric?: number; face?: FaceName; bar?: number; badge?: string }
 
 type JProcedState = {
   processes: JProcedProcess[]
@@ -181,6 +182,15 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
     tableSurface: jprocedTableSurface,
     paneAction: (_buffer, action) => handlePaneAction(editor, action),
     mouseClick(buffer, point) {
+      const st = stateByBuffer.get(buffer)
+      if (st && buffer.lineAt(point) === 0) {
+        const col = point - (buffer.lineStarts[0] ?? 0)
+        const key = keyAtColumn(st, col)
+        if (key && columnRules[key]?.sortable) {
+          setSort(buffer, key, null)
+          return true
+        }
+      }
       buffer.point = point
       return true
     },
@@ -246,6 +256,12 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
   ctx.command("jproced-toggle-tree", ({ editor, buffer, prefixArgument }) => {
     const st = mustState(buffer)
     st.tree = prefixArgument == null ? !st.tree : prefixArgument > 0
+    if (st.tree) {
+      st.displayed = treeProcesses(st.displayed)
+    } else {
+      for (const p of st.displayed) delete p.attrs.tree
+      st.displayed = sortProcesses(st.displayed, st.sort, st.direction)
+    }
     render(buffer)
     editor.message(`JProced process tree display ${st.tree ? "enabled" : "disabled"}`)
   }, "Toggle JProced process tree display.")
@@ -346,14 +362,14 @@ function render(buffer: BufferModel): void {
   const st = mustState(buffer)
   const rows = st.displayed
   const format = resolveFormat(st)
-  const columns = renderedColumns(rows, format)
+  const columns = renderedColumns(rows, format, st)
   st.columns = columns
   st.linePids = rows.map(p => p.pid)
-  const header = `  ${columns.map(c => justify(c.label, c.width, c.align)).join(" ")}`
+  const header = `  ${columns.map(c => justify(headerLabel(st, c), c.width, c.align)).join(" ")}`
   const lines = [header]
   for (const p of rows) {
     const mark = st.marks.has(p.pid) ? "*" : " "
-    const cells = columns.map(c => formatCell(p, c.key).text)
+    const cells = columns.map(c => formatCell(p, c.key, { percentBars: true }).text)
     lines.push(`${mark} ${cells.map((cell, i) => justify(cell, columns[i]!.width, columns[i]!.align)).join(" ")}`)
   }
   const point = buffer.point
@@ -363,20 +379,25 @@ function render(buffer: BufferModel): void {
   buffer.point = Math.min(point, buffer.text.length)
 }
 
-function renderedColumns(rows: JProcedProcess[], format: JProcedFormatSpec[]): RenderedColumn[] {
+function renderedColumns(rows: JProcedProcess[], format: JProcedFormatSpec[], st: JProcedState): RenderedColumn[] {
   let offset = 2
   const out: RenderedColumn[] = []
   for (const spec of format) {
     const key = Array.isArray(spec) ? spec.find(k => rows.some(p => attr(p, k) != null)) ?? spec[0]! : spec
     const rule = columnRules[key]
     if (!rule) continue
-    const labelWidth = rule.label.length
-    const valueWidth = Math.max(labelWidth, ...rows.map(p => formatCell(p, key).text.length))
+    const labelWidth = headerLabel(st, rule).length
+    const valueWidth = Math.max(labelWidth, ...rows.map(p => formatCell(p, key, { percentBars: true }).text.length))
     const width = rule.width ?? Math.min(Math.max(valueWidth, 1), key === "args" ? 80 : 24)
     out.push({ ...rule, offset, width })
     offset += width + 1
   }
   return out
+}
+
+function headerLabel(st: JProcedState, column: JProcedColumnRule): string {
+  if (st.sort !== column.key) return column.label
+  return `${column.label}${st.direction === "desc" ? "▼" : "▲"}`
 }
 
 function resolveFormat(st: JProcedState): JProcedFormatSpec[] {
@@ -454,18 +475,42 @@ function attr(process: JProcedProcess, key: JProcedAttributeKey): JProcedValue |
   return process.attrs[key]
 }
 
-function formatCell(process: JProcedProcess, key: JProcedAttributeKey): { text: string; numeric?: number; face?: string; bar?: number; badge?: string } {
+function formatCell(process: JProcedProcess, key: JProcedAttributeKey, options: { percentBars?: boolean } = {}): FormattedCell {
   const value = attr(process, key)
   if (key === "tree" && value == null) return { text: "" }
   if (value == null) return { text: "?" }
   if (key === "vsize" || key === "rss") return { text: formatBytes(Number(value) * 1024), numeric: Number(value), face: memoryFace(key, Number(value)) }
   if (key === "pcpu" || key === "pmem") {
     const n = Number(value)
-    return { text: n.toFixed(1), numeric: n, face: key === "pcpu" ? "function" : "constant", bar: Math.min(100, n) }
+    const text = n.toFixed(1)
+    return {
+      text: options.percentBars && getCustom<boolean>("jproced-enable-color-flag") ? `${text} ${percentBar(n)}` : text,
+      numeric: n,
+      face: key === "pcpu" ? "function" : "constant",
+      bar: Math.min(100, n),
+    }
   }
   if (key === "state") return { text: String(value), face: stateFace(String(value)), badge: stateBadge(String(value)) }
-  if (key === "tree") return { text: String(value) }
+  if (key === "tree") return { text: treeGlyph(Number(value)) }
   return { text: String(value).replace(/\n/g, "^J") }
+}
+
+function treeGlyph(depth: number): string {
+  if (!Number.isFinite(depth) || depth <= 0) return ""
+  return `${"  ".repeat(Math.max(0, depth - 1))}└─`
+}
+
+function percentBar(value: number): string {
+  const blocks = " ▁▂▃▄▅▆▇█"
+  const pct = Math.max(0, Math.min(100, value))
+  const segment = 100 / 3
+  let out = ""
+  for (let i = 0; i < 3; i++) {
+    const filled = Math.max(0, Math.min(1, (pct - i * segment) / segment))
+    const index = filled <= 0 ? 1 : Math.max(1, Math.min(8, Math.ceil(filled * 8)))
+    out += blocks[index]
+  }
+  return out
 }
 
 function formatBytes(bytes: number): string {
@@ -477,7 +522,7 @@ function formatBytes(bytes: number): string {
   return `${n >= 10 || i === 0 ? n.toFixed(0) : n.toFixed(1)}${units[i]}`
 }
 
-function memoryFace(key: JProcedAttributeKey, kb: number): string | undefined {
+function memoryFace(key: JProcedAttributeKey, kb: number): FaceName | undefined {
   if (key !== "rss") return undefined
   const totalKb = Number(process.env.JPROCED_TOTAL_MEM_KB ?? 0)
   if (!totalKb) return "constant"
@@ -489,7 +534,7 @@ function memoryFace(key: JProcedAttributeKey, kb: number): string | undefined {
   return "error"
 }
 
-function stateFace(state: string): string {
+function stateFace(state: string): FaceName {
   if (/^R/i.test(state)) return "string"
   if (/^D/i.test(state) || /^Z/i.test(state)) return "error"
   if (/^T/i.test(state)) return "constant"
@@ -520,6 +565,10 @@ function keyAtPoint(buffer: BufferModel): JProcedAttributeKey | null {
   const st = stateByBuffer.get(buffer)
   if (!st) return null
   const col = buffer.lineCol().col - 1
+  return keyAtColumn(st, col)
+}
+
+function keyAtColumn(st: JProcedState, col: number): JProcedAttributeKey | null {
   return st.columns.find(c => col >= c.offset && col < c.offset + c.width)?.key ?? null
 }
 
@@ -737,18 +786,26 @@ function jprocedFontLock(buffer: BufferModel): TextSpan[] {
   for (const [lineNo, line] of buffer.text.split("\n").entries()) {
     if (lineNo === 0) spans.push({ start: offset, end: offset + line.length, face: "keyword" })
     else {
-      if (line[0] === "*") spans.push({ start: offset, end: offset + 1, face: "constant" })
+      const process = st.displayed[lineNo - HEADER_LINES]
+      if (line[0] === "*") spans.push({ start: offset, end: offset + line.length, face: "constant" })
       for (const column of st.columns) {
         const start = offset + column.offset
         const end = Math.min(offset + line.length, start + column.width)
-        if (column.key === "pid" || column.key === "ppid") spans.push({ start, end, face: "number" })
-        if (column.key === "pcpu" || column.key === "pmem") spans.push({ start, end, face: "function" })
-        if (column.key === "state") spans.push({ start, end, face: "constant" })
+        if (end <= start) continue
+        const face = process ? formatCell(process, column.key).face ?? fallbackColumnFace(column.key) : fallbackColumnFace(column.key)
+        if (face) spans.push({ start, end, face })
       }
     }
     offset += line.length + 1
   }
   return spans
+}
+
+function fallbackColumnFace(key: JProcedAttributeKey): FaceName | undefined {
+  if (key === "pid" || key === "ppid") return "number"
+  if (key === "pcpu" || key === "pmem") return "function"
+  if (key === "state") return "constant"
+  return undefined
 }
 
 function jprocedTableSurface(buffer: BufferModel): TableSurfaceModel | null {

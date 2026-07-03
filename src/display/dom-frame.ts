@@ -407,7 +407,7 @@ function renderTableSurface(
   for (const column of surface.columns) {
     const th = document.createElement("th")
     th.className = `align-${column.align ?? "left"}`
-    th.textContent = column.label + (column.sortDirection ? column.sortDirection === "desc" ? " v" : " ^" : "")
+    th.textContent = column.label + (column.sortDirection ? column.sortDirection === "desc" ? " ▼" : " ▲" : "")
     if (column.sortable) {
       th.classList.add("sortable")
       th.addEventListener("click", event => {
