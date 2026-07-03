@@ -136,7 +136,8 @@ const jprocedDispatchTransient: TransientDefinition = {
       { key: "w c", label: "copy command", command: "jproced-copy-command" },
     ] },
     { title: "Help", suffixes: [
-      { key: "S-h", label: "help screen", command: "jproced-help" },
+      { key: "S-h", label: "full help buffer", command: "jproced-help" },
+      { key: "S-q", label: "quit window", command: "quit-window" },
     ] },
   ],
 }
@@ -217,8 +218,9 @@ const helpGroups: Array<{ title: string; entries: Array<{ key: string; command: 
     { key: "w c", command: "jproced-copy-command", description: "Copy the process command at point." },
   ] },
   { title: "Misc", entries: [
-    { key: "?", command: "jproced-dispatch", description: "Open the JProced dispatch popup." },
-    { key: "h", command: "jproced-help", description: "Show this help buffer." },
+    { key: "h", command: "jproced-dispatch", description: "Open the JProced dispatch popup (transient help)." },
+    { key: "?", command: "jproced-dispatch", description: "Open the JProced dispatch popup (transient help)." },
+    { key: "S-h", command: "jproced-help", description: "Show this help buffer." },
     { key: "q", command: "quit-window", description: "Quit the JProced window." },
   ] },
 ]
@@ -286,7 +288,8 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
   keymap.bind("w p", "jproced-copy-pid")
   keymap.bind("w c", "jproced-copy-command")
   keymap.bind("?", "jproced-dispatch")
-  keymap.bind("h", "jproced-help")
+  keymap.bind("h", "jproced-dispatch")
+  keymap.bind("S-h", "jproced-help")
   keymap.bind("q", "quit-window")
 
   defineMode({
