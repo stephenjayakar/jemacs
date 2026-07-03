@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import { findPaneInModel } from "../../src/display/find-pane"
+import type { BufferModel } from "../../src/kernel/buffer"
 import { modeFeature } from "../../src/modes/mode"
 import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
-import { setCustom } from "../../src/runtime/custom"
+import { getCustom, setCustom } from "../../src/runtime/custom"
 import { makeEditor } from "./helper"
 import { install, parsePs, type JProcedProcess, type JProcedProvider } from "../../plugins/jproced"
 
@@ -111,6 +112,62 @@ test("jproced plain header marks the active sort column", async () => {
   expect(editor.currentBuffer.text.split("\n")[0]).toContain("%CPU▼")
 })
 
+test("jproced-dispatch opens the JProced transient", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([proc(20, 1, "bun")]) })
+  await editor.run("jproced")
+
+  await editor.run("jproced-dispatch")
+
+  expect(editor.transient?.definition.name).toBe("jproced")
+  expect(editor.minibufferCompletionDisplay?.text).toContain("Marks")
+  expect(editor.minibufferCompletionDisplay?.text).toContain("Listing")
+  expect(editor.minibufferCompletionDisplay?.text).toContain("Actions")
+})
+
+test("jproced sort transient dispatches suffix commands", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([
+    proc(20, 1, "low", { pcpu: 10 }),
+    proc(30, 1, "high", { pcpu: 30 }),
+  ]) })
+  await editor.run("jproced")
+  expect(processIds(editor.currentBuffer.text)).toEqual([30, 20])
+
+  await editor.run("jproced-sort-popup")
+  expect(editor.transient?.definition.name).toBe("jproced-sort")
+  await editor.handleKey({ name: "p", sequence: "p" })
+
+  expect(editor.transient).toBeNull()
+  expect(processIds(editor.currentBuffer.text)).toEqual([20, 30])
+  expect(editor.currentBuffer.text.split("\n")[0]).toContain("PID▲")
+})
+
+test("jproced-help creates a help buffer with grouped key tables", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([proc(20, 1, "bun")]) })
+  await editor.run("jproced")
+
+  await editor.run("jproced-help")
+
+  const buffer = editor.currentBuffer
+  expect(buffer.name).toBe("*JProced Help*")
+  expect(buffer.mode).toBe("help")
+  expect(buffer.text).toContain("Marks")
+  expect(buffer.text).toContain("m            jproced-mark")
+})
+
+test("jproced contributes listing state to mode-line-misc-info", async () => {
+  const editor = makeEditor()
+  install(editor, { provider: provider([proc(20, 1, "bun")]) })
+  await editor.run("jproced")
+
+  const misc = getCustom<Array<(b: BufferModel) => string>>("mode-line-misc-info") ?? []
+  const segment = misc.map(fn => fn(editor.currentBuffer)).find(s => s.includes("%CPU"))
+
+  expect(segment).toBe(" [user | %CPU▼ | short]")
+})
+
 test("jproced tree mode renders glyph indentation instead of raw depth", async () => {
   const editor = makeEditor()
   install(editor, { provider: provider([
@@ -183,6 +240,26 @@ test("jproced marks processes and sends signal or renice operations to marked ta
 
   await editor.run("jproced-renice", ["5"])
   expect(spawnCalls.at(-1)?.cmd).toEqual(["renice", "5", "-p", "30"])
+})
+
+test("jproced confirms before signaling multiple targets", async () => {
+  const calls: Array<{ pid: number; signal: string | number }> = []
+  const editor = makeEditor()
+  install(editor, {
+    provider: provider([proc(20, 10, "bun"), proc(30, 10, "node")]),
+    signal: (pid, signal) => { calls.push({ pid, signal }) },
+  })
+  await editor.run("jproced")
+  await editor.run("jproced-mark-all")
+
+  editor.prompt = async () => "yes"
+  await editor.run("jproced-send-signal", ["TERM"])
+  expect(calls).toEqual([{ pid: 30, signal: "TERM" }, { pid: 20, signal: "TERM" }])
+
+  calls.length = 0
+  editor.prompt = async () => "no"
+  await editor.run("jproced-send-signal", ["KILL"])
+  expect(calls).toEqual([])
 })
 
 test("jproced tree mode and parent/child marking preserve process relationships", async () => {

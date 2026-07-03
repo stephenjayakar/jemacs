@@ -1,8 +1,8 @@
-import type { Editor } from "../../src/kernel/editor"
+import type { Editor, TransientDefinition } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
 import { Keymap } from "../../src/kernel/keymap"
 import { defineMode, type FaceName, type PaneAction, type TableSurfaceModel, type TextSpan } from "../../src/modes/mode"
-import { defcustom, getCustom } from "../../src/runtime/custom"
+import { defcustom, defvar, getCustom } from "../../src/runtime/custom"
 import { killNew } from "../../src/runtime/kill-ring"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { spawnProcess, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
@@ -102,6 +102,127 @@ const defaultFormatAlist: Record<string, JProcedFormatSpec[]> = {
   verbose: ["user", "euid", "pid", "ppid", "pgrp", "sess", "tree", "pri", "nice", "thcount", "pcpu", "pmem", "vsize", "rss", "state", "etime", "comm", "args"],
 }
 
+const jprocedDispatchTransient: TransientDefinition = {
+  name: "jproced",
+  title: "JProced",
+  groups: [
+    { title: "Marks", suffixes: [
+      { key: "m", label: "mark", command: "jproced-mark" },
+      { key: "u", label: "unmark", command: "jproced-unmark" },
+      { key: "S-m", label: "mark all", command: "jproced-mark-all" },
+      { key: "S-u", label: "unmark all", command: "jproced-unmark-all" },
+      { key: "t", label: "toggle marks", command: "jproced-toggle-marks" },
+      { key: "S-c", label: "mark children", command: "jproced-mark-children" },
+      { key: "S-p", label: "mark parents", command: "jproced-mark-parents" },
+      { key: "o", label: "omit marked", command: "jproced-omit-processes" },
+    ] },
+    { title: "Listing", suffixes: [
+      { key: "s c", label: "sort %CPU", command: "jproced-sort-pcpu" },
+      { key: "s m", label: "sort %Mem", command: "jproced-sort-pmem" },
+      { key: "s p", label: "sort PID", command: "jproced-sort-pid" },
+      { key: "s t", label: "sort time", command: "jproced-sort-time" },
+      { key: "s u", label: "sort user", command: "jproced-sort-user" },
+      { key: "f", label: "filter", command: "jproced-filter-interactive" },
+      { key: "S-f", label: "format", command: "jproced-format-interactive" },
+      { key: "S-t", label: "toggle tree", command: "jproced-toggle-tree" },
+      { key: "g", label: "refresh", command: "jproced-revert" },
+      { key: "a", label: "toggle auto-update", command: "jproced-toggle-auto-update" },
+    ] },
+    { title: "Actions", suffixes: [
+      { key: "k", label: "send signal", command: "jproced-send-signal" },
+      { key: "r", label: "renice", command: "jproced-renice" },
+      { key: "i", label: "inspect", command: "jproced-inspect-process" },
+      { key: "w p", label: "copy pid", command: "jproced-copy-pid" },
+      { key: "w c", label: "copy command", command: "jproced-copy-command" },
+    ] },
+    { title: "Help", suffixes: [
+      { key: "S-h", label: "help screen", command: "jproced-help" },
+    ] },
+  ],
+}
+
+const jprocedSortTransient: TransientDefinition = {
+  name: "jproced-sort",
+  title: "Sort by",
+  groups: [{ title: "Sort", suffixes: [
+    { key: "c", label: "%CPU", command: "jproced-sort-pcpu" },
+    { key: "m", label: "%Mem", command: "jproced-sort-pmem" },
+    { key: "p", label: "PID", command: "jproced-sort-pid" },
+    { key: "s", label: "start", command: "jproced-sort-start" },
+    { key: "t", label: "time", command: "jproced-sort-time" },
+    { key: "u", label: "user", command: "jproced-sort-user" },
+    { key: "S-s", label: "other...", command: "jproced-sort-interactive" },
+  ] }],
+}
+
+const jprocedFormatTransient: TransientDefinition = {
+  name: "jproced-format",
+  title: "Format",
+  groups: [{ title: "Format", suffixes: [
+    { key: "s", label: "short", command: "jproced-format-interactive", args: ["short"] },
+    { key: "m", label: "medium", command: "jproced-format-interactive", args: ["medium"] },
+    { key: "l", label: "long", command: "jproced-format-interactive", args: ["long"] },
+    { key: "v", label: "verbose", command: "jproced-format-interactive", args: ["verbose"] },
+  ] }],
+}
+
+const jprocedSignalTransient: TransientDefinition = {
+  name: "jproced-signal",
+  title: "Send signal",
+  groups: [{ title: "Signal", suffixes: [
+    { key: "t", label: "TERM", command: "jproced-send-signal", args: ["TERM"] },
+    { key: "k", label: "KILL", command: "jproced-send-signal", args: ["KILL"] },
+    { key: "i", label: "INT", command: "jproced-send-signal", args: ["INT"] },
+    { key: "h", label: "HUP", command: "jproced-send-signal", args: ["HUP"] },
+    { key: "s", label: "STOP", command: "jproced-send-signal", args: ["STOP"] },
+    { key: "c", label: "CONT", command: "jproced-send-signal", args: ["CONT"] },
+    { key: "1", label: "USR1", command: "jproced-send-signal", args: ["USR1"] },
+    { key: "2", label: "USR2", command: "jproced-send-signal", args: ["USR2"] },
+    { key: "o", label: "other...", command: "jproced-send-signal" },
+  ] }],
+}
+
+const helpGroups: Array<{ title: string; entries: Array<{ key: string; command: string; description: string }> }> = [
+  { title: "Motion", entries: [
+    { key: "n", command: "next-line", description: "Move to the next process line." },
+    { key: "p", command: "previous-line", description: "Move to the previous process line." },
+    { key: "SPC", command: "next-line", description: "Move to the next process line." },
+    { key: "S-SPC", command: "previous-line", description: "Move to the previous process line." },
+  ] },
+  { title: "Marks", entries: [
+    { key: "m", command: "jproced-mark", description: "Mark current or next processes." },
+    { key: "u", command: "jproced-unmark", description: "Unmark current or next processes." },
+    { key: "S-m", command: "jproced-mark-all", description: "Mark all listed processes." },
+    { key: "S-u", command: "jproced-unmark-all", description: "Remove all JProced marks." },
+    { key: "t", command: "jproced-toggle-marks", description: "Toggle marked and unmarked processes." },
+    { key: "S-c", command: "jproced-mark-children", description: "Mark process at point and its descendants." },
+    { key: "S-p", command: "jproced-mark-parents", description: "Mark process at point and its parents." },
+    { key: "o", command: "jproced-omit-processes", description: "Omit marked processes." },
+  ] },
+  { title: "Listing", entries: [
+    { key: "g", command: "jproced-revert", description: "Re-read all running processes." },
+    { key: "s", command: "jproced-sort-popup", description: "Open the sort popup." },
+    { key: "f", command: "jproced-filter-interactive", description: "Choose a named process filter." },
+    { key: "S-f", command: "jproced-format-popup", description: "Open the format popup." },
+    { key: "S-t", command: "jproced-toggle-tree", description: "Toggle process tree display." },
+    { key: "a", command: "jproced-toggle-auto-update", description: "Toggle automatic JProced updates." },
+    { key: "RET", command: "jproced-refine", description: "Refine the listing by the process field at point." },
+  ] },
+  { title: "Actions", entries: [
+    { key: "k", command: "jproced-signal-popup", description: "Open the signal popup." },
+    { key: "x", command: "jproced-signal-popup", description: "Open the signal popup." },
+    { key: "r", command: "jproced-renice", description: "Renice marked processes, or the process at point." },
+    { key: "i", command: "jproced-inspect-process", description: "Show details for the process at point." },
+    { key: "w p", command: "jproced-copy-pid", description: "Copy the process id at point." },
+    { key: "w c", command: "jproced-copy-command", description: "Copy the process command at point." },
+  ] },
+  { title: "Misc", entries: [
+    { key: "?", command: "jproced-dispatch", description: "Open the JProced dispatch popup." },
+    { key: "h", command: "jproced-help", description: "Show this help buffer." },
+    { key: "q", command: "quit-window", description: "Quit the JProced window." },
+  ] },
+]
+
 function defaultFilterAlist(): Record<string, JProcedFilterSpec[]> {
   const user = process.env.USER ?? ""
   return {
@@ -154,24 +275,18 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
   keymap.bind("enter", "jproced-refine")
   keymap.bind("return", "jproced-refine")
   keymap.bind("C-m", "jproced-refine")
-  keymap.bind("s c", "jproced-sort-pcpu")
-  keymap.bind("s m", "jproced-sort-pmem")
-  keymap.bind("s p", "jproced-sort-pid")
-  keymap.bind("s s", "jproced-sort-start")
-  keymap.bind("s S", "jproced-sort-interactive")
-  keymap.bind("s t", "jproced-sort-time")
-  keymap.bind("s u", "jproced-sort-user")
+  keymap.bind("s", "jproced-sort-popup")
   keymap.bind("S-t", "jproced-toggle-tree")
-  keymap.bind("S-f", "jproced-format-interactive")
+  keymap.bind("S-f", "jproced-format-popup")
   keymap.bind("o", "jproced-omit-processes")
-  keymap.bind("x", "jproced-send-signal")
-  keymap.bind("k", "jproced-send-signal")
+  keymap.bind("x", "jproced-signal-popup")
+  keymap.bind("k", "jproced-signal-popup")
   keymap.bind("r", "jproced-renice")
   keymap.bind("i", "jproced-inspect-process")
   keymap.bind("w p", "jproced-copy-pid")
   keymap.bind("w c", "jproced-copy-command")
-  keymap.bind("?", "jproced-help")
-  keymap.bind("h", "describe-mode")
+  keymap.bind("?", "jproced-dispatch")
+  keymap.bind("h", "jproced-help")
   keymap.bind("q", "quit-window")
 
   defineMode({
@@ -202,6 +317,11 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
     editor.message("Type q to quit, ? for help")
     ensureTimer(editor, provider)
   }, "Display a rich process list inspired by GNU proced.")
+
+  ctx.command("jproced-dispatch", ({ editor }) => editor.openTransient(jprocedDispatchTransient), "Open the JProced command dispatch popup.")
+  ctx.command("jproced-sort-popup", ({ editor }) => editor.openTransient(jprocedSortTransient), "Open the JProced sort popup.")
+  ctx.command("jproced-format-popup", ({ editor }) => editor.openTransient(jprocedFormatTransient), "Open the JProced format popup.")
+  ctx.command("jproced-signal-popup", ({ editor }) => editor.openTransient(jprocedSignalTransient), "Open the JProced signal popup.")
 
   ctx.command("jproced-update", async ({ editor, buffer, prefixArgument }) => {
     if (buffer.mode !== "jproced-mode") return
@@ -275,6 +395,13 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
       history: "jproced-signal",
     })
     if (!sig) return
+    if (targets.length > 1) {
+      const answer = args[1] ?? await confirmSignalTargets(editor, sig, targets)
+      if (!answer || !/^(y|yes)$/i.test(answer.trim())) {
+        editor.message(`Signal ${sig} cancelled`)
+        return
+      }
+    }
     await operate(editor, "Signal", targets, pid => signal(pid, sig), `${sig}`)
   }, "Send a signal to marked processes, or the process at point.")
   ctx.command("jproced-renice", async ({ editor, buffer, args }) => {
@@ -292,13 +419,18 @@ export function install(editor: Editor, deps: JProcedDeps = {}, ctx: PluginConte
     const existing = [...editor.buffers.values()].find(b => b.name === LOG_BUFFER)
     if (existing) editor.switchToBuffer(existing.id)
   }, "Show the JProced operation log.")
-  ctx.command("jproced-help", ({ editor }) => editor.message("n/p move, m/u mark, f filter, s sort, F format, T tree, k signal, r renice, i inspect"), "Show short JProced help.")
+  ctx.command("jproced-help", ({ editor, buffer }) => showJProcedHelp(editor, buffer, keymap), "Show JProced help.")
   ctx.command("jproced-undo", ({ editor }) => editor.message("JProced operations are stateful; use g to refresh or marks commands to adjust listing."), "Explain JProced undo behavior.")
+
+  const misc = defvar("mode-line-misc-info", [] as Array<(b: BufferModel) => string>).value
+  if (!misc.includes(jprocedModeLineInfo)) misc.push(jprocedModeLineInfo)
 
   ctx.onDispose(() => {
     const timer = editorTimers.get(editor)
     if (timer) clearInterval(timer)
     editorTimers.delete(editor)
+    const i = misc.indexOf(jprocedModeLineInfo)
+    if (i >= 0) misc.splice(i, 1)
   })
 }
 
@@ -725,6 +857,73 @@ function markedOrCurrent(buffer: BufferModel): JProcedProcess[] {
   if (marked.length) return marked
   const current = processAtPoint(buffer)
   return current ? [current] : []
+}
+
+async function confirmSignalTargets(editor: Editor, signal: string, targets: JProcedProcess[]): Promise<string | null> {
+  const preview = targets
+    .slice(0, 4)
+    .map(p => `${p.pid} ${attr(p, "args") ?? attr(p, "comm") ?? ""}`.trim())
+    .join("; ")
+  const more = targets.length > 4 ? `; +${targets.length - 4} more` : ""
+  editor.message(`Signal ${signal} targets: ${preview}${more}`)
+  return editor.prompt(`Send ${signal} to ${targets.length} processes? (yes/no): `, "no", "jproced-signal-confirm")
+}
+
+export function jprocedModeLineInfo(buffer: BufferModel): string {
+  if (buffer.mode !== "jproced-mode") return ""
+  const st = stateByBuffer.get(buffer)
+  if (!st) return ""
+  const filter = typeof st.filter === "string" ? st.filter : st.filter == null ? "all" : "custom"
+  const sort = `${columnRules[st.sort]?.label ?? st.sort}${st.direction === "desc" ? "▼" : "▲"}`
+  const format = typeof st.format === "string" ? st.format : "custom"
+  const parts = [filter || "all", sort, format]
+  if (st.tree) parts.push("tree")
+  if (st.autoUpdate) parts.push("auto")
+  return ` [${parts.join(" | ")}]`
+}
+
+function showJProcedHelp(editor: Editor, buffer: BufferModel, keymap: Keymap): void {
+  const body = [
+    "JProced",
+    "",
+    "JProced is a process-listing mode for inspecting, marking, filtering, sorting, and operating on system processes.",
+    "",
+    "Current listing",
+    `  Filter:      ${stateLabel(buffer, "filter")}`,
+    `  Format:      ${stateLabel(buffer, "format")}`,
+    `  Sort:        ${stateLabel(buffer, "sort")}`,
+    `  Tree:        ${stateLabel(buffer, "tree")}`,
+    `  Auto-update: ${stateLabel(buffer, "auto")}`,
+    "",
+    ...helpKeyTables(editor, keymap),
+  ].join("\n")
+  editor.scratch("*JProced Help*", body, "help")
+}
+
+function stateLabel(buffer: BufferModel, field: "filter" | "format" | "sort" | "tree" | "auto"): string {
+  const st = stateByBuffer.get(buffer)
+  if (!st) return "n/a"
+  if (field === "filter") return typeof st.filter === "string" ? st.filter : st.filter == null ? "all" : "custom"
+  if (field === "format") return typeof st.format === "string" ? st.format : "custom"
+  if (field === "sort") return `${st.sort} ${st.direction === "desc" ? "descending" : "ascending"}`
+  if (field === "tree") return st.tree ? "on" : "off"
+  return st.autoUpdate ? String(st.autoUpdate) : "off"
+}
+
+function helpKeyTables(editor: Editor, keymap: Keymap): string[] {
+  const bindings = new Map(keymap.all())
+  const lines: string[] = []
+  for (const group of helpGroups) {
+    lines.push(group.title)
+    for (const entry of group.entries) {
+      const command = bindings.get(entry.key) ?? entry.command
+      const description = editor.commands.get(command)?.description ?? entry.description
+      lines.push(`  ${entry.key.padEnd(12)} ${command.padEnd(28)} ${description}`)
+    }
+    lines.push("")
+  }
+  if (lines.at(-1) === "") lines.pop()
+  return lines
 }
 
 async function operate(editor: Editor, label: string, targets: JProcedProcess[], fn: (pid: number) => Promise<void> | void, detail: string): Promise<void> {
