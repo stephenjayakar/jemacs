@@ -292,8 +292,11 @@ describe("smerge-keep-*", () => {
   test("auto-leave disables smerge-mode after the last conflict is resolved", async () => {
     const { editor, buffer } = setup(CONFLICT_2WAY, CONFLICT_2WAY.indexOf("mine one"))
     await editor.run("smerge-mode")
+    let msg = ""
+    editor.events.on("message", ({ text }) => { msg = text })
     await editor.run("smerge-keep-upper")
     expect(editor.isMinorModeEnabled("smerge-mode", buffer)).toBe(false)
+    expect(msg).toContain("No conflicts remain")
   })
 
   test("auto-leave keeps smerge-mode while conflicts remain", async () => {
@@ -302,6 +305,158 @@ describe("smerge-keep-*", () => {
     await editor.run("smerge-keep-upper")
     expect(editor.isMinorModeEnabled("smerge-mode", buffer)).toBe(true)
     expect(buffer.text).toContain("<<<<<<< HEAD\nb-mine")
+  })
+})
+
+describe("smerge-swap", () => {
+  test("swaps upper and lower while keeping conflict markers", async () => {
+    const { editor, buffer } = setup(CONFLICT_3WAY, CONFLICT_3WAY.indexOf("mine"))
+    await editor.run("smerge-mode")
+    await editor.run("smerge-swap")
+    expect(buffer.text).toBe([
+      "<<<<<<< HEAD",
+      "theirs",
+      "||||||| base",
+      "ancestor",
+      "=======",
+      "mine",
+      ">>>>>>> branch",
+      "",
+    ].join("\n"))
+    expect(buffer.point).toBe(0)
+  })
+})
+
+describe("smerge-combine-with-next", () => {
+  test("combines current and next conflicts into one conflict region", async () => {
+    const { editor, buffer } = setup(TWO_CONFLICTS, TWO_CONFLICTS.indexOf("a-mine"))
+    await editor.run("smerge-mode")
+    await editor.run("smerge-combine-with-next")
+    expect(buffer.text).toBe([
+      "<<<<<<< HEAD",
+      "a-mine",
+      "between",
+      "b-mine",
+      "=======",
+      "a-theirs",
+      "between",
+      "b-theirs",
+      ">>>>>>> branch",
+      "",
+    ].join("\n"))
+    expect(smergeFindConflicts(buffer.text).length).toBe(1)
+    expect(buffer.point).toBe(0)
+  })
+
+  test("C-c ^ C dispatches combine-with-next", async () => {
+    const { editor, buffer } = setup(TWO_CONFLICTS, TWO_CONFLICTS.indexOf("a-mine"))
+    await editor.run("smerge-mode")
+    await keySeq(editor, "C-c", "^", "C")
+    expect(smergeFindConflicts(buffer.text).length).toBe(1)
+    expect(buffer.text).toContain("a-mine\nbetween\nb-mine")
+  })
+
+  test("reports when there is no next conflict", async () => {
+    const { editor, buffer } = setup(CONFLICT_2WAY, CONFLICT_2WAY.indexOf("mine one"))
+    await editor.run("smerge-mode")
+    let msg = ""
+    editor.events.on("message", ({ text }) => { msg = text })
+    await editor.run("smerge-combine-with-next")
+    expect(msg).toContain("No next conflict")
+    expect(buffer.text).toBe(CONFLICT_2WAY)
+  })
+})
+
+describe("smerge-resolve", () => {
+  test("takes lower when upper equals base", async () => {
+    const text = [
+      "<<<<<<< HEAD",
+      "same",
+      "||||||| base",
+      "same",
+      "=======",
+      "lower",
+      ">>>>>>> branch",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(text, text.indexOf("same"))
+    await editor.run("smerge-mode")
+    await editor.run("smerge-resolve")
+    expect(buffer.text).toBe("lower\n")
+    expect(editor.isMinorModeEnabled("smerge-mode", buffer)).toBe(false)
+  })
+
+  test("takes upper when lower equals base", async () => {
+    const text = [
+      "<<<<<<< HEAD",
+      "upper",
+      "||||||| base",
+      "same",
+      "=======",
+      "same",
+      ">>>>>>> branch",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(text, text.indexOf("upper"))
+    await editor.run("smerge-mode")
+    await editor.run("smerge-resolve")
+    expect(buffer.text).toBe("upper\n")
+  })
+
+  test("takes either side when upper equals lower", async () => {
+    const text = [
+      "<<<<<<< HEAD",
+      "same",
+      "=======",
+      "same",
+      ">>>>>>> branch",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(text, text.indexOf("same"))
+    await editor.run("smerge-mode")
+    await editor.run("smerge-resolve")
+    expect(buffer.text).toBe("same\n")
+  })
+
+  test("reports when the conflict is not trivially resolvable", async () => {
+    const { editor, buffer } = setup(CONFLICT_3WAY, CONFLICT_3WAY.indexOf("mine"))
+    await editor.run("smerge-mode")
+    let msg = ""
+    editor.events.on("message", ({ text }) => { msg = text })
+    await editor.run("smerge-resolve")
+    expect(msg).toContain("Don't know how to resolve")
+    expect(buffer.text).toBe(CONFLICT_3WAY)
+    expect(editor.isMinorModeEnabled("smerge-mode", buffer)).toBe(true)
+  })
+
+  test("C-c ^ RET and C-c ^ R dispatch resolve", async () => {
+    const enterText = [
+      "<<<<<<< HEAD",
+      "same",
+      "=======",
+      "same",
+      ">>>>>>> branch",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(enterText, enterText.indexOf("same"))
+    await editor.run("smerge-mode")
+    await keySeq(editor, "C-c", "^", "RET")
+    expect(buffer.text).toBe("same\n")
+
+    const rText = [
+      "<<<<<<< HEAD",
+      "upper",
+      "||||||| base",
+      "same",
+      "=======",
+      "same",
+      ">>>>>>> branch",
+      "",
+    ].join("\n")
+    const { editor: e2, buffer: b2 } = setup(rText, rText.indexOf("upper"))
+    await e2.run("smerge-mode")
+    await keySeq(e2, "C-c", "^", "R")
+    expect(b2.text).toBe("upper\n")
   })
 })
 

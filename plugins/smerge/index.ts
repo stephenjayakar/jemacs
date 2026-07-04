@@ -145,7 +145,10 @@ function refresh(editor: Editor, buffer: BufferModel): void {
 function autoLeave(editor: Editor, buffer: BufferModel): void {
   if (!(getCustom<boolean>("smerge-auto-leave") ?? true)) return
   BEGIN_RE.lastIndex = 0
-  if (!BEGIN_RE.test(buffer.text)) editor.disableMinorMode("smerge-mode", { buffer })
+  if (!BEGIN_RE.test(buffer.text)) {
+    editor.message("No conflicts remain")
+    editor.disableMinorMode("smerge-mode", { buffer })
+  }
 }
 
 function keepN(editor: Editor, buffer: BufferModel, which: 1 | 2 | 3): void {
@@ -183,6 +186,77 @@ function keepAll(editor: Editor, buffer: BufferModel): void {
   buffer.point = c.start
   refresh(editor, buffer)
   autoLeave(editor, buffer)
+}
+
+function swap(editor: Editor, buffer: BufferModel): void {
+  const c = smergeMatchConflict(buffer.text, buffer.point)
+  if (!c) {
+    editor.message("Point not in conflict region")
+    return
+  }
+  const beginMarker = buffer.text.slice(c.start, c.upperStart)
+  const upper = buffer.text.slice(c.upperStart, c.upperEnd)
+  const middleMarkersAndBase = buffer.text.slice(c.upperEnd, c.lowerStart)
+  const lower = buffer.text.slice(c.lowerStart, c.lowerEnd)
+  const endMarker = buffer.text.slice(c.lowerEnd, c.end)
+  buffer.replaceRange(c.start, c.end, beginMarker + lower + middleMarkersAndBase + upper + endMarker)
+  buffer.point = c.start
+  refresh(editor, buffer)
+}
+
+function combineWithNext(editor: Editor, buffer: BufferModel): void {
+  const current = smergeMatchConflict(buffer.text, buffer.point)
+  if (!current) {
+    editor.message("Point not in conflict region")
+    return
+  }
+  const next = smergeFindConflicts(buffer.text).find(c => c.start >= current.end)
+  if (!next) {
+    editor.message("No next conflict")
+    return
+  }
+
+  const text = buffer.text
+  const between = text.slice(current.end, next.start)
+  const beginMarker = text.slice(current.start, current.upperStart)
+  const upperMarker = text.slice(current.upperEnd, current.baseStart ?? current.lowerStart)
+  const lowerMarker = text.slice(current.baseEnd ?? current.upperEnd, current.lowerStart)
+  const endMarker = text.slice(current.lowerEnd, current.end)
+  const upper = text.slice(current.upperStart, current.upperEnd)
+    + between
+    + text.slice(next.upperStart, next.upperEnd)
+  const lower = text.slice(current.lowerStart, current.lowerEnd)
+    + between
+    + text.slice(next.lowerStart, next.lowerEnd)
+
+  let replacement: string
+  if (current.baseStart != null && current.baseEnd != null) {
+    const base = text.slice(current.baseStart, current.baseEnd)
+      + between
+      + (next.baseStart != null && next.baseEnd != null ? text.slice(next.baseStart, next.baseEnd) : "")
+    replacement = beginMarker + upper + upperMarker + base + lowerMarker + lower + endMarker
+  } else {
+    replacement = beginMarker + upper + lowerMarker + lower + endMarker
+  }
+
+  buffer.replaceRange(current.start, next.end, replacement)
+  buffer.point = current.start
+  refresh(editor, buffer)
+}
+
+function resolve(editor: Editor, buffer: BufferModel): void {
+  const c = smergeMatchConflict(buffer.text, buffer.point)
+  if (!c) {
+    editor.message("Point not in conflict region")
+    return
+  }
+  const upper = buffer.text.slice(c.upperStart, c.upperEnd)
+  const lower = buffer.text.slice(c.lowerStart, c.lowerEnd)
+  const base = c.baseStart != null && c.baseEnd != null ? buffer.text.slice(c.baseStart, c.baseEnd) : null
+  if (upper === lower) keepN(editor, buffer, 1)
+  else if (base != null && upper === base) keepN(editor, buffer, 3)
+  else if (base != null && lower === base) keepN(editor, buffer, 1)
+  else editor.message("Don't know how to resolve")
 }
 
 function gotoConflict(editor: Editor, buffer: BufferModel, dir: 1 | -1): void {
@@ -234,10 +308,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     "Keep the upper version of a merge conflict.")
   editor.command("smerge-keep-other", ({ editor, buffer }) => keepN(editor, buffer, 3),
     "Keep the lower version of a merge conflict.")
+  editor.command("smerge-swap", ({ editor, buffer }) => swap(editor, buffer),
+    "Swap the upper and lower versions of a merge conflict.")
+  editor.command("smerge-combine-with-next", ({ editor, buffer }) => combineWithNext(editor, buffer),
+    "Combine the current conflict with the next one.")
+  editor.command("smerge-resolve", ({ editor, buffer }) => resolve(editor, buffer),
+    "Try trivial automatic resolution for the conflict at point.")
 
   // Emacs: smerge-command-prefix is "\C-c^".
   for (const [k, cmd] of [
     ["n", "smerge-next"], ["p", "smerge-prev"],
+    ["C", "smerge-combine-with-next"],
+    ["RET", "smerge-resolve"], ["R", "smerge-resolve"], ["r", "smerge-resolve"],
     ["a", "smerge-keep-all"], ["b", "smerge-keep-base"],
     ["u", "smerge-keep-upper"], ["m", "smerge-keep-upper"],
     ["l", "smerge-keep-lower"], ["o", "smerge-keep-lower"],
