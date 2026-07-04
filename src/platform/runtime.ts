@@ -84,6 +84,7 @@ export function getPlatformRuntime(): Partial<PlatformRuntime> | undefined {
 export type SpawnOptions = {
   cmd: string[]
   cwd?: string
+  env?: Record<string, string>
   stdin?: "pipe" | "ignore"
   stdout?: "pipe" | "ignore"
   stderr?: "pipe" | "ignore"
@@ -113,11 +114,21 @@ function nodeReadableToWeb(stream: Readable): ReadableStream<Uint8Array> {
   })
 }
 
+function mergedEnv(extra?: Record<string, string>): Record<string, string> | undefined {
+  if (!extra) return undefined
+  const base: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value != null) base[key] = value
+  }
+  return { ...base, ...extra }
+}
+
 function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
   if (typeof Bun !== "undefined") {
     const proc = Bun.spawn({
       cmd: options.cmd,
       cwd: options.cwd,
+      env: mergedEnv(options.env),
       stdin: options.stdin ?? "ignore",
       stdout: options.stdout ?? "ignore",
       stderr: options.stderr ?? "ignore",
@@ -135,6 +146,7 @@ function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
 
   const proc = nodeSpawn(options.cmd[0]!, options.cmd.slice(1), {
     cwd: options.cwd,
+    env: mergedEnv(options.env),
     stdio: [
       options.stdin === "pipe" ? "pipe" : "ignore",
       options.stdout === "pipe" ? "pipe" : "ignore",

@@ -1,6 +1,7 @@
 import { unlink, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { basename, isAbsolute, join } from "node:path"
+import { tmpdir } from "node:os"
 import type { Editor, TransientDefinition } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
@@ -12,6 +13,13 @@ import { diffFontLockText } from "../../src/modes/diff"
 import { projectRoot } from "../project"
 import { BLAME_SHAS_LOCAL, blameChunkTarget, blameShaAtPoint, parseBlamePorcelain, renderBlame } from "./blame"
 import { parseBisectOutput } from "./bisect"
+import {
+  changeTodoActionAtPoint,
+  moveTodoLine,
+  parseGitLogForRebaseTodo,
+  runInteractiveRebaseTodo,
+  type RebaseTodoAction,
+} from "./rebase-todo"
 
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
@@ -39,10 +47,16 @@ function refname(s: string): string {
   return s
 }
 
-async function git(args: string[], cwd: string, stdin?: string): Promise<{ out: string; err: string; code: number | null }> {
+async function git(
+  args: string[],
+  cwd: string,
+  stdin?: string,
+  env?: Record<string, string>,
+): Promise<{ out: string; err: string; code: number | null }> {
   const proc = spawnProcess({
     cmd: ["git", ...args],
     cwd,
+    env,
     stdin: stdin != null ? "pipe" : "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -583,6 +597,7 @@ const magitRebaseTransient: TransientDefinition = {
     { key: "s", label: "skip", command: "magit-rebase-skip" },
     { key: "a", label: "abort", command: "magit-rebase-abort" },
     { key: "e", label: "rebase", command: "magit-rebase" },
+    { key: "i", label: "interactive", command: "magit-rebase-interactive" },
   ] }],
 }
 
@@ -731,6 +746,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("r s", "magit-rebase-skip")
   statusMap.bind("r a", "magit-rebase-abort")
   statusMap.bind("r e", "magit-rebase")
+  statusMap.bind("r i", "magit-rebase-interactive")
   statusMap.bind("S-a a", "magit-cherry-pick")
   statusMap.bind("S-a s", "magit-cherry-pick-skip")
   statusMap.bind("S-a S-a", "magit-cherry-pick-abort")
@@ -786,6 +802,20 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   commitMap.bind("C-c C-d", "magit-diff-while-committing")
   commitMap.bind("C-c C-k", "magit-commit-abort")
   defineMode({ name: "magit-commit", parent: "text", keymap: commitMap })
+
+  const rebaseTodoMap = new Keymap("git-rebase-mode-map")
+  rebaseTodoMap.bind("p", "git-rebase-pick")
+  rebaseTodoMap.bind("r", "git-rebase-reword")
+  rebaseTodoMap.bind("e", "git-rebase-edit")
+  rebaseTodoMap.bind("s", "git-rebase-squash")
+  rebaseTodoMap.bind("f", "git-rebase-fixup")
+  rebaseTodoMap.bind("k", "git-rebase-drop")
+  rebaseTodoMap.bind("C-k", "git-rebase-drop")
+  rebaseTodoMap.bind("M-up", "git-rebase-move-line-up")
+  rebaseTodoMap.bind("M-down", "git-rebase-move-line-down")
+  rebaseTodoMap.bind("C-c C-c", "git-rebase-finish")
+  rebaseTodoMap.bind("C-c C-k", "git-rebase-abort")
+  defineMode({ name: "git-rebase-mode", parent: "text", keymap: rebaseTodoMap })
 
   const logMap = new Keymap("magit-log-map")
   logMap.bind("return", "magit-log-show-commit")
@@ -1619,6 +1649,27 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await runGit(editor, buffer, ["rebase", refname(onto)], `Rebased onto ${onto}`, { resetPoint: true })
   }, "Rebase the current branch onto another branch.")
 
+  editor.command("magit-rebase-interactive", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const base = args[0] ?? await editor.prompt("Interactively rebase from: ", "HEAD~5", "magit-rebase-interactive")
+    if (!base) return
+    const { out, err, code } = await git(["log", "--reverse", "--format=%h %s", `${refname(base)}..HEAD`], root)
+    if (code !== 0) return editor.message(`git log failed: ${err.trim() || code}`)
+    const todo = parseGitLogForRebaseTodo(out)
+    if (!todo.trim()) return editor.message(`No commits to rebase from ${base}`)
+    const winconf = editor.currentWindowConfiguration()
+    const sourceId = buffer.id
+    const todoBuffer = editor.scratch("*git-rebase-todo*", todo, "git-rebase-mode")
+    todoBuffer.locals.set("magit-root", root)
+    todoBuffer.locals.set("magit-rebase-base", base)
+    todoBuffer.locals.set("magit-winconf", winconf)
+    todoBuffer.point = 0
+    if (sourceId !== todoBuffer.id) editor.switchToBuffer(sourceId)
+    editor.displayBufferInOtherWindow(todoBuffer.id, { select: true })
+    editor.message("Edit rebase todo, then C-c C-c to start; C-c C-k aborts")
+  }, "Start an interactive rebase using an editable git-rebase todo buffer.")
+
   editor.command("magit-rebase-continue", async ({ editor, buffer }) => {
     await runGit(editor, buffer, ["rebase", "--continue"], "Rebase continued", { resetPoint: true })
   }, "Continue an in-progress rebase.")
@@ -1630,6 +1681,93 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-rebase-abort", async ({ editor, buffer }) => {
     await runGit(editor, buffer, ["rebase", "--abort"], "Rebase aborted", { resetPoint: true })
   }, "Abort an in-progress rebase.")
+
+  const changeRebaseTodoAction = (buffer: BufferModel, action: RebaseTodoAction): void => {
+    const next = changeTodoActionAtPoint(buffer.text, buffer.point, action)
+    buffer.replaceRange(0, buffer.text.length, next.text)
+    buffer.point = next.point
+  }
+
+  editor.command("git-rebase-pick", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "pick")
+  }, "Change the current rebase todo line to pick.")
+
+  editor.command("git-rebase-reword", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "reword")
+  }, "Change the current rebase todo line to reword.")
+
+  editor.command("git-rebase-edit", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "edit")
+  }, "Change the current rebase todo line to edit.")
+
+  editor.command("git-rebase-squash", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "squash")
+  }, "Change the current rebase todo line to squash.")
+
+  editor.command("git-rebase-fixup", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "fixup")
+  }, "Change the current rebase todo line to fixup.")
+
+  editor.command("git-rebase-drop", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    changeRebaseTodoAction(buffer, "drop")
+  }, "Change the current rebase todo line to drop.")
+
+  const moveRebaseTodoLine = (buffer: BufferModel, direction: 1 | -1): void => {
+    const next = moveTodoLine(buffer.text, buffer.point, direction)
+    buffer.replaceRange(0, buffer.text.length, next.text)
+    buffer.point = next.point
+  }
+
+  editor.command("git-rebase-move-line-up", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    moveRebaseTodoLine(buffer, -1)
+  }, "Move the current rebase todo line up.")
+
+  editor.command("git-rebase-move-line-down", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    moveRebaseTodoLine(buffer, 1)
+  }, "Move the current rebase todo line down.")
+
+  editor.command("git-rebase-finish", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    const base = buffer.locals.get("magit-rebase-base") as string | undefined
+    if (!root || !base || buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    const todoText = buffer.text
+    const todoPath = join(tmpdir(), `jemacs-git-rebase-todo-${process.pid}-${Date.now()}`)
+    const result = await runInteractiveRebaseTodo({
+      base,
+      cwd: root,
+      todoText,
+      todoPath,
+      writeTodoFile: writeFile,
+      runner: (args, cwd, env) => git(args, cwd, undefined, env),
+    }).finally(() => unlink(todoPath).catch(() => {}))
+    const winconf = buffer.locals.get("magit-winconf") as ReturnType<Editor["currentWindowConfiguration"]> | undefined
+    editor.killBuffer(buffer.id)
+    if (winconf) editor.restoreWindowConfiguration(winconf)
+    await refresh(editor, root, 0)
+    const processText = (result.out + result.err) || `(exit ${result.code})\n`
+    const processBuffer = editor.scratch("*magit-process*", processText, "magit-revision-mode")
+    processBuffer.readOnly = true
+    processBuffer.locals.set("magit-root", root)
+    const hasReword = /^\s*reword\s+/m.test(todoText)
+    const suffix = hasReword ? "; reword keeps the original message unless the rebase stops" : ""
+    editor.message(result.code === 0 ? `Interactive rebase started${suffix}` : `git rebase failed: ${result.err.trim() || result.code}${suffix}`)
+  }, "Finish the git-rebase todo buffer and run git rebase -i.")
+
+  editor.command("git-rebase-abort", ({ editor, buffer }) => {
+    if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
+    const winconf = buffer.locals.get("magit-winconf") as ReturnType<Editor["currentWindowConfiguration"]> | undefined
+    editor.killBuffer(buffer.id)
+    if (winconf) editor.restoreWindowConfiguration(winconf)
+    editor.message("Interactive rebase aborted")
+  }, "Abort editing the git-rebase todo buffer.")
 
   editor.command("magit-cherry-pick", async ({ editor, buffer, args }) => {
     const sha = args[0] ?? logShaAtPoint(buffer)
