@@ -21,6 +21,12 @@ export function installPythonMode(): void {
   const keymap = new Keymap("python-map")
   keymap.bind("C-M-a", "beginning-of-defun")
   keymap.bind("C-M-e", "end-of-defun")
+  keymap.bind("C-c C-p", "run-python")
+  keymap.bind("C-c C-r", "python-shell-send-region")
+  keymap.bind("C-c C-c", "python-shell-send-buffer")
+  keymap.bind("C-c C-e", "python-shell-send-defun")
+  keymap.bind("C-M-x", "python-shell-send-defun")
+  keymap.bind("C-c C-z", "python-shell-switch-to-shell")
   defineMode({
     name: "python",
     parent: "prog-mode",
@@ -78,24 +84,7 @@ export function pythonBeginningOfDefun(buffer: BufferModel): void {
 }
 
 export function pythonEndOfDefun(buffer: BufferModel): void {
-  const start = findCurrentDefunStart(buffer)
-  const baseIndent = indentationAt(buffer.text, start)
-  const nextLine = buffer.text.indexOf("\n", start)
-  if (nextLine === -1) {
-    buffer.point = buffer.text.length
-    return
-  }
-  let offset = nextLine + 1
-  while (offset < buffer.text.length) {
-    const end = lineEnd(buffer.text, offset)
-    const line = buffer.text.slice(offset, end)
-    if (line.trim() && indentation(line) <= baseIndent) {
-      buffer.point = offset
-      return
-    }
-    offset = end + 1
-  }
-  buffer.point = buffer.text.length
+  buffer.point = pythonCurrentDefunRange(buffer).end
 }
 
 export function pythonCompleteAtPoint(buffer: BufferModel): CompletionCandidate[] {
@@ -140,6 +129,21 @@ function findCurrentDefunStart(buffer: BufferModel): number {
     target = match.index
   }
   return target
+}
+
+export function pythonCurrentDefunRange(buffer: BufferModel): { start: number; end: number } {
+  const start = findCurrentDefunStart(buffer)
+  const baseIndent = indentationAt(buffer.text, start)
+  const nextLine = buffer.text.indexOf("\n", start)
+  if (nextLine === -1) return { start, end: buffer.text.length }
+  let offset = nextLine + 1
+  while (offset < buffer.text.length) {
+    const end = lineEnd(buffer.text, offset)
+    const line = buffer.text.slice(offset, end)
+    if (line.trim() && indentation(line) <= baseIndent) return { start, end: offset }
+    offset = end + 1
+  }
+  return { start, end: buffer.text.length }
 }
 
 function indentationAt(text: string, start: number): number {
