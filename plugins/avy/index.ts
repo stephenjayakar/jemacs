@@ -37,11 +37,62 @@ export function avyCollect(editor: Editor, ch: string, lineBudget = pageScrollLi
   for (const leaf of listWindowLeaves(editor.windowLayout)) {
     const buffer = editor.buffers.get(leaf.bufferId)
     if (!buffer) continue
-    const { visible, visibleStart } = visibleTextRegionFromStart(buffer.text, leaf.startLine, lineBudget)
+    const { visible, visibleStart } = visibleTextRegionFromStart(buffer.text, leaf.startLine, lineBudget, buffer.lineStarts)
     let i = visible.indexOf(ch)
     while (i !== -1) {
       out.push({ windowId: leaf.id, bufferId: buffer.id, point: visibleStart + i })
       i = visible.indexOf(ch, i + 1)
+    }
+  }
+  return out
+}
+
+export function avyCollectPair(editor: Editor, pair: string, lineBudget = pageScrollLines()): AvyTarget[] {
+  const out: AvyTarget[] = []
+  if (pair.length !== 2) return out
+  for (const leaf of listWindowLeaves(editor.windowLayout)) {
+    const buffer = editor.buffers.get(leaf.bufferId)
+    if (!buffer) continue
+    const { visible, visibleStart } = visibleTextRegionFromStart(buffer.text, leaf.startLine, lineBudget, buffer.lineStarts)
+    let i = visible.indexOf(pair)
+    while (i !== -1) {
+      out.push({ windowId: leaf.id, bufferId: buffer.id, point: visibleStart + i })
+      i = visible.indexOf(pair, i + 1)
+    }
+  }
+  return out
+}
+
+function isWordChar(ch: string | undefined): boolean {
+  return ch != null && /^[A-Za-z0-9_]$/.test(ch)
+}
+
+export function avyCollectWord1(editor: Editor, ch: string, lineBudget = pageScrollLines()): AvyTarget[] {
+  const out: AvyTarget[] = []
+  if (ch.length !== 1 || !isWordChar(ch)) return out
+  for (const leaf of listWindowLeaves(editor.windowLayout)) {
+    const buffer = editor.buffers.get(leaf.bufferId)
+    if (!buffer) continue
+    const { visible, visibleStart } = visibleTextRegionFromStart(buffer.text, leaf.startLine, lineBudget, buffer.lineStarts)
+    for (let i = 0; i < visible.length; i++) {
+      const point = visibleStart + i
+      if (visible[i] === ch && !isWordChar(buffer.text[point - 1])) {
+        out.push({ windowId: leaf.id, bufferId: buffer.id, point })
+      }
+    }
+  }
+  return out
+}
+
+export function avyCollectLine(editor: Editor, lineBudget = pageScrollLines()): AvyTarget[] {
+  const out: AvyTarget[] = []
+  for (const leaf of listWindowLeaves(editor.windowLayout)) {
+    const buffer = editor.buffers.get(leaf.bufferId)
+    if (!buffer) continue
+    const startLine = Math.max(0, Math.min(leaf.startLine, Math.max(0, buffer.lineCount - lineBudget)))
+    const endLine = Math.min(buffer.lineCount, startLine + lineBudget)
+    for (let line = startLine; line < endLine; line++) {
+      out.push({ windowId: leaf.id, bufferId: buffer.id, point: buffer.lineStarts[line]! })
     }
   }
   return out
@@ -98,6 +149,40 @@ function jump(editor: Editor, t: AvyTarget): void {
   editor.currentBuffer.point = t.point
 }
 
+async function selectTarget(editor: Editor, targets: AvyTarget[]): Promise<void> {
+  if (targets.length === 1) {
+    jump(editor, targets[0]!)
+    editor.message("")
+    return
+  }
+
+  const labels = avyLabels(targets.length)
+  const saved = paint(editor, targets, labels)
+  void editor.changed("avy")
+  let chosen: AvyTarget | undefined
+  try {
+    let typed = ""
+    for (;;) {
+      const key = await readKey(editor, `avy: ${typed}`)
+      if (key == null || key.length !== 1) break
+      typed += key
+      const hit = labels.indexOf(typed)
+      if (hit !== -1) { chosen = targets[hit]; break }
+      if (!labels.some(l => l.startsWith(typed))) {
+        editor.message(`No such candidate: ${typed}`)
+        break
+      }
+    }
+  } finally {
+    restore(saved)
+    void editor.changed("avy")
+  }
+  if (chosen) {
+    jump(editor, chosen)
+    editor.message("")
+  }
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   editor.addOverlaySource(avySpans)
 
@@ -106,37 +191,33 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (ch == null || ch.length !== 1) return editor.message("")
     const targets = avyCollect(editor, ch)
     if (!targets.length) return editor.message(`No candidates for '${ch}'`)
-    if (targets.length === 1) {
-      jump(editor, targets[0]!)
-      return editor.message("")
-    }
-
-    const labels = avyLabels(targets.length)
-    const saved = paint(editor, targets, labels)
-    void editor.changed("avy")
-    let chosen: AvyTarget | undefined
-    try {
-      let typed = ""
-      for (;;) {
-        const key = await readKey(editor, `avy: ${typed}`)
-        if (key == null || key.length !== 1) break
-        typed += key
-        const hit = labels.indexOf(typed)
-        if (hit !== -1) { chosen = targets[hit]; break }
-        if (!labels.some(l => l.startsWith(typed))) {
-          editor.message(`No such candidate: ${typed}`)
-          break
-        }
-      }
-    } finally {
-      restore(saved)
-      void editor.changed("avy")
-    }
-    if (chosen) {
-      jump(editor, chosen)
-      editor.message("")
-    }
+    await selectTarget(editor, targets)
   }, "Read a char, label every visible match, then jump to the chosen label.")
+
+  editor.command("avy-goto-char-2", async ({ editor }) => {
+    const first = await readKey(editor, "char 1: ")
+    if (first == null || first.length !== 1) return editor.message("")
+    const second = await readKey(editor, "char 2: ")
+    if (second == null || second.length !== 1) return editor.message("")
+    const pair = first + second
+    const targets = avyCollectPair(editor, pair)
+    if (!targets.length) return editor.message(`No candidates for '${pair}'`)
+    await selectTarget(editor, targets)
+  }, "Read two chars, label every visible pair match, then jump to the chosen label.")
+
+  editor.command("avy-goto-word-1", async ({ editor }) => {
+    const ch = await readKey(editor, "char: ")
+    if (ch == null || ch.length !== 1) return editor.message("")
+    const targets = avyCollectWord1(editor, ch)
+    if (!targets.length) return editor.message(`No candidates for '${ch}'`)
+    await selectTarget(editor, targets)
+  }, "Read a char, label visible word beginnings that start with it, then jump.")
+
+  editor.command("avy-goto-line", async ({ editor }) => {
+    const targets = avyCollectLine(editor)
+    if (!targets.length) return editor.message("No candidates")
+    await selectTarget(editor, targets)
+  }, "Label the beginning of each visible line, then jump to the chosen label.")
 
   editor.key("C-;", "avy-goto-char")
 }
