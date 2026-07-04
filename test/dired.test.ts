@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test"
-import { mkdir, readFile, rm, stat } from "node:fs/promises"
+import { lstat, mkdir, readFile, readlink, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
 import { Editor } from "../src/kernel/editor"
 import {
   diredChangeMarks,
+  diredDoChmod,
   diredDoCopy,
   diredDoDelete,
   diredDoFlaggedDelete,
+  diredDoShellCommand,
+  diredDoSymlink,
+  diredDoTouch,
   diredEntryAtPoint,
   diredFlagFileDeletion,
   diredFlaggedEntries,
@@ -15,6 +19,7 @@ import {
   diredMarkEntry,
   diredMarkedFilesSummary,
   diredMarkFilesRegexp,
+  diredSortToggleOrEdit,
   diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
@@ -162,6 +167,12 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("S-c")).toBe("dired-do-copy")
   expect(keymap?.get("d")).toBe("dired-flag-file-deletion")
   expect(keymap?.get("S-d")).toBe("dired-do-delete")
+  expect(keymap?.get("S-m")).toBe("dired-do-chmod")
+  expect(keymap?.get("S-t")).toBe("dired-do-touch")
+  expect(keymap?.get("S-s")).toBe("dired-do-symlink")
+  expect(keymap?.get("S-h")).toBe("dired-do-hardlink")
+  expect(keymap?.get("!")).toBe("dired-do-shell-command")
+  expect(keymap?.get("s")).toBe("dired-sort-toggle-or-edit")
   expect(keymap?.get("u")).toBe("dired-unmark")
   expect(keymap?.get("S-u")).toBe("dired-unmark-all-marks")
   expect(keymap?.get("t")).toBe("dired-toggle-marks")
@@ -313,6 +324,112 @@ test("dired revert keeps marks on surviving files", async () => {
     await refreshDiredBuffer(buffer)
     expect(buffer.text).toMatch(/^\* -.*alpha\.txt/m)
     expect(buffer.text).toContain("gamma.txt")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-chmod changes marked or current file modes", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+
+    await diredDoChmod(editor, buffer, null, "600")
+
+    expect((await stat(join(dir, "alpha.txt"))).mode & 0o777).toBe(0o600)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-touch updates mtimes using a prompted timestamp", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    const timestamp = "2001-02-03T04:05:06Z"
+
+    await diredDoTouch(editor, buffer, null, timestamp)
+
+    expect(Math.trunc((await stat(join(dir, "alpha.txt"))).mtimeMs / 1000)).toBe(Date.parse(timestamp) / 1000)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-symlink creates links for marked files in a target directory", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  const dest = `${dir}-links`
+  try {
+    await mkdir(dest, { recursive: true })
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+
+    await diredDoSymlink(editor, buffer, null, dest)
+
+    const link = join(dest, "alpha.txt")
+    expect((await lstat(link)).isSymbolicLink()).toBe(true)
+    expect(await readlink(link)).toBe(join(dir, "alpha.txt"))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+    await rm(dest, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-shell-command substitutes star with selected file names", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+
+    await diredDoShellCommand(editor, buffer, null, "printf '<%s>\\n' *")
+
+    expect(editor.currentBuffer.name).toBe("*Shell Command Output*")
+    expect(editor.currentBuffer.text).toContain("<alpha.txt>")
+    expect(editor.currentBuffer.text).toContain("Shell command finished")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired sort toggle switches between name and date order", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = `/tmp/jemacs-dired-sort-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  try {
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "a-old.txt"), "old")
+    await Bun.write(join(dir, "z-new.txt"), "new")
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("a-old.txt")
+    await diredDoTouch(editor, buffer, null, "2001-01-01T00:00:00Z")
+    buffer.point = buffer.text.indexOf("z-new.txt")
+    await diredDoTouch(editor, buffer, null, "2002-01-01T00:00:00Z")
+
+    await diredSortToggleOrEdit(editor, buffer)
+
+    expect(buffer.text.indexOf("z-new.txt")).toBeLessThan(buffer.text.indexOf("a-old.txt"))
+    expect(buffer.text).toContain("sort by date")
+
+    await diredSortToggleOrEdit(editor, buffer)
+
+    expect(buffer.text.indexOf("a-old.txt")).toBeLessThan(buffer.text.indexOf("z-new.txt"))
+    expect(buffer.text).toContain("sort by name")
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

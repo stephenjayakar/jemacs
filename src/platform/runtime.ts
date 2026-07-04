@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, existsSync, watch as nodeWatch } from "node:fs"
-import { access, cp as nodeCp, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, stat as nodeStat, unlink as nodeUnlink, writeFile } from "node:fs/promises"
+import { access, chmod as nodeChmod, cp as nodeCp, link as nodeLink, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, stat as nodeStat, symlink as nodeSymlink, unlink as nodeUnlink, utimes as nodeUtimes, writeFile } from "node:fs/promises"
 import { homedir as nodeHomedir } from "node:os"
 import { join } from "node:path"
 import type { Readable } from "node:stream"
@@ -45,6 +45,10 @@ export type PlatformRuntime = {
   cp?(src: string, dest: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
   rename?(src: string, dest: string): Promise<void>
   rm?(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
+  chmod?(path: string, mode: number): Promise<void>
+  utimes?(path: string, atime: Date, mtime: Date): Promise<void>
+  symlink?(target: string, path: string): Promise<void>
+  link?(existingPath: string, newPath: string): Promise<void>
   spawnProcess(options: SpawnOptions): SpawnHandle
   whichExecutable(name: string): string | null
   /** Hex sha256 of `text` — the CAS/BufferRef key. */
@@ -202,6 +206,18 @@ export const nodeRuntime: PlatformRuntime = {
   async rm(path, opts) {
     await nodeRm(path, opts)
   },
+  async chmod(path, mode) {
+    await nodeChmod(path, mode)
+  },
+  async utimes(path, atime, mtime) {
+    await nodeUtimes(path, atime, mtime)
+  },
+  async symlink(target, path) {
+    await nodeSymlink(target, path)
+  },
+  async link(existingPath, newPath) {
+    await nodeLink(existingPath, newPath)
+  },
   async readdir(dir) {
     try {
       return await nodeReaddir(dir)
@@ -280,6 +296,22 @@ export async function rename(src: string, dest: string): Promise<void> {
 
 export async function rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void> {
   return (override?.rm ?? nodeRuntime.rm!)(path, opts)
+}
+
+export async function chmod(path: string, mode: number): Promise<void> {
+  return (override?.chmod ?? nodeRuntime.chmod!)(path, mode)
+}
+
+export async function utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+  return (override?.utimes ?? nodeRuntime.utimes!)(path, atime, mtime)
+}
+
+export async function symlink(target: string, path: string): Promise<void> {
+  return (override?.symlink ?? nodeRuntime.symlink!)(target, path)
+}
+
+export async function link(existingPath: string, newPath: string): Promise<void> {
+  return (override?.link ?? nodeRuntime.link!)(existingPath, newPath)
 }
 
 /** Spawn a subprocess in Bun or Node (Electron main uses Node). */

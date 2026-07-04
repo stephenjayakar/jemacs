@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path"
-import { cp, cwd, isDirectory, mkdir, readdir, rename, rm, stat } from "../platform/runtime"
+import { chmod, cp, cwd, isDirectory, link, mkdir, readdir, rename, rm, spawnProcess, stat, symlink, utimes } from "../platform/runtime"
 import type { Editor } from "../kernel/editor"
 import { expandUserPath } from "../kernel/completion"
 import { BufferModel } from "../kernel/buffer"
@@ -15,9 +15,11 @@ export type DiredEntry = {
 }
 
 export type DiredMark = "marked" | "delete"
+type DiredSortOrder = "name" | "date"
 
 export const diredEntryLines = new WeakMap<BufferModel, DiredEntry[]>()
 const diredMarks = new WeakMap<BufferModel, Map<string, DiredMark>>()
+const diredSortOrders = new WeakMap<BufferModel, DiredSortOrder>()
 
 export const HEADER_LINES = 2
 export const NAME_OFFSET = 22
@@ -40,6 +42,12 @@ export function installDiredMode(): void {
   keymap.bind("S-d", "dired-do-delete")
   keymap.bind("S-c", "dired-do-copy")
   keymap.bind("S-r", "dired-do-rename")
+  keymap.bind("S-m", "dired-do-chmod")
+  keymap.bind("S-t", "dired-do-touch")
+  keymap.bind("S-s", "dired-do-symlink")
+  keymap.bind("S-h", "dired-do-hardlink")
+  keymap.bind("!", "dired-do-shell-command")
+  keymap.bind("s", "dired-sort-toggle-or-edit")
   keymap.bind("+", "dired-create-directory")
   keymap.bind("backspace", "dired-unmark-backward")
   defineMode({ name: "dired", parent: "text", keymap, fontLock: diredFontLock })
@@ -54,6 +62,7 @@ export async function makeDiredBuffer(path: string): Promise<BufferModel> {
   const buffer = new BufferModel({ name: `${basename(dir) || dir}/`, path: dir, kind: "directory", mode: "dired" })
   buffer.readOnly = true
   diredMarks.set(buffer, new Map())
+  diredSortOrders.set(buffer, "name")
   await refreshDiredBuffer(buffer)
   return buffer
 }
@@ -82,12 +91,19 @@ export async function diredOpen(editor: Editor, path: string): Promise<void> {
 export async function refreshDiredBuffer(buffer: BufferModel): Promise<void> {
   if (!buffer.path) throw new Error(`Dired buffer ${buffer.name} has no directory path`)
   const previousMarks = diredMarks.get(buffer) ?? new Map()
+  const order = diredSortOrders.get(buffer) ?? "name"
   const names = await readdir(buffer.path)
+  const childEntries = (await Promise.all(names.map(name => entryFor(buffer.path!, name))))
+    .filter((entry): entry is DiredEntry => entry != null)
+  childEntries.sort(order === "date"
+    ? (a, b) => b.mtime.getTime() - a.mtime.getTime() || a.name.localeCompare(b.name)
+    : (a, b) => a.name.localeCompare(b.name))
   const entries: DiredEntry[] = []
-  for (const name of ["..", ...names.sort((a, b) => a.localeCompare(b))]) {
+  for (const name of [".."]) {
     const entry = await entryFor(buffer.path, name)
     if (entry) entries.push(entry)
   }
+  entries.push(...childEntries)
 
   const marks = new Map<string, DiredMark>()
   for (const entry of entries) {
@@ -387,6 +403,81 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
   }
 }
 
+export async function diredDoChmod(editor: Editor, buffer: BufferModel, prefixArgument: number | null, modeArg?: string): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message("No files to chmod")
+    return
+  }
+  const mode = modeArg ?? await editor.prompt(`Change mode of ${entries.length} files to: `, "", "dired-chmod")
+  if (!mode) return
+  const numeric = /^[0-7]{3,4}$/.test(mode.trim()) ? Number.parseInt(mode.trim(), 8) : null
+  if (numeric != null) {
+    for (const entry of entries) await chmod(entry.path, numeric)
+  } else {
+    await runShellCommand(`chmod ${shellQuote(mode)} ${entries.map(entry => shellQuote(entry.path)).join(" ")}`, cwd())
+  }
+  await refreshDiredBuffer(buffer)
+  editor.message(`Changed mode of ${entries.length} file(s) to ${mode}`)
+}
+
+export async function diredDoTouch(editor: Editor, buffer: BufferModel, prefixArgument: number | null, timestampArg?: string): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message("No files to touch")
+    return
+  }
+  const input = timestampArg ?? await editor.prompt(`Touch ${entries.length} file${entries.length === 1 ? "" : "s"} (timestamp, RET for now): `, "", "dired-touch")
+  if (input == null) return
+  const mtime = parseTouchTimestamp(input)
+  if (!mtime) {
+    editor.message(`Invalid timestamp: ${input}`)
+    return
+  }
+  for (const entry of entries) await utimes(entry.path, mtime, mtime)
+  await refreshDiredBuffer(buffer)
+  editor.message(`Touched ${entries.length} file(s)`)
+}
+
+export async function diredDoSymlink(editor: Editor, buffer: BufferModel, prefixArgument: number | null, targetArg?: string): Promise<void> {
+  await diredDoLink(editor, buffer, prefixArgument, "symlink", targetArg)
+}
+
+export async function diredDoHardlink(editor: Editor, buffer: BufferModel, prefixArgument: number | null, targetArg?: string): Promise<void> {
+  await diredDoLink(editor, buffer, prefixArgument, "hardlink", targetArg)
+}
+
+export async function diredDoShellCommand(editor: Editor, buffer: BufferModel, prefixArgument: number | null, commandArg?: string): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message("No files for shell command")
+    return
+  }
+  const command = commandArg ?? await editor.prompt(`Shell command on ${entries.length} files: `, "", "dired-shell-command")
+  if (!command) return
+  const files = entries.map(entry => shellQuote(entry.name)).join(" ")
+  const expanded = command.includes("*") ? command.replaceAll("*", files) : `${command} ${files}`
+  const cwd = buffer.path ?? dirname(entries[0]!.path)
+  const output = await runShellCommand(expanded, cwd)
+  const text =
+    `-*- mode: compilation; default-directory: ${JSON.stringify(cwd)} -*-\n` +
+    `Shell command: ${expanded}\n\n` +
+    output.text +
+    (output.text.endsWith("\n") || output.text.length === 0 ? "" : "\n") +
+    `\nShell command ${output.code === 0 ? "finished" : `exited abnormally with code ${output.code ?? "?"}`}\n`
+  const out = editor.scratch("*Shell Command Output*", text, "compilation")
+  out.readOnly = true
+  out.locals.set("default-directory", cwd)
+  editor.message(output.code === 0 ? "Shell command finished" : `Shell command exited abnormally with code ${output.code ?? "?"}`)
+}
+
+export async function diredSortToggleOrEdit(editor: Editor, buffer: BufferModel): Promise<void> {
+  const next = diredSortOrders.get(buffer) === "date" ? "name" : "date"
+  diredSortOrders.set(buffer, next)
+  await refreshDiredBuffer(buffer)
+  editor.message(`Dired sort by ${next}`)
+}
+
 /** GNU `make-directory`: create DIR under PARENT (interactive prompt when NAME omitted). */
 export async function makeDirectory(
   editor: Editor,
@@ -426,7 +517,8 @@ export function diredUnmarkBackward(buffer: BufferModel): void {
 
 export function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): void {
   const marks = diredMarks.get(buffer) ?? new Map()
-  const lines = [`  Directory ${buffer.path}`, "", ...entries.map(entry => formatEntry(entry, marks.get(entry.path)))]
+  const order = diredSortOrders.get(buffer) ?? "name"
+  const lines = [`  Directory ${buffer.path} (sort by ${order})`, "", ...entries.map(entry => formatEntry(entry, marks.get(entry.path)))]
   const entryPath = diredEntryAtPoint(buffer)?.path
   const wasReadOnly = buffer.readOnly
   buffer.readOnly = false
@@ -473,6 +565,89 @@ function formatFailures(failed: { entry: DiredEntry; err: Error }[]): string {
   if (!failed.length) return ""
   const detail = failed.map(f => `${f.entry.name} [${(f.err as NodeJS.ErrnoException).code ?? f.err.message}]`).join(", ")
   return ` (${failed.length} failed: ${detail})`
+}
+
+async function diredDoLink(
+  editor: Editor,
+  buffer: BufferModel,
+  prefixArgument: number | null,
+  kind: "symlink" | "hardlink",
+  targetArg?: string,
+): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message(`No files to ${kind}`)
+    return
+  }
+  const prompt = entries.length === 1
+    ? `${kind === "symlink" ? "Symlink" : "Hardlink"} to: `
+    : `${kind === "symlink" ? "Symlink" : "Hardlink"} marked files to: `
+  const target = targetArg ?? await editor.completingRead(prompt, {
+    completion: "file",
+    history: "file",
+    initialValue: buffer.path ?? cwd(),
+  })
+  if (!target) return
+  const destination = resolve(target)
+  const destinationStat = await stat(destination)
+  const useDirectory = entries.length > 1 || (destinationStat != null && isDirectory(destinationStat))
+  if (entries.length > 1) await mkdir(destination, { recursive: true })
+  const failed: { entry: DiredEntry; err: Error }[] = []
+  let ok = 0
+  try {
+    for (const entry of entries) {
+      const dest = useDirectory ? join(destination, basename(entry.path)) : destination
+      try {
+        if (kind === "symlink") await symlink(entry.path, dest)
+        else await link(entry.path, dest)
+        ok++
+      } catch (err) {
+        failed.push({ entry, err: err as Error })
+      }
+    }
+  } finally {
+    await refreshDiredBuffer(buffer)
+    editor.message(`${kind === "symlink" ? "Symlinked" : "Hardlinked"} ${ok} file(s)${formatFailures(failed)}`)
+  }
+}
+
+function parseTouchTimestamp(input: string): Date | null {
+  const trimmed = input.trim()
+  if (!trimmed) return new Date()
+  const parsed = new Date(trimmed)
+  if (!Number.isNaN(parsed.getTime())) return parsed
+  const compact = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{2}))?$/.exec(trimmed)
+  if (!compact) return null
+  const [, year, month, day, hour, minute, second = "00"] = compact
+  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second))
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+async function runShellCommand(command: string, cwd: string): Promise<{ text: string; code: number | null }> {
+  const proc = spawnProcess({ cmd: ["sh", "-c", command], cwd, stdout: "pipe", stderr: "pipe" })
+  let text = ""
+  await Promise.all([
+    pumpText(proc.stdout, chunk => { text += chunk }),
+    pumpText(proc.stderr, chunk => { text += chunk }),
+  ])
+  return { text, code: await proc.exited }
+}
+
+async function pumpText(stream: ReadableStream<Uint8Array> | null, onChunk: (chunk: string) => void): Promise<void> {
+  if (!stream) return
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value?.length) onChunk(decoder.decode(value, { stream: true }))
+  }
+  const tail = decoder.decode()
+  if (tail) onChunk(tail)
 }
 
 function diredSpecialEntry(entry: DiredEntry): boolean {

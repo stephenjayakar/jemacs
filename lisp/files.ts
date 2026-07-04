@@ -12,10 +12,15 @@ import { saveContextOptions } from "../src/core/save-context"
 import {
   diredChangeMarks,
   diredCreateDirectory,
+  diredDoChmod,
   diredDoCopy,
   diredDoDelete,
   diredDoFlaggedDelete,
+  diredDoHardlink,
   diredDoRename,
+  diredDoShellCommand,
+  diredDoSymlink,
+  diredDoTouch,
   diredEntriesForPrefix,
   diredEntryLines,
   diredEntryAtPoint,
@@ -23,6 +28,7 @@ import {
   diredMarkEntry,
   diredMarkedFilesSummary,
   diredMarkFilesRegexp,
+  diredSortToggleOrEdit,
   diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
@@ -368,6 +374,24 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("dired-do-rename", async ({ buffer, editor, prefixArgument }) => {
     await diredDoRename(editor, buffer, prefixArgument)
   }, "Rename a file or move marked files to another directory.")
+  editor.command("dired-do-chmod", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoChmod(editor, buffer, prefixArgument, args[0])
+  }, "Change the mode of marked files or the file on the current line.")
+  editor.command("dired-do-touch", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoTouch(editor, buffer, prefixArgument, args[0])
+  }, "Update the timestamp of marked files or the file on the current line.")
+  editor.command("dired-do-symlink", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoSymlink(editor, buffer, prefixArgument, args[0])
+  }, "Create symbolic links to marked files or the file on the current line.")
+  editor.command("dired-do-hardlink", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoHardlink(editor, buffer, prefixArgument, args[0])
+  }, "Create hard links to marked files or the file on the current line.")
+  editor.command("dired-do-shell-command", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoShellCommand(editor, buffer, prefixArgument, args[0])
+  }, "Run a shell command on marked files or the file on the current line.")
+  editor.command("dired-sort-toggle-or-edit", async ({ buffer, editor }) => {
+    await diredSortToggleOrEdit(editor, buffer)
+  }, "Toggle Dired sorting between name and date.")
   editor.command("dired-create-directory", async ({ buffer, editor, args }) => {
     if (!buffer.path || buffer.kind !== "directory") {
       editor.message("Not in Dired")
