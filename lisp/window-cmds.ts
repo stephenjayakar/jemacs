@@ -4,7 +4,7 @@ import type { ChildFrameParameters, ChildFrameRecord } from "../src/kernel/windo
 import { findWindowLeaf, listWindowLeaves, nextWindowId, scrollWindowLeaf } from "../src/kernel/window"
 import { pageScrollLines } from "../src/display/viewport"
 import { defvar } from "../src/runtime/custom"
-import { bufferListEntryAtPoint, showBufferList } from "../src/modes/buffer-list"
+import { installBufferListCommands, showBufferList } from "../src/modes/buffer-list"
 import { directoryInitialValue, substituteInFileName } from "./files"
 
 const recenterCycle = defvar("recenter--cycle", new WeakMap<Editor, number>(),
@@ -38,6 +38,8 @@ export function displayBuffer(editor: Editor, bufferOrName: string, alist: Displ
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  installBufferListCommands(editor)
+
   const otherWindow = (editor: Editor, delta: number) => {
     if (listWindowLeaves(editor.windowLayout).length <= 1) return
     editor.selectWindow(nextWindowId(editor.windowLayout, editor.selectedWindowId, delta))
@@ -255,15 +257,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("list-buffers", ({ editor, prefixArgument }) => {
     showBufferList(editor, { filesOnly: prefixArgument != null })
   }, "Display the buffer list.")
-
-  editor.command("Buffer-menu-select", ({ buffer, editor }) => {
-    const bufferId = bufferListEntryAtPoint(buffer)
-    if (!bufferId) return
-    const target = editor.buffers.get(bufferId)
-    if (!target) return
-    editor.switchToBuffer(target.id)
-    editor.message(`Switched to ${editor.bufferDisplayName(target)}`)
-  }, "Select this line's buffer in Buffer Menu.")
 
   editor.key("C-x 0", "delete-window")
   editor.key("C-x 1", "delete-other-windows")
