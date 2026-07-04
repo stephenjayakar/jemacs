@@ -7,6 +7,7 @@ import { Evaluator } from "../src/runtime/evaluator"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { inspectValue } from "../src/runtime/inspect"
 import { defineMinorMode } from "../src/modes/minor-mode"
+import { showHelp } from "../src/runtime/live-source"
 
 defcustom("text-scale-mode-step", "number", 1.2,
   "Each step of text scale multiplies face height by this factor.")
@@ -92,7 +93,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("describe-bindings", ({ editor }) => {
     const lines = editor.keymap.all().map(([k, v]) => `${k.padEnd(16)} ${v}`)
-    editor.scratch("*Help*", lines.join("\n"), "help")
+    showHelp(editor, lines.join("\n"), { kind: "definition", ref: { kind: "function", name: "describe-bindings" } }, {
+      command: "describe-bindings",
+      args: [],
+    })
   }, "Describe key bindings of the current keymap.")
 
   editor.command("view-echo-area-messages", ({ editor }) => {
@@ -112,7 +116,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const lines = editor.commands.entries()
       .filter(c => re.test(c.name) || re.test(c.description ?? ""))
       .map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)
-    editor.scratch("*Help*", lines.join("\n") || "No matches", "help")
+    showHelp(editor, lines.join("\n") || "No matches", { kind: "command", name: pattern }, {
+      command: "apropos-command",
+      args: [pattern],
+    })
   }, "Show commands matching a pattern.")
 
   editor.command("help-command", ({ editor }) => {
@@ -131,7 +138,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       "C-h e    view-echo-area-messages",
       "C-h C-h  help-for-help",
     ]
-    editor.scratch("*Help*", lines.join("\n"), "help")
+    showHelp(editor, lines.join("\n"), { kind: "definition", ref: { kind: "function", name: "help-for-help" } }, {
+      command: "help-for-help",
+      args: [],
+    })
   }, "Describe help commands.")
 
   editor.command("count-lines-page", ({ buffer, editor }) => {

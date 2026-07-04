@@ -25,6 +25,7 @@ export const jemacsDarkTheme = defineTheme("jemacs-dark", {
   error: { underline: true },
   lineNumber: { fg: "#6e7681", bg: "#161b22", italic: true },
   lineNumberCurrent: { fg: "#d4d4d4", bg: "#161b22", italic: true },
+  helpLink: { fg: "#4fc1ff", underline: true },
   diffHeader: { fg: "#9cdcfe" },
   diffFileHeader: { fg: "#dcdcaa", bold: true },
   diffIndex: { fg: "#4fc1ff" },

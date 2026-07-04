@@ -34,6 +34,7 @@ export type FaceName =
   | "error"
   | "lineNumber"
   | "lineNumberCurrent"
+  | "helpLink"
   | "diffHeader"
   | "diffFileHeader"
   | "diffIndex"
