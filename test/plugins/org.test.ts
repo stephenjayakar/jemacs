@@ -25,6 +25,8 @@ import {
   orgBabelBuildInvocation,
   orgBabelReplaceResultsText,
   orgSrcBlockAtPoint,
+  orgToHtml,
+  orgToAscii,
   ORG_FOLDED_LOCAL,
   type FoldRange,
 } from "../../plugins/org"
@@ -243,6 +245,110 @@ describe("org babel source blocks", () => {
 
     expect(source.text).toBe(SRC)
     expect(editor.currentBuffer).toBe(source)
+  })
+})
+
+describe("org export", () => {
+  const EXPORT_DOC = [
+    "#+TITLE: Demo <Doc>",
+    "* TODO Heading *bold*",
+    "Paragraph /italic/ _under_ ~code~ =verbatim= [[https://example.com?a=1&b=2][Example <site>]] [[mailto:a@example.com]].",
+    "",
+    "- [X] done",
+    "+ [ ] todo",
+    "1. first",
+    "2. second",
+    "",
+    "| Name | Value |",
+    "|------+-------|",
+    "| <x> | a & b |",
+    "",
+    "#+begin_src js",
+    "console.log(\"<ok>\")",
+    "#+end_src",
+    "#+RESULTS:",
+    ": <ok>",
+    ": a & b",
+    "",
+  ].join("\n")
+
+  test("orgToHtml covers headings, inline markup, links, lists, tables, blocks, results, title, and escaping", () => {
+    const html = orgToHtml(EXPORT_DOC)
+
+    expect(html).toContain("<title>Demo &lt;Doc&gt;</title>")
+    expect(html).toContain("<h1 class=\"title\">Demo &lt;Doc&gt;</h1>")
+    expect(html).toContain("<h1><span class=\"todo todo\">TODO</span> Heading <strong>bold</strong></h1>")
+    expect(html).toContain("<em>italic</em>")
+    expect(html).toContain("<span class=\"underline\">under</span>")
+    expect(html).toContain("<code>code</code>")
+    expect(html).toContain("<code class=\"verbatim\">verbatim</code>")
+    expect(html).toContain("<a href=\"https://example.com?a=1&amp;b=2\">Example &lt;site&gt;</a>")
+    expect(html).toContain("<a href=\"mailto:a@example.com\">mailto:a@example.com</a>")
+    expect(html).toContain("<ul>\n  <li><input type=\"checkbox\" disabled checked> done</li>")
+    expect(html).toContain("<li><input type=\"checkbox\" disabled> todo</li>")
+    expect(html).toContain("<ol>\n  <li>first</li>\n  <li>second</li>\n</ol>")
+    expect(html).toContain("<table>\n  <tr><td>Name</td><td>Value</td></tr>\n  <tr><td>&lt;x&gt;</td><td>a &amp; b</td></tr>\n</table>")
+    expect(html).toContain("<pre><code class=\"language-js\">console.log(&quot;&lt;ok&gt;&quot;)</code></pre>")
+    expect(html).toContain("<pre>&lt;ok&gt;\na &amp; b</pre>")
+  })
+
+  test("orgToAscii strips inline markup, renders links, underlines top headings, and passes tables through", () => {
+    const ascii = orgToAscii([
+      "* Top *bold*",
+      "** Child /em/",
+      "*** Grand _under_",
+      "See [[https://example.com][Example]] and [[mailto:a@example.com]].",
+      "| *A* | B |",
+    ].join("\n"))
+
+    expect(ascii).toBe([
+      "Top bold",
+      "========",
+      "Child em",
+      "--------",
+      "Grand under",
+      "See Example (https://example.com) and mailto:a@example.com.",
+      "| *A* | B |",
+    ].join("\n"))
+  })
+
+  test("org export commands write expected filenames and content through injected deps", async () => {
+    const editor = makeEditor()
+    const writes: Array<{ path: string; text: string }> = []
+    install(editor, { writeFile: async (path, text) => { writes.push({ path, text }) } })
+    const buffer = editor.scratch("doc.org", "#+TITLE: T\n* H\nBody", "org-mode")
+    buffer.path = "/tmp/doc.org"
+
+    await editor.run("org-html-export-to-html")
+    await editor.run("org-ascii-export-to-ascii")
+
+    expect(writes[0]).toEqual({ path: "/tmp/doc.html", text: orgToHtml(buffer.text) })
+    expect(writes[1]).toEqual({ path: "/tmp/doc.txt", text: orgToAscii(buffer.text) })
+  })
+
+  test("org-export-dispatch writes, opens, and creates ascii buffer through injected deps", async () => {
+    const editor = makeEditor()
+    const writes: Array<{ path: string; text: string }> = []
+    const opened: Array<{ target: string; opts?: { allowFile?: boolean } }> = []
+    install(editor, {
+      writeFile: async (path, text) => { writes.push({ path, text }) },
+      openExternal: (target, opts) => { opened.push({ target, opts }) },
+    })
+    const buffer = editor.scratch("note.org", "* Title\nBody", "org-mode")
+    buffer.path = "/tmp/note.org"
+    editor.completingReadFunction = async () => "html open"
+
+    await keySeq(editor, "C-c", "C-e")
+
+    expect(writes).toEqual([{ path: "/tmp/note.html", text: orgToHtml(buffer.text) }])
+    expect(opened).toEqual([{ target: "file:///tmp/note.html", opts: { allowFile: true } }])
+
+    editor.currentBufferId = buffer.id
+    editor.completingReadFunction = async () => "ascii buffer"
+    await editor.run("org-export-dispatch")
+
+    expect(editor.currentBuffer.name).toBe("*Org ASCII Export*")
+    expect(editor.currentBuffer.text).toBe(orgToAscii(buffer.text))
   })
 })
 

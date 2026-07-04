@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises"
-import { basename, join, resolve } from "node:path"
+import { basename, join, parse, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import type { Editor } from "../../src/kernel/editor"
 import { BufferModel, inferMode } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
@@ -7,7 +8,7 @@ import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode, getMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
-import { spawnProcess, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
+import { spawnProcess, writeFileText, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
 import { attachEditIndirect, editIndirectBuffer, finishEditIndirect } from "../markdown"
 
 export const ORG_FOLDED_LOCAL = "org-folded"
@@ -80,6 +81,8 @@ export type OrgSrcBlock = {
 export type OrgBabelInvocation = { cmd: string[]; stdin: string }
 export type OrgDeps = {
   spawn?: (opts: SpawnOptions) => SpawnHandle
+  writeFile?: (path: string, text: string) => Promise<void>
+  openExternal?: (target: string, opts?: { allowFile?: boolean }) => void
 }
 
 type OrgEditResult = { changed: boolean; message: string }
@@ -108,6 +111,282 @@ export function orgParseHeadlines(text: string): OrgHeadline[] {
     offset += line.length + 1
   }
   return out
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function escapeAttr(text: string): string {
+  return escapeHtml(text)
+}
+
+function orgTitle(text: string): string | null {
+  for (const line of text.split("\n")) {
+    const m = /^\s*#\+TITLE:\s*(.*?)\s*$/i.exec(line)
+    if (m) return m[1] ?? ""
+  }
+  return null
+}
+
+function orgHtmlInline(text: string): string {
+  let out = ""
+  let i = 0
+  const emitPlain = (end: number) => {
+    out += escapeHtml(text.slice(i, end))
+    i = end
+  }
+  while (i < text.length) {
+    if (text.startsWith("[[", i)) {
+      const close = text.indexOf("]]", i + 2)
+      if (close !== -1) {
+        const inner = text.slice(i + 2, close)
+        const split = inner.indexOf("][")
+        const url = split === -1 ? inner : inner.slice(0, split)
+        const desc = split === -1 ? inner : inner.slice(split + 2)
+        out += `<a href="${escapeAttr(url)}">${orgHtmlInline(desc)}</a>`
+        i = close + 2
+        continue
+      }
+    }
+    const marker = text[i]
+    if (marker && "*_~/=".includes(marker)) {
+      const close = text.indexOf(marker, i + 1)
+      if (close > i + 1) {
+        const inner = escapeHtml(text.slice(i + 1, close))
+        const tag = marker === "*" ? "strong"
+          : marker === "/" ? "em"
+          : marker === "_" ? "span class=\"underline\""
+          : marker === "~" ? "code"
+          : marker === "=" ? "code class=\"verbatim\""
+          : ""
+        if (tag) {
+          const closeTag = tag.startsWith("span") ? "span" : tag === "strong" ? "strong" : tag === "em" ? "em" : "code"
+          out += `<${tag}>${inner}</${closeTag}>`
+          i = close + 1
+          continue
+        }
+      }
+    }
+    emitPlain(i + 1)
+  }
+  return out
+}
+
+function orgAsciiInline(text: string): string {
+  let out = ""
+  let i = 0
+  while (i < text.length) {
+    if (text.startsWith("[[", i)) {
+      const close = text.indexOf("]]", i + 2)
+      if (close !== -1) {
+        const inner = text.slice(i + 2, close)
+        const split = inner.indexOf("][")
+        const url = split === -1 ? inner : inner.slice(0, split)
+        const desc = split === -1 ? inner : inner.slice(split + 2)
+        out += split === -1 ? url : `${orgAsciiInline(desc)} (${url})`
+        i = close + 2
+        continue
+      }
+    }
+    const marker = text[i]
+    if (marker && "*_~/=".includes(marker)) {
+      const close = text.indexOf(marker, i + 1)
+      if (close > i + 1) {
+        out += text.slice(i + 1, close)
+        i = close + 1
+        continue
+      }
+    }
+    out += text[i]
+    i++
+  }
+  return out
+}
+
+function isOrgKeywordLine(line: string): boolean {
+  return /^\s*#\+[A-Za-z_]+:/.test(line)
+}
+
+function isOrgTableLine(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line)
+}
+
+function orgTableCells(line: string): string[] {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim())
+}
+
+function orgHtmlDocument(title: string, body: string): string {
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "  <meta charset=\"utf-8\">",
+    `  <title>${escapeHtml(title)}</title>`,
+    "</head>",
+    "<body>",
+    body,
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n")
+}
+
+export function orgToHtml(text: string): string {
+  const title = orgTitle(text)
+  const lines = text.split("\n")
+  const body: string[] = title == null ? [] : [`<h1 class="title">${orgHtmlInline(title)}</h1>`]
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    const titleLine = /^\s*#\+TITLE:\s*/i.test(line)
+    if (titleLine || !line.trim()) {
+      i++
+      continue
+    }
+
+    const src = ORG_BEGIN_SRC_RE.exec(line)
+    if (src) {
+      const lang = src[1] ?? ""
+      const code: string[] = []
+      i++
+      while (i < lines.length && !ORG_END_SRC_RE.test(lines[i]!)) code.push(lines[i++]!)
+      if (i < lines.length) i++
+      const klass = lang ? ` class="language-${escapeAttr(lang)}"` : ""
+      body.push(`<pre><code${klass}>${escapeHtml(code.join("\n"))}</code></pre>`)
+      continue
+    }
+
+    if (ORG_RESULTS_RE.test(line)) {
+      const result: string[] = []
+      i++
+      while (i < lines.length && /^\s*: ?/.test(lines[i]!)) result.push(lines[i++]!.replace(/^\s*: ?/, ""))
+      body.push(`<pre>${escapeHtml(result.join("\n"))}</pre>`)
+      continue
+    }
+
+    const h = HEADLINE_RE.exec(line)
+    if (h) {
+      const level = Math.min(h[1]!.length, 6)
+      const keyword = h[2] ? `<span class="todo ${h[2].toLowerCase()}">${escapeHtml(h[2])}</span> ` : ""
+      body.push(`<h${level}>${keyword}${orgHtmlInline(h[3] ?? "")}</h${level}>`)
+      i++
+      continue
+    }
+
+    if (isOrgTableLine(line)) {
+      const rows: string[] = []
+      while (i < lines.length && isOrgTableLine(lines[i]!)) {
+        const row = lines[i++]!
+        if (!ORG_TABLE_SEPARATOR_RE.test(row)) {
+          rows.push(`  <tr>${orgTableCells(row).map(cell => `<td>${orgHtmlInline(cell)}</td>`).join("")}</tr>`)
+        }
+      }
+      body.push(["<table>", ...rows, "</table>"].join("\n"))
+      continue
+    }
+
+    const list = /^(\s*)([-+]|\d+[.)])\s+(?:\[([ Xx-])\]\s+)?(.*)$/.exec(line)
+    if (list) {
+      const ordered = /^\d/.test(list[2]!)
+      const tag = ordered ? "ol" : "ul"
+      const items: string[] = []
+      while (i < lines.length) {
+        const m = /^(\s*)([-+]|\d+[.)])\s+(?:\[([ Xx-])\]\s+)?(.*)$/.exec(lines[i]!)
+        if (!m || /^\d/.test(m[2]!) !== ordered) break
+        const box = m[3] ? `<input type="checkbox" disabled${/[Xx]/.test(m[3]) ? " checked" : ""}> ` : ""
+        items.push(`  <li>${box}${orgHtmlInline(m[4] ?? "")}</li>`)
+        i++
+      }
+      body.push([`<${tag}>`, ...items, `</${tag}>`].join("\n"))
+      continue
+    }
+
+    if (isOrgKeywordLine(line)) { i++; continue }
+
+    const para: string[] = []
+    while (i < lines.length && lines[i]!.trim() && !HEADLINE_RE.test(lines[i]!)
+      && !ORG_BEGIN_SRC_RE.test(lines[i]!) && !ORG_RESULTS_RE.test(lines[i]!)
+      && !isOrgTableLine(lines[i]!) && !/^(\s*)([-+]|\d+[.)])\s+/.test(lines[i]!)
+      && !isOrgKeywordLine(lines[i]!)) {
+      para.push(lines[i++]!.trim())
+    }
+    if (para.length) body.push(`<p>${orgHtmlInline(para.join(" "))}</p>`)
+  }
+  return orgHtmlDocument(title ?? "Org Export", body.join("\n"))
+}
+
+export function orgToAscii(text: string): string {
+  const out: string[] = []
+  const lines = text.split("\n")
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    if (/^\s*#\+TITLE:\s*/i.test(line)) { i++; continue }
+    const h = HEADLINE_RE.exec(line)
+    if (h) {
+      const level = h[1]!.length
+      const title = orgAsciiInline(h[3] ?? "")
+      const textLine = `${h[2] ? `${h[2]} ` : ""}${title}`
+      if (level === 1) out.push(textLine, "=".repeat(textLine.length))
+      else if (level === 2) out.push(textLine, "-".repeat(textLine.length))
+      else out.push(`${"  ".repeat(level - 3)}${textLine}`)
+      i++
+      continue
+    }
+    const src = ORG_BEGIN_SRC_RE.exec(line)
+    if (src) {
+      i++
+      while (i < lines.length && !ORG_END_SRC_RE.test(lines[i]!)) out.push(lines[i++]!)
+      if (i < lines.length) i++
+      continue
+    }
+    if (ORG_RESULTS_RE.test(line)) { i++; continue }
+    if (isOrgKeywordLine(line)) { i++; continue }
+    if (isOrgTableLine(line)) { out.push(line); i++; continue }
+    out.push(orgAsciiInline(line))
+    i++
+  }
+  return out.join("\n")
+}
+
+function orgOutputPath(buffer: BufferModel, ext: ".html" | ".txt"): string | null {
+  if (!buffer.path) return null
+  const parsed = parse(buffer.path)
+  return join(parsed.dir, `${parsed.name}${ext}`)
+}
+
+export async function orgHtmlExportToHtml(buffer: BufferModel, deps: OrgDeps = {}): Promise<string> {
+  const outputPath = orgOutputPath(buffer, ".html")
+  if (!outputPath) throw new Error("Buffer is not visiting a file")
+  await (deps.writeFile ?? writeFileText)(outputPath, orgToHtml(buffer.text))
+  return outputPath
+}
+
+export async function orgAsciiExportToAscii(buffer: BufferModel, deps: OrgDeps = {}): Promise<string> {
+  const outputPath = orgOutputPath(buffer, ".txt")
+  if (!outputPath) throw new Error("Buffer is not visiting a file")
+  await (deps.writeFile ?? writeFileText)(outputPath, orgToAscii(buffer.text))
+  return outputPath
+}
+
+function orgOpenExternal(target: string, deps: OrgDeps = {}, allowFile = false): void {
+  let scheme: string
+  try { scheme = new URL(target).protocol } catch { return }
+  if (!SAFE_URL_SCHEME.test(scheme) && !(allowFile && scheme === "file:")) return
+  if (deps.openExternal) {
+    deps.openExternal(target, { allowFile })
+    return
+  }
+  const platform = process.platform
+  const cmd = platform === "darwin" ? ["open", "--", target]
+    : platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", target]
+    : ["xdg-open", "--", target]
+  try { spawnProcess({ cmd }) } catch { /* best effort */ }
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -1179,6 +1458,7 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
   keymap.bind("C-c |", "org-table-create-or-convert-from-region")
   keymap.bind("C-c C-l", "org-insert-link")
   keymap.bind("C-c C-o", "org-open-at-point")
+  keymap.bind("C-c C-e", "org-export-dispatch")
   keymap.bind("C-c C-t", "org-todo")
   keymap.bind("M-RET", "org-meta-return")
   keymap.bind("M-left", "org-promote")
@@ -1345,6 +1625,51 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
   editor.command("org-babel-execute-src-block", async ({ editor, buffer }) => {
     await orgBabelExecuteSrcBlock(editor, buffer, deps)
   }, "Execute the Org Babel source block at point and insert plain results.")
+
+  editor.command("org-html-export-to-html", async ({ editor, buffer }) => {
+    try {
+      const outputPath = await orgHtmlExportToHtml(buffer, deps)
+      editor.message(`Wrote ${outputPath}`)
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Export the current Org buffer to an HTML file.")
+
+  editor.command("org-ascii-export-to-ascii", async ({ editor, buffer }) => {
+    try {
+      const outputPath = await orgAsciiExportToAscii(buffer, deps)
+      editor.message(`Wrote ${outputPath}`)
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Export the current Org buffer to a plain text file.")
+
+  editor.command("org-export-dispatch", async ({ editor, buffer }) => {
+    const choice = await editor.completingRead("Org export: ", {
+      collection: ["html file", "html open", "ascii file", "ascii buffer"],
+      history: "org-export-dispatch",
+    })
+    if (!choice) return
+    try {
+      if (choice === "html file") {
+        const outputPath = await orgHtmlExportToHtml(buffer, deps)
+        editor.message(`Wrote ${outputPath}`)
+      } else if (choice === "html open") {
+        const outputPath = await orgHtmlExportToHtml(buffer, deps)
+        orgOpenExternal(pathToFileURL(outputPath).href, deps, true)
+        editor.message(`Opened ${outputPath}`)
+      } else if (choice === "ascii file") {
+        const outputPath = await orgAsciiExportToAscii(buffer, deps)
+        editor.message(`Wrote ${outputPath}`)
+      } else if (choice === "ascii buffer") {
+        const exported = editor.scratch("*Org ASCII Export*", orgToAscii(buffer.text), "text")
+        editor.switchToBuffer(exported.id)
+        editor.message("Org ASCII export")
+      }
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Dispatch Org export commands.")
 
   editor.command("org-edit-special", ({ editor, buffer }) => {
     orgEditSpecial(editor, buffer)
