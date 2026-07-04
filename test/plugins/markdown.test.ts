@@ -963,3 +963,67 @@ describe("markdown-outdent-or-delete", () => {
     expect(buffer.point).toBe("one".length)
   })
 })
+
+describe("markdown-edit-code-block", () => {
+  const DOC = "# Title\n\n```python\nprint(1)\n```\n\ntail\n"
+
+  test("open, edit, commit replaces exactly the block body", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const source = editor.scratch("doc.md", DOC, "markdown")
+    source.point = source.text.indexOf("print")
+
+    await editor.run("markdown-edit-code-block")
+    const edit = editor.currentBuffer
+    expect(edit.name).toBe("*edit code block: python*")
+    expect(edit.text).toBe("print(1)\n")
+
+    edit.setText("print(2)\nprint(3)")
+    await editor.run("edit-indirect-commit")
+    expect(source.text).toBe("# Title\n\n```python\nprint(2)\nprint(3)\n```\n\ntail\n")
+    expect(editor.currentBuffer).toBe(source)
+    expect([...editor.buffers.values()].some(b => b.name.startsWith("*edit code block"))).toBe(false)
+  })
+
+  test("abort leaves the source unchanged", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const source = editor.scratch("doc.md", DOC, "markdown")
+    source.point = source.text.indexOf("print")
+
+    await editor.run("markdown-edit-code-block")
+    editor.currentBuffer.setText("garbage")
+    await editor.run("edit-indirect-abort")
+    expect(source.text).toBe(DOC)
+  })
+
+  test("source edits above the block still commit to the right place", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const source = editor.scratch("doc.md", DOC, "markdown")
+    source.point = source.text.indexOf("print")
+
+    await editor.run("markdown-edit-code-block")
+    const edit = editor.currentBuffer
+    source.replaceRange(0, 0, "intro line\n")
+    edit.setText("print(9)\n")
+    await editor.run("edit-indirect-commit")
+    expect(source.text).toBe("intro line\n# Title\n\n```python\nprint(9)\n```\n\ntail\n")
+  })
+
+  test("committing after the block itself was edited is refused", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const source = editor.scratch("doc.md", DOC, "markdown")
+    source.point = source.text.indexOf("print")
+
+    await editor.run("markdown-edit-code-block")
+    const edit = editor.currentBuffer
+    const start = source.text.indexOf("print(1)")
+    source.replaceRange(start, start + "print(1)".length, "changed()")
+    edit.setText("print(9)\n")
+    await editor.run("edit-indirect-commit")
+    expect(source.text).toContain("changed()")
+    expect(source.text).not.toContain("print(9)")
+  })
+})

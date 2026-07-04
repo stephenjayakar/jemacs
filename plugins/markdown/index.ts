@@ -298,6 +298,76 @@ function markdownGetLangMode(lang: string | null): string | null {
   return fallback
 }
 
+type EditIndirectState = {
+  source: BufferModel
+  bodyStart: number
+  bodyEnd: number
+  valid: boolean
+  detach: () => void
+}
+const EDIT_INDIRECT_KEY = "markdown-edit-indirect"
+
+export function markdownCodeBlockAtPoint(text: string, point: number): FencedCodeBlock | null {
+  for (const block of parseFencedCodeBlocks(text)) {
+    const openStart = lineStartAt(text, block.openLine)
+    const closeLineStart = lineStartAt(text, block.closeLine)
+    const closeNl = text.indexOf("\n", closeLineStart)
+    const closeEnd = closeNl < 0 ? text.length : closeNl
+    if (point >= openStart && point <= closeEnd) return block
+  }
+  return null
+}
+
+/** Track the block body across source-buffer splices, edit-indirect style:
+ *  edits before the body shift it, edits overlapping it invalidate the
+ *  pending commit (the safe failure mode — Emacs edit-indirect errors too). */
+function attachEditIndirect(edit: BufferModel, source: BufferModel, bodyStart: number, bodyEnd: number): EditIndirectState {
+  const prev = source.onTextChange
+  const state: EditIndirectState = {
+    source,
+    bodyStart,
+    bodyEnd,
+    valid: true,
+    detach: () => { source.onTextChange = prev },
+  }
+  source.onTextChange = ev => {
+    const delta = ev.text.length - (ev.end - ev.start)
+    if (ev.end <= state.bodyStart) {
+      state.bodyStart += delta
+      state.bodyEnd += delta
+    } else if (ev.start < state.bodyEnd) {
+      state.valid = false
+    }
+    prev?.(ev)
+  }
+  edit.locals.set(EDIT_INDIRECT_KEY, state)
+  return state
+}
+
+function finishEditIndirect(editor: Editor, edit: BufferModel, commit: boolean): void {
+  const state = edit.locals.get(EDIT_INDIRECT_KEY) as EditIndirectState | undefined
+  if (!state) {
+    editor.message("Not editing a code block")
+    return
+  }
+  if (commit) {
+    if (!state.valid || !editor.buffers.has(state.source.id)) {
+      editor.message("Source code block was modified or killed; cannot commit")
+      return
+    }
+    state.detach()
+    let body = edit.text
+    if (body && !body.endsWith("\n")) body += "\n"
+    state.source.replaceRange(state.bodyStart, state.bodyEnd, body)
+  } else {
+    state.detach()
+  }
+  edit.locals.delete(EDIT_INDIRECT_KEY)
+  editor.killBuffer(edit.id)
+  if (editor.buffers.has(state.source.id)) editor.switchToBuffer(state.source.id)
+  editor.message(commit ? "Committed code block" : "Aborted code block edit")
+}
+
 function spanInsideRegions(start: number, end: number, regions: ReadonlyArray<readonly [number, number]>): boolean {
   return regions.some(([a, b]) => start >= a && end <= b)
 }
@@ -1097,6 +1167,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-s i", "markdown-insert-italic")
   keymap.bind("C-c C-s c", "markdown-insert-code")
   keymap.bind("C-c C-s C", "markdown-insert-gfm-code-block")
+  keymap.bind("C-c '", "markdown-edit-code-block")
   keymap.bind("C-c C-s f", "markdown-insert-footnote")
   keymap.bind("C-c C-s q", "markdown-insert-blockquote")
   keymap.bind("C-c C-s -", "markdown-insert-hr")
@@ -1451,6 +1522,34 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message("Inserted GFM code block")
   }, "Insert a fenced GFM code block.")
 
+  editor.command("markdown-edit-code-block", ({ buffer, editor }) => {
+    if (buffer.locals.has(EDIT_INDIRECT_KEY)) {
+      finishEditIndirect(editor, buffer, true)
+      return
+    }
+    const block = markdownCodeBlockAtPoint(buffer.text, buffer.point)
+    if (!block) {
+      editor.message("No code block at point")
+      return
+    }
+    const body = buffer.text.slice(block.bodyStart, block.bodyEnd)
+    const mode = markdownGetLangMode(block.lang) ?? "text"
+    const edit = new BufferModel({ name: `*edit code block: ${block.lang ?? "code"}*`, text: body, kind: "scratch", mode })
+    editor.addBuffer(edit)
+    editor.enterMode(edit, mode)
+    attachEditIndirect(edit, buffer, block.bodyStart, block.bodyEnd)
+    editor.displayBufferInOtherWindow(edit.id, { select: true })
+    editor.message("Edit, then C-c ' or C-c C-c to commit, C-c C-k to abort")
+  }, "Edit the fenced code block at point in a language-mode buffer (commit from the edit buffer).")
+
+  editor.command("edit-indirect-commit", ({ buffer, editor }) => {
+    finishEditIndirect(editor, buffer, true)
+  }, "Commit the edit-indirect buffer back to its source code block.")
+
+  editor.command("edit-indirect-abort", ({ buffer, editor }) => {
+    finishEditIndirect(editor, buffer, false)
+  }, "Abort the edit-indirect buffer, discarding changes.")
+
   editor.command("markdown-insert-blockquote", ({ buffer, editor }) => {
     const line = buffer.lineBoundsAt()
     const content = line.text.replace(/^\s*/, "")
@@ -1660,6 +1759,9 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
 export function install(editor: Editor, deps: MarkdownDeps = {}): void {
   registerTreeSitterGrammars()
   installMarkdownCommands(editor, deps)
+  // Global so C-c ' also commits from the edit buffer, whose major mode is
+  // the block's language and has no markdown keymap.
+  editor.key("C-c '", "markdown-edit-code-block")
 
   for (const [name] of MARKDOWN_HEADER_FACES) defface(name, {}, "Markdown ATX/setext header face.")
   defface("markdown-emphasis", { italic: true }, "Markdown italic emphasis.")
