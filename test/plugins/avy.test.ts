@@ -7,10 +7,12 @@ import {
   avyCollect,
   avyCollectLine,
   avyCollectPair,
+  avyCollectString,
   avyCollectWord1,
   avySpans,
   AVY_KEYS,
 } from "../../plugins/avy"
+import { setCustom } from "../../src/runtime/custom"
 
 const tick = () => new Promise(r => setTimeout(r, 0))
 
@@ -243,5 +245,30 @@ describe("additional avy commands", () => {
     expect(buf.point).toBe(4)
     expect(buf.text).toBe("one\ntwo\nthree")
     expect(avySpans(buf)).toEqual([])
+  })
+})
+
+describe("avy-goto-char-timer", () => {
+  test("avyCollectString finds arbitrary-length matches", () => {
+    const { editor } = setup("foo bar foobar", 0)
+    const targets = avyCollectString(editor, "foo")
+    expect(targets.map(t => t.point)).toEqual([0, 8])
+    expect(avyCollectString(editor, "")).toEqual([])
+  })
+
+  test("accumulated string search jumps after timeout", async () => {
+    setCustom("avy-timeout-seconds", 0.03)
+    const { editor, buf, fire } = setup("zap zebra zap", 0)
+    const done = editor.run("avy-goto-char-timer")
+    await tick()
+    fire("z"); await tick()
+    fire("a"); await tick()
+    fire("p"); await tick()
+    // Only "zap" at 0 and 10 match; wait past the timeout for labeling.
+    await new Promise(r => setTimeout(r, 60))
+    fire("s"); await tick()
+    await done
+    expect(buf.point).toBe(10)
+    expect(buf.text).toBe("zap zebra zap")
   })
 })

@@ -5,6 +5,8 @@ import type { TextSpan } from "../../src/modes/mode"
 import { listWindowLeaves, type WindowId } from "../../src/kernel/window"
 import { visibleTextRegionFromStart, pageScrollLines } from "../../src/display/viewport"
 import { readKey } from "../../src/core/emacs-standard"
+import { keyToken } from "../../src/kernel/keymap"
+import { defcustom, getCustom } from "../../src/runtime/custom"
 
 /** Home-row label alphabet (Emacs avy default `avy-keys`). */
 export const AVY_KEYS = ["a", "s", "d", "f", "g", "h", "j", "k", "l"] as const
@@ -48,19 +50,44 @@ export function avyCollect(editor: Editor, ch: string, lineBudget = pageScrollLi
 }
 
 export function avyCollectPair(editor: Editor, pair: string, lineBudget = pageScrollLines()): AvyTarget[] {
+  if (pair.length !== 2) return []
+  return avyCollectString(editor, pair, lineBudget)
+}
+
+/** Every occurrence of `str` (any length ≥ 1) in each window's visible region. */
+export function avyCollectString(editor: Editor, str: string, lineBudget = pageScrollLines()): AvyTarget[] {
   const out: AvyTarget[] = []
-  if (pair.length !== 2) return out
+  if (!str.length) return out
   for (const leaf of listWindowLeaves(editor.windowLayout)) {
     const buffer = editor.buffers.get(leaf.bufferId)
     if (!buffer) continue
     const { visible, visibleStart } = visibleTextRegionFromStart(buffer.text, leaf.startLine, lineBudget, buffer.lineStarts)
-    let i = visible.indexOf(pair)
+    let i = visible.indexOf(str)
     while (i !== -1) {
       out.push({ windowId: leaf.id, bufferId: buffer.id, point: visibleStart + i })
-      i = visible.indexOf(pair, i + 1)
+      i = visible.indexOf(str, i + 1)
     }
   }
   return out
+}
+
+/** Like `readKey` but resolves to "timeout" if no key arrives within `ms`. */
+function readKeyTimeout(editor: Editor, prompt: string, ms: number): Promise<string | null | "timeout"> {
+  editor.message(prompt)
+  return new Promise(resolve => {
+    const original = editor.handleKey
+    const timer = setTimeout(() => {
+      editor.handleKey = original
+      resolve("timeout")
+    }, ms)
+    editor.handleKey = async key => {
+      clearTimeout(timer)
+      editor.handleKey = original
+      const token = keyToken(key)
+      resolve(token === "C-g" ? null : token)
+      return { status: "command", command: "read-key" }
+    }
+  })
 }
 
 function isWordChar(ch: string | undefined): boolean {
@@ -184,6 +211,8 @@ async function selectTarget(editor: Editor, targets: AvyTarget[]): Promise<void>
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  defcustom("avy-timeout-seconds", "number", 0.5,
+    "Seconds avy-goto-char-timer waits for the next char before searching.")
   editor.addOverlaySource(avySpans)
 
   editor.command("avy-goto-char", async ({ editor }) => {
@@ -212,6 +241,23 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!targets.length) return editor.message(`No candidates for '${ch}'`)
     await selectTarget(editor, targets)
   }, "Read a char, label visible word beginnings that start with it, then jump.")
+
+  editor.command("avy-goto-char-timer", async ({ editor }) => {
+    const timeoutMs = (getCustom<number>("avy-timeout-seconds") ?? 0.5) * 1000
+    const first = await readKey(editor, "char: ")
+    if (first == null || first.length !== 1) return editor.message("")
+    let str = first
+    for (;;) {
+      const key = await readKeyTimeout(editor, `char: ${str}`, timeoutMs)
+      if (key === "timeout" || key === "RET") break
+      if (key == null) return editor.message("")
+      if (key.length !== 1) break
+      str += key
+    }
+    const targets = avyCollectString(editor, str)
+    if (!targets.length) return editor.message(`No candidates for '${str}'`)
+    await selectTarget(editor, targets)
+  }, "Read chars until a timeout, label every visible match of the string, then jump.")
 
   editor.command("avy-goto-line", async ({ editor }) => {
     const targets = avyCollectLine(editor)
