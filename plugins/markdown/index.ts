@@ -914,6 +914,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c <", "markdown-outdent-region")
   keymap.bind("C-c C-l", "markdown-insert-link")
   keymap.bind("C-c C-k", "markdown-kill-thing-at-point")
+  keymap.bind("C-c C-s t", "markdown-insert-table")
   keymap.bind("C-c C--", "markdown-promote")
   keymap.bind("C-c C-=", "markdown-demote")
   keymap.bind("M-left", "markdown-promote")
@@ -1015,6 +1016,12 @@ function installMarkdownCommands(editor: Editor): void {
       return
     }
 
+    if (markdownInTable(buffer)) {
+      const result = markdownTableForwardCell(buffer)
+      editor.message(result.message)
+      return
+    }
+
     const heading = markdownHeadingAtPoint(buffer.text, buffer.point)
     if (heading) {
       const headings = markdownParseHeadings(buffer.text)
@@ -1043,6 +1050,11 @@ function installMarkdownCommands(editor: Editor): void {
   }, "Cycle heading visibility, or indent when not on a heading.")
 
   editor.command("markdown-shifttab", ({ editor, buffer }) => {
+    if (markdownInTable(buffer)) {
+      const result = markdownTableBackwardCell(buffer)
+      editor.message(result.message)
+      return
+    }
     cycleGlobalVisibility(editor, buffer)
   }, "Global heading visibility cycle (like S-TAB in markdown-mode).")
 
@@ -1112,6 +1124,76 @@ function installMarkdownCommands(editor: Editor): void {
     insertMarkdownLink(buffer, buffer.point, buffer.point, text || url, url)
     editor.message("Inserted link")
   }, "Insert a Markdown inline link.")
+
+  editor.command("markdown-table-align", ({ buffer, editor }) => {
+    const result = markdownTableAlign(buffer)
+    editor.message(result.message)
+  }, "Align the pipe table at point.")
+
+  editor.command("markdown-table-forward-cell", ({ buffer, editor }) => {
+    const result = markdownTableForwardCell(buffer)
+    editor.message(result.message)
+  }, "Move forward one Markdown table cell, inserting a row at end.")
+
+  editor.command("markdown-table-backward-cell", ({ buffer, editor }) => {
+    const result = markdownTableBackwardCell(buffer)
+    editor.message(result.message)
+  }, "Move backward one Markdown table cell.")
+
+  editor.command("markdown-insert-table", async ({ buffer, editor }) => {
+    const rowsRaw = await editor.prompt("Rows: ", "2", "markdown-table-rows")
+    if (rowsRaw == null) return
+    const colsRaw = await editor.prompt("Columns: ", "2", "markdown-table-columns")
+    if (colsRaw == null) return
+    const rows = Number.parseInt(rowsRaw, 10)
+    const columns = Number.parseInt(colsRaw, 10)
+    if (!Number.isFinite(rows) || !Number.isFinite(columns) || rows < 1 || columns < 1) {
+      editor.message("Invalid table size")
+      return
+    }
+    const result = markdownInsertTable(buffer, rows, columns)
+    editor.message(result.message)
+  }, "Insert a GFM pipe table.")
+
+  editor.command("markdown-table-insert-row", ({ buffer, editor }) => {
+    const result = markdownTableInsertRow(buffer)
+    editor.message(result.message)
+  }, "Insert a table row above the current row.")
+
+  editor.command("markdown-table-delete-row", ({ buffer, editor }) => {
+    const result = markdownTableDeleteRow(buffer)
+    editor.message(result.message)
+  }, "Delete the current table row.")
+
+  editor.command("markdown-table-insert-column", ({ buffer, editor }) => {
+    const result = markdownTableInsertColumn(buffer)
+    editor.message(result.message)
+  }, "Insert a table column to the left.")
+
+  editor.command("markdown-table-delete-column", ({ buffer, editor }) => {
+    const result = markdownTableDeleteColumn(buffer)
+    editor.message(result.message)
+  }, "Delete the current table column.")
+
+  editor.command("markdown-table-move-row-up", ({ buffer, editor }) => {
+    const result = markdownTableMoveRow(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current table row up.")
+
+  editor.command("markdown-table-move-row-down", ({ buffer, editor }) => {
+    const result = markdownTableMoveRow(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current table row down.")
+
+  editor.command("markdown-table-move-column-left", ({ buffer, editor }) => {
+    const result = markdownTableMoveColumn(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current table column left.")
+
+  editor.command("markdown-table-move-column-right", ({ buffer, editor }) => {
+    const result = markdownTableMoveColumn(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current table column right.")
 
   editor.command("markdown-insert-bold", ({ buffer, editor }) => {
     wrapOrInsert(buffer, "**", "**", "text")
@@ -1198,12 +1280,12 @@ function installMarkdownCommands(editor: Editor): void {
   }, "Insert or demote an ATX header at point.")
 
   editor.command("markdown-promote", ({ buffer, editor }) => {
-    const result = markdownPromoteOrDemote(buffer, -1)
+    const result = markdownInTable(buffer) ? markdownTableMoveColumn(buffer, -1) : markdownPromoteOrDemote(buffer, -1)
     editor.message(result.message)
   }, "Promote the heading or list item at point.")
 
   editor.command("markdown-demote", ({ buffer, editor }) => {
-    const result = markdownPromoteOrDemote(buffer, 1)
+    const result = markdownInTable(buffer) ? markdownTableMoveColumn(buffer, 1) : markdownPromoteOrDemote(buffer, 1)
     editor.message(result.message)
   }, "Demote the heading or list item at point.")
 
@@ -1239,13 +1321,13 @@ function installMarkdownCommands(editor: Editor): void {
 
   editor.command("markdown-move-up", ({ buffer, editor }) => {
     const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
-    const result = heading ? markdownMoveSubtree(buffer, -1) : markdownMoveListItem(buffer, -1)
+    const result = markdownInTable(buffer) ? markdownTableMoveRow(buffer, -1) : heading ? markdownMoveSubtree(buffer, -1) : markdownMoveListItem(buffer, -1)
     editor.message(result.message)
   }, "Move the current heading subtree or list item up.")
 
   editor.command("markdown-move-down", ({ buffer, editor }) => {
     const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
-    const result = heading ? markdownMoveSubtree(buffer, 1) : markdownMoveListItem(buffer, 1)
+    const result = markdownInTable(buffer) ? markdownTableMoveRow(buffer, 1) : heading ? markdownMoveSubtree(buffer, 1) : markdownMoveListItem(buffer, 1)
     editor.message(result.message)
   }, "Move the current heading subtree or list item down.")
 
@@ -1593,6 +1675,17 @@ function changeHeaderLevel(buffer: BufferModel, delta: number): void {
 
 type MarkdownEditResult = { changed: boolean; message: string }
 type MarkdownListItem = { line: number; endLine: number; indent: number }
+type MarkdownTableAlignment = "left" | "center" | "right" | "none"
+type MarkdownTableCell = { text: string; start: number; end: number }
+type MarkdownTableRow = { line: number; raw: string; cells: MarkdownTableCell[]; delimiter: boolean }
+type MarkdownTable = {
+  startLine: number
+  endLine: number
+  startOffset: number
+  indent: string
+  rows: MarkdownTableRow[]
+  alignments: MarkdownTableAlignment[]
+}
 
 function markdownHeadingAtPointIncludingSetextUnderline(text: string, point: number): MarkdownHeading | null {
   const line = text.slice(0, point).split("\n").length - 1
@@ -1616,6 +1709,348 @@ function replaceLines(buffer: BufferModel, startLine: number, endLine: number, r
   const lines = buffer.text.split("\n")
   lines.splice(startLine, endLine - startLine + 1, ...replacement)
   buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+}
+
+function lineHasTablePipe(line: string): boolean {
+  return /^(?:[ \t]*)\S.*\|/.test(line) || /^(?:[ \t]*)\|/.test(line)
+}
+
+function splitMarkdownTableCells(line: string): MarkdownTableCell[] {
+  const indentLen = line.match(/^\s*/)?.[0].length ?? 0
+  let start = indentLen
+  let end = line.length
+  if (line[start] === "|") start++
+  while (end > start && /\s/.test(line[end - 1]!)) end--
+  if (end > start && line[end - 1] === "|" && !isEscaped(line, end - 1)) end--
+
+  const cells: MarkdownTableCell[] = []
+  let cellStart = start
+  for (let i = start; i <= end; i++) {
+    if (i === end || (line[i] === "|" && !isEscaped(line, i))) {
+      const rawStart = cellStart
+      const rawEnd = i
+      const raw = line.slice(rawStart, rawEnd)
+      const left = raw.match(/^\s*/)?.[0].length ?? 0
+      const right = raw.match(/\s*$/)?.[0].length ?? 0
+      const empty = raw.trim().length === 0
+      cells.push({
+        text: raw.trim(),
+        start: empty ? Math.min(rawStart + 1, rawEnd) : rawStart + left,
+        end: empty ? Math.min(rawStart + 1, rawEnd) : rawEnd - right,
+      })
+      cellStart = i + 1
+    }
+  }
+  return cells
+}
+
+function isEscaped(text: string, index: number): boolean {
+  let count = 0
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) count++
+  return count % 2 === 1
+}
+
+function delimiterAlignment(cell: string): MarkdownTableAlignment | null {
+  const trimmed = cell.trim()
+  if (!/^:?-+:?$/.test(trimmed)) return null
+  const left = trimmed.startsWith(":")
+  const right = trimmed.endsWith(":")
+  if (left && right) return "center"
+  if (right) return "right"
+  if (left) return "left"
+  return "none"
+}
+
+function markdownTableAtPoint(text: string, point: number): MarkdownTable | null {
+  const lines = text.split("\n")
+  const line = text.slice(0, point).split("\n").length - 1
+  if (!lineHasTablePipe(lines[line] ?? "")) return null
+
+  let startLine = line
+  while (startLine > 0 && lineHasTablePipe(lines[startLine - 1] ?? "")) startLine--
+  let endLine = line
+  while (endLine + 1 < lines.length && lineHasTablePipe(lines[endLine + 1] ?? "")) endLine++
+
+  const indent = lines[startLine]?.match(/^\s*/)?.[0] ?? ""
+  const rows = lines.slice(startLine, endLine + 1).map((raw, i) => {
+    const cells = splitMarkdownTableCells(raw)
+    return {
+      line: startLine + i,
+      raw,
+      cells,
+      delimiter: cells.length > 0 && cells.every(cell => delimiterAlignment(cell.text) != null),
+    }
+  })
+  if (!rows.length || rows.some(row => row.cells.length === 0)) return null
+
+  const delimiter = rows.find(row => row.delimiter)
+  const columnCount = Math.max(...rows.map(row => row.cells.length), delimiter?.cells.length ?? 0)
+  const alignments: MarkdownTableAlignment[] = Array.from({ length: columnCount }, (_, i) =>
+    delimiterAlignment(delimiter?.cells[i]?.text ?? "") ?? "none")
+
+  return { startLine, endLine, startOffset: lineStartAt(text, startLine), indent, rows, alignments }
+}
+
+export function markdownInTable(buffer: BufferModel): boolean {
+  return markdownTableAtPoint(buffer.text, buffer.point) != null
+}
+
+function normalizedMarkdownTableRows(table: MarkdownTable, rows = table.rows): string[] {
+  const columnCount = Math.max(1, ...rows.map(row => row.cells.length), table.alignments.length)
+  const widths = Array.from({ length: columnCount }, (_, col) => {
+    const cellWidth = Math.max(0, ...rows
+      .filter(row => !row.delimiter)
+      .map(row => row.cells[col]?.text.length ?? 0))
+    return Math.max(3, cellWidth)
+  })
+
+  return rows.map(row => {
+    const parts = widths.map((width, col) => {
+      if (row.delimiter) return formatDelimiterCell(width, table.alignments[col] ?? "none")
+      const text = row.cells[col]?.text ?? ""
+      return ` ${text}${" ".repeat(width - text.length)} `
+    })
+    return `${table.indent}|${parts.join("|")}|`
+  })
+}
+
+function formatDelimiterCell(width: number, alignment: MarkdownTableAlignment): string {
+  const inner = Math.max(3, width)
+  if (alignment === "left") return ` :${"-".repeat(inner - 1)} `
+  if (alignment === "center") return ` :${"-".repeat(Math.max(1, inner - 2))}: `
+  if (alignment === "right") return ` ${"-".repeat(inner - 1)}: `
+  return ` ${"-".repeat(inner)} `
+}
+
+function replaceMarkdownTable(buffer: BufferModel, table: MarkdownTable, rows: MarkdownTableRow[], pointCell?: { row: number; col: number }): MarkdownTable {
+  const replacement = normalizedMarkdownTableRows(table, rows)
+  replaceLines(buffer, table.startLine, table.endLine, replacement)
+  if (pointCell) {
+    const line = Math.min(table.startLine + pointCell.row, table.startLine + replacement.length - 1)
+    const col = Math.max(0, pointCell.col)
+    const row = splitMarkdownTableCells(replacement[line - table.startLine] ?? "")
+    const cell = row[Math.min(col, Math.max(0, row.length - 1))]
+    buffer.point = lineStartAt(buffer.text, line) + (cell?.start ?? table.indent.length + 2)
+  } else {
+    buffer.point = Math.min(buffer.point, buffer.text.length)
+  }
+  return markdownTableAtPoint(buffer.text, buffer.point) ?? table
+}
+
+export function markdownTableAlign(buffer: BufferModel): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentMarkdownTableCell(table, buffer.point)
+  replaceMarkdownTable(buffer, table, table.rows, current ? { row: current.rowIndex, col: current.colIndex } : undefined)
+  return { changed: true, message: "Aligned table" }
+}
+
+function markdownTableColumnCount(table: MarkdownTable): number {
+  return Math.max(1, ...table.rows.map(row => row.cells.length), table.alignments.length)
+}
+
+function markdownTableEditableRows(table: MarkdownTable): MarkdownTableRow[] {
+  return table.rows.filter(row => !row.delimiter)
+}
+
+function makeMarkdownTableRow(table: MarkdownTable, rowIndex: number, cells: string[], delimiter = false): MarkdownTableRow {
+  return {
+    line: table.startLine + rowIndex,
+    raw: "",
+    delimiter,
+    cells: cells.map(text => ({ text, start: 0, end: text.length })),
+  }
+}
+
+function renumberMarkdownTableRows(table: MarkdownTable, rows: MarkdownTableRow[]): MarkdownTableRow[] {
+  return rows.map((row, i) => ({ ...row, line: table.startLine + i }))
+}
+
+export function markdownTableForwardCell(buffer: BufferModel): MarkdownEditResult {
+  let result = markdownTableAlign(buffer)
+  if (!result.changed) return result
+  let table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentMarkdownTableCell(table, buffer.point)
+  const columns = markdownTableColumnCount(table)
+  if (!current) return { changed: false, message: "No table cell at point" }
+
+  for (let row = current.rowIndex; row < table.rows.length; row++) {
+    const rowInfo = table.rows[row]!
+    if (rowInfo.delimiter) continue
+    const startCol = row === current.rowIndex ? current.colIndex + 1 : 0
+    if (startCol < columns) {
+      replaceMarkdownTable(buffer, table, table.rows, { row, col: startCol })
+      return { changed: true, message: "Moved to next table cell" }
+    }
+  }
+
+  const insertAt = table.rows.length
+  const empty = makeMarkdownTableRow(table, insertAt, Array.from({ length: columns }, () => ""))
+  const rows = renumberMarkdownTableRows(table, [...table.rows, empty])
+  table = replaceMarkdownTable(buffer, table, rows, { row: insertAt, col: 0 })
+  result = table ? { changed: true, message: "Inserted table row" } : result
+  return result
+}
+
+export function markdownTableBackwardCell(buffer: BufferModel): MarkdownEditResult {
+  const result = markdownTableAlign(buffer)
+  if (!result.changed) return result
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentMarkdownTableCell(table, buffer.point)
+  const columns = markdownTableColumnCount(table)
+  if (!current) return { changed: false, message: "No table cell at point" }
+
+  for (let row = current.rowIndex; row >= 0; row--) {
+    const rowInfo = table.rows[row]!
+    if (rowInfo.delimiter) continue
+    const startCol = row === current.rowIndex ? current.colIndex - 1 : columns - 1
+    if (startCol >= 0) {
+      replaceMarkdownTable(buffer, table, table.rows, { row, col: startCol })
+      return { changed: true, message: "Moved to previous table cell" }
+    }
+  }
+  return { changed: false, message: "No previous table cell" }
+}
+
+function markdownTableCurrentRowIndex(table: MarkdownTable, point: number): number {
+  return currentMarkdownTableCell(table, point)?.rowIndex ?? 0
+}
+
+function markdownTableCurrentColumnIndex(table: MarkdownTable, point: number): number {
+  return currentMarkdownTableCell(table, point)?.colIndex ?? 0
+}
+
+export function markdownInsertTable(buffer: BufferModel, rows: number, columns: number): MarkdownEditResult {
+  const rowCount = Math.max(1, Math.floor(rows))
+  const columnCount = Math.max(1, Math.floor(columns))
+  const line = buffer.lineBoundsAt()
+  const indent = line.text.match(/^\s*/)?.[0] ?? ""
+  const table: MarkdownTable = {
+    startLine: buffer.lineAt(buffer.point),
+    endLine: buffer.lineAt(buffer.point) + rowCount,
+    startOffset: line.start,
+    indent,
+    alignments: Array.from({ length: columnCount }, () => "none"),
+    rows: [],
+  }
+  const header = makeMarkdownTableRow(table, 0, Array.from({ length: columnCount }, () => ""))
+  const delimiter = makeMarkdownTableRow(table, 1, Array.from({ length: columnCount }, () => "---"), true)
+  const body = Array.from({ length: Math.max(0, rowCount - 1) }, (_, i) =>
+    makeMarkdownTableRow(table, i + 2, Array.from({ length: columnCount }, () => "")))
+  table.rows = [header, delimiter, ...body]
+  const text = normalizedMarkdownTableRows(table).join("\n")
+  const insertion = line.text.trim() ? `${text}\n` : text
+  buffer.replaceRange(line.start, line.text.trim() ? line.start : line.end, insertion)
+  buffer.point = line.start + indent.length + 2
+  return { changed: true, message: "Inserted table" }
+}
+
+export function markdownTableInsertRow(buffer: BufferModel): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const row = markdownTableCurrentRowIndex(table, buffer.point)
+  const columns = markdownTableColumnCount(table)
+  const insertAt = table.rows[row]?.delimiter ? row + 1 : row
+  const empty = makeMarkdownTableRow(table, insertAt, Array.from({ length: columns }, () => ""))
+  const rows = renumberMarkdownTableRows(table, [...table.rows.slice(0, insertAt), empty, ...table.rows.slice(insertAt)])
+  replaceMarkdownTable(buffer, table, rows, { row: insertAt, col: 0 })
+  return { changed: true, message: "Inserted table row" }
+}
+
+export function markdownTableDeleteRow(buffer: BufferModel): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const row = markdownTableCurrentRowIndex(table, buffer.point)
+  if (table.rows[row]?.delimiter) return { changed: false, message: "Cannot delete delimiter row" }
+  if (markdownTableEditableRows(table).length <= 1) return { changed: false, message: "Cannot delete only table row" }
+  const rows = renumberMarkdownTableRows(table, table.rows.filter((_, i) => i !== row))
+  replaceMarkdownTable(buffer, table, rows, { row: Math.min(row, rows.length - 1), col: 0 })
+  return { changed: true, message: "Deleted table row" }
+}
+
+export function markdownTableInsertColumn(buffer: BufferModel): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const col = markdownTableCurrentColumnIndex(table, buffer.point)
+  const columns = markdownTableColumnCount(table)
+  const rows = table.rows.map((row, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_, i) => row.cells[i]?.text ?? "")
+    cells.splice(col, 0, row.delimiter ? "---" : "")
+    return makeMarkdownTableRow(table, rowIndex, cells, row.delimiter)
+  })
+  table.alignments.splice(col, 0, "none")
+  replaceMarkdownTable(buffer, table, rows, { row: markdownTableCurrentRowIndex(table, buffer.point), col })
+  return { changed: true, message: "Inserted table column" }
+}
+
+export function markdownTableDeleteColumn(buffer: BufferModel): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const columns = markdownTableColumnCount(table)
+  if (columns <= 1) return { changed: false, message: "Cannot delete only table column" }
+  const col = markdownTableCurrentColumnIndex(table, buffer.point)
+  const rows = table.rows.map((row, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_, i) => row.cells[i]?.text ?? "")
+    cells.splice(col, 1)
+    return makeMarkdownTableRow(table, rowIndex, cells, row.delimiter)
+  })
+  table.alignments.splice(col, 1)
+  replaceMarkdownTable(buffer, table, rows, { row: markdownTableCurrentRowIndex(table, buffer.point), col: Math.min(col, columns - 2) })
+  return { changed: true, message: "Deleted table column" }
+}
+
+export function markdownTableMoveRow(buffer: BufferModel, direction: -1 | 1): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const row = markdownTableCurrentRowIndex(table, buffer.point)
+  if (table.rows[row]?.delimiter) return { changed: false, message: "Cannot move delimiter row" }
+  let target = row + direction
+  while (target >= 0 && target < table.rows.length && table.rows[target]?.delimiter) target += direction
+  if (target < 0 || target >= table.rows.length) return { changed: false, message: direction < 0 ? "No previous table row" : "No next table row" }
+  const rows = [...table.rows]
+  const [moved] = rows.splice(row, 1)
+  rows.splice(target, 0, moved!)
+  replaceMarkdownTable(buffer, table, renumberMarkdownTableRows(table, rows), { row: target, col: markdownTableCurrentColumnIndex(table, buffer.point) })
+  return { changed: true, message: direction < 0 ? "Moved table row up" : "Moved table row down" }
+}
+
+export function markdownTableMoveColumn(buffer: BufferModel, direction: -1 | 1): MarkdownEditResult {
+  const table = markdownTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const columns = markdownTableColumnCount(table)
+  const col = markdownTableCurrentColumnIndex(table, buffer.point)
+  const target = col + direction
+  if (target < 0 || target >= columns) return { changed: false, message: direction < 0 ? "No previous table column" : "No next table column" }
+  const rows = table.rows.map((row, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_, i) => row.cells[i]?.text ?? "")
+    const [moved] = cells.splice(col, 1)
+    cells.splice(target, 0, moved ?? "")
+    return makeMarkdownTableRow(table, rowIndex, cells, row.delimiter)
+  })
+  const [alignment] = table.alignments.splice(col, 1)
+  table.alignments.splice(target, 0, alignment ?? "none")
+  replaceMarkdownTable(buffer, table, rows, { row: markdownTableCurrentRowIndex(table, buffer.point), col: target })
+  return { changed: true, message: direction < 0 ? "Moved table column left" : "Moved table column right" }
+}
+
+function currentMarkdownTableCell(table: MarkdownTable, point: number): { rowIndex: number; colIndex: number } | null {
+  const lineIndex = table.rows.findIndex(row => {
+    const start = tableLineStart(table, row.line)
+    return point >= start && point <= start + row.raw.length
+  })
+  if (lineIndex < 0) return null
+  const row = table.rows[lineIndex]!
+  const lineStart = tableLineStart(table, row.line)
+  const col = point - lineStart
+  const idx = row.cells.findIndex(cell => col <= cell.end)
+  return { rowIndex: lineIndex, colIndex: idx < 0 ? Math.max(0, row.cells.length - 1) : idx }
+}
+
+function tableLineStart(table: MarkdownTable, line: number): number {
+  const prefixRows = table.rows.slice(0, Math.max(0, line - table.startLine))
+  return table.startOffset + prefixRows.reduce((sum, row) => sum + row.raw.length + 1, 0)
 }
 
 function markdownPromoteOrDemote(buffer: BufferModel, delta: -1 | 1): MarkdownEditResult {

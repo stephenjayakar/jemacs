@@ -102,6 +102,7 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("M-down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
   expect(editor.keymaps.lookup("C-c left")).toMatchObject({ status: "matched", command: "markdown-promote" })
   expect(editor.keymaps.lookup("C-c down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
+  expect(editor.keymaps.lookup("C-c C-s t")).toMatchObject({ status: "matched", command: "markdown-insert-table" })
   expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
 })
@@ -148,6 +149,134 @@ describe("markdownParseHeadings", () => {
       [2, "Title"],
       [2, "Two"],
     ])
+  })
+})
+
+describe("markdown pipe tables", () => {
+  test("markdown-table-align normalizes widths, delimiter markers, and indentation", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "  Name|Age|City\n  :--|--:|:-:\n  Ann|9|New York\n  A\\|B|10|LA\n", "markdown")
+    buffer.point = buffer.text.indexOf("Ann")
+
+    await editor.run("markdown-table-align")
+
+    expect(buffer.text).toBe([
+      "  | Name | Age | City     |",
+      "  | :--- | --: | :------: |",
+      "  | Ann  | 9   | New York |",
+      "  | A\\|B | 10  | LA       |",
+      "",
+    ].join("\n"))
+    expect(buffer.text.slice(buffer.point, buffer.point + 3)).toBe("Ann")
+  })
+
+  test("forward and backward cell movement align first and skip delimiter rows", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "|Name|Age|\n|---|---|\n|Ann|9|\n", "markdown")
+    buffer.point = buffer.text.indexOf("Name")
+
+    await editor.run("markdown-table-forward-cell")
+    expect(buffer.text).toBe("| Name | Age |\n| ---- | --- |\n| Ann  | 9   |\n")
+    expect(buffer.text.slice(buffer.point, buffer.point + 3)).toBe("Age")
+
+    await editor.run("markdown-table-forward-cell")
+    expect(buffer.text.slice(buffer.point, buffer.point + 3)).toBe("Ann")
+
+    await editor.run("markdown-table-backward-cell")
+    expect(buffer.text.slice(buffer.point, buffer.point + 3)).toBe("Age")
+  })
+
+  test("TAB on the last table cell creates a new empty row", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "| A | B |\n| --- | --- |\n| 1 | 2 |\n", "markdown")
+    buffer.point = buffer.text.indexOf("2")
+
+    await keySeq(editor, "TAB")
+
+    expect(buffer.text).toBe("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n|     |     |\n")
+    expect(buffer.lineCol().line).toBe(4)
+    expect(buffer.lineCol().col).toBe(3)
+  })
+
+  test("markdown-insert-table prompts for rows and columns", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "", "markdown")
+    const prompts: string[] = []
+    const answers = ["2", "3"]
+    editor.prompt = async prompt => {
+      prompts.push(prompt)
+      return answers.shift() ?? null
+    }
+
+    await editor.run("markdown-insert-table")
+
+    expect(prompts).toEqual(["Rows: ", "Columns: "])
+    expect(buffer.text).toBe("|     |     |     |\n| --- | --- | --- |\n|     |     |     |")
+  })
+
+  test("inserts and deletes table rows", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n", "markdown")
+    buffer.point = buffer.text.indexOf("3")
+
+    await editor.run("markdown-table-insert-row")
+    expect(buffer.text).toBe("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n|     |     |\n| 3   | 4   |\n")
+
+    await editor.run("markdown-table-delete-row")
+    expect(buffer.text).toBe("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n| 3   | 4   |\n")
+  })
+
+  test("inserts and deletes table columns", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "| A | B |\n| --- | --- |\n| 1 | 2 |\n", "markdown")
+    buffer.point = buffer.text.indexOf("B")
+
+    await editor.run("markdown-table-insert-column")
+    expect(buffer.text).toBe("| A   |     | B   |\n| --- | --- | --- |\n| 1   |     | 2   |\n")
+
+    await editor.run("markdown-table-delete-column")
+    expect(buffer.text).toBe("| A   | B   |\n| --- | --- |\n| 1   | 2   |\n")
+  })
+
+  test("moves table rows and columns", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("table.md", "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n", "markdown")
+    buffer.point = buffer.text.indexOf("3")
+
+    await editor.run("markdown-table-move-row-up")
+    expect(buffer.text).toBe("| A   | B   |\n| --- | --- |\n| 3   | 4   |\n| 1   | 2   |\n")
+
+    buffer.point = buffer.text.indexOf("B")
+    await editor.run("markdown-table-move-column-left")
+    expect(buffer.text).toBe("| B   | A   |\n| --- | --- |\n| 4   | 3   |\n| 2   | 1   |\n")
+  })
+
+  test("DWIM arrows move table rows and columns but keep heading behavior outside tables", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "# A\na\n# B\nb\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n", "markdown")
+    buffer.point = buffer.text.indexOf("3")
+
+    await keySeq(editor, "M-up")
+    expect(buffer.text).toContain("| 3   | 4   |\n| 1   | 2   |")
+
+    // indexOf("B") alone would land on the "# B" heading, not the table cell.
+    buffer.point = buffer.text.indexOf("B", buffer.text.indexOf("|"))
+    await keySeq(editor, "C-c", "left")
+    expect(buffer.text).toContain("| B   | A   |")
+
+    buffer.point = buffer.text.indexOf("# B")
+    await keySeq(editor, "M-up")
+    // Heading B's subtree includes the table below it, so both move above A.
+    expect(buffer.text.startsWith("# B\nb\n")).toBe(true)
+    expect(buffer.text.endsWith("# A\na\n")).toBe(true)
   })
 })
 
