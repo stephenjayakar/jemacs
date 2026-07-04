@@ -1,13 +1,23 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { setPlatformRuntime } from "../../src/platform/runtime"
+import { setCustom } from "../../src/runtime/custom"
 import {
   install,
   orgParseHeadlines,
   orgHeadlineAtPoint,
   orgSubtreeEndLine,
   orgChildren,
+  orgFormatTimestamp,
+  orgParseDateInput,
+  orgShiftTimestampText,
+  orgSetPlanningLineText,
+  orgScanAgenda,
+  orgAgendaTargetForLine,
   orgFontLock,
   orgVisibleSpans,
   orgDisplayFilter,
@@ -40,6 +50,13 @@ function setup(text: string, point = 0) {
 function folded(buffer: ReturnType<typeof setup>["buffer"]): FoldRange[] {
   return (buffer.locals.get(ORG_FOLDED_LOCAL) as FoldRange[] | undefined) ?? []
 }
+
+const tempDirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
+  setCustom("org-agenda-files", [])
+})
 
 describe("orgParseHeadlines", () => {
   test("parses level, keyword, title and offsets", () => {
@@ -177,6 +194,137 @@ describe("org-todo (C-c C-t)", () => {
     const { editor, buffer } = setup("* h\nbody\n", 4)
     await editor.run("org-todo")
     expect(buffer.text).toBe("* h\nbody\n")
+  })
+})
+
+describe("org timestamps", () => {
+  test("formats active and inactive timestamps with computed day names", () => {
+    const date = orgParseDateInput("2026-07-04")!
+    expect(orgFormatTimestamp(date, true)).toBe("<2026-07-04 Sat>")
+    expect(orgFormatTimestamp(date, false)).toBe("[2026-07-04 Sat]")
+    expect(orgParseDateInput("", new Date(2026, 6, 5))?.getDay()).toBe(0)
+    expect(orgParseDateInput("2026-02-31")).toBeNull()
+  })
+
+  test("org-time-stamp and org-time-stamp-inactive insert prompted dates", async () => {
+    const { editor, buffer } = setup("")
+
+    await editor.run("org-time-stamp", ["2026-07-04"])
+    buffer.insert(" ")
+    await editor.run("org-time-stamp-inactive", ["2026-07-05"])
+
+    expect(buffer.text).toBe("<2026-07-04 Sat> [2026-07-05 Sun]")
+  })
+
+  test("shifts timestamps by one day preserving active/inactive delimiters", () => {
+    const shifted = orgShiftTimestampText("a <2026-07-04 Sat> b", 5, 1)
+    expect(shifted.text).toBe("a <2026-07-05 Sun> b")
+    expect(orgShiftTimestampText("a [2026-07-05 Sun] b", 5, -1).text).toBe("a [2026-07-04 Sat] b")
+    expect(orgShiftTimestampText("no timestamp", 0, 1).changed).toBe(false)
+  })
+
+  test("S-left/S-right shift timestamps but fall back to heading promote/demote", async () => {
+    const { editor, buffer } = setup("* A\n<2026-07-04 Sat>\n", "* A\n".length + 2)
+
+    await keySeq(editor, "S-right")
+    expect(buffer.text).toBe("* A\n<2026-07-05 Sun>\n")
+    await keySeq(editor, "S-left")
+    expect(buffer.text).toBe("* A\n<2026-07-04 Sat>\n")
+
+    buffer.point = 0
+    await keySeq(editor, "S-right")
+    expect(buffer.text).toBe("** A\n<2026-07-04 Sat>\n")
+  })
+})
+
+describe("org scheduling and deadlines", () => {
+  test("pure helper inserts and replaces planning lines under current heading", () => {
+    const inserted = orgSetPlanningLineText("* Task\nbody\n", 0, "SCHEDULED", "<2026-07-04 Sat>")
+    expect(inserted.text).toBe("* Task\nSCHEDULED: <2026-07-04 Sat>\nbody\n")
+
+    const replaced = orgSetPlanningLineText(inserted.text, 0, "SCHEDULED", "<2026-07-05 Sun>")
+    expect(replaced.text).toBe("* Task\nSCHEDULED: <2026-07-05 Sun>\nbody\n")
+  })
+
+  test("org-schedule and org-deadline commands insert/update planning lines", async () => {
+    const { editor, buffer } = setup("* Task\nbody\n", 0)
+
+    await editor.run("org-schedule", ["2026-07-04"])
+    expect(buffer.text).toBe("* Task\nSCHEDULED: <2026-07-04 Sat>\nbody\n")
+
+    await editor.run("org-deadline", ["2026-07-05"])
+    expect(buffer.text).toBe("* Task\nDEADLINE: <2026-07-05 Sun>\nSCHEDULED: <2026-07-04 Sat>\nbody\n")
+
+    await editor.run("org-schedule", ["2026-07-06"])
+    expect(buffer.text).toBe("* Task\nDEADLINE: <2026-07-05 Sun>\nSCHEDULED: <2026-07-06 Mon>\nbody\n")
+  })
+
+  test("C-c C-s and C-c C-d dispatch via org-mode keymap", async () => {
+    const { editor, buffer } = setup("* Task\n", 0)
+    const answers = ["2026-07-04", "2026-07-05"]
+    editor.prompt = async () => answers.shift() ?? null
+
+    await keySeq(editor, "C-c", "C-s")
+    await keySeq(editor, "C-c", "C-d")
+
+    expect(buffer.text).toContain("SCHEDULED: <2026-07-04 Sat>")
+    expect(buffer.text).toContain("DEADLINE: <2026-07-05 Sun>")
+  })
+})
+
+describe("org agenda", () => {
+  test("scanner groups overdue, today, upcoming, and all TODOs from fixture strings", () => {
+    const agenda = orgScanAgenda([{
+      file: "/tmp/a.org",
+      text: [
+        "* TODO Overdue",
+        "SCHEDULED: <2026-07-03 Fri>",
+        "* TODO Today",
+        "DEADLINE: <2026-07-04 Sat>",
+        "* TODO Soon",
+        "SCHEDULED: <2026-07-08 Wed>",
+        "* TODO Later",
+        "SCHEDULED: <2026-07-20 Mon>",
+        "* DONE Done",
+        "SCHEDULED: <2026-07-04 Sat>",
+        "",
+      ].join("\n"),
+    }], new Date(2026, 6, 4))
+
+    expect(agenda.overdue.map(item => item.heading)).toEqual(["Overdue"])
+    expect(agenda.today.map(item => item.heading)).toEqual(["Today", "Done"])
+    expect(agenda.upcoming.map(item => item.heading)).toEqual(["Soon"])
+    expect(agenda.todos.map(item => item.heading)).toEqual(["Overdue", "Today", "Soon", "Later"])
+  })
+
+  test("RET target resolution uses stored agenda file and line", () => {
+    const targets = [null, { file: "/tmp/a.org", line: 3 }, null]
+    expect(orgAgendaTargetForLine(targets, 2)).toEqual({ file: "/tmp/a.org", line: 3 })
+    expect(orgAgendaTargetForLine(targets, 1)).toBeNull()
+  })
+
+  test("org-agenda scans configured files and RET jumps to the heading", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-org-agenda-"))
+    tempDirs.push(dir)
+    const nested = join(dir, "notes")
+    await mkdir(nested)
+    const file = join(nested, "tasks.org")
+    await writeFile(file, "* TODO Soon\nSCHEDULED: <2026-07-04 Sat>\n")
+
+    const editor = makeEditor()
+    install(editor)
+    setCustom("org-agenda-files", dir)
+
+    await editor.run("org-agenda")
+    const agenda = editor.currentBuffer
+    expect(agenda.name).toBe("*Org Agenda*")
+    expect(agenda.text).toContain("tasks.org:1: TODO Soon")
+
+    agenda.point = agenda.text.indexOf("tasks.org")
+    await keySeq(editor, "RET")
+
+    expect(editor.currentBuffer.path).toBe(file)
+    expect(editor.currentBuffer.point).toBe(0)
   })
 })
 

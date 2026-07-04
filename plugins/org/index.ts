@@ -1,9 +1,12 @@
+import { readdir, readFile, stat } from "node:fs/promises"
+import { basename, join, resolve } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
+import { defcustom, getCustom } from "../../src/runtime/custom"
 
 export const ORG_FOLDED_LOCAL = "org-folded"
 
@@ -12,6 +15,12 @@ const HEADLINE_RE = /^(\*+) (TODO|DONE)? ?(.*)$/
 const TODO_CYCLE = ["TODO", "DONE", null] as const
 const ORG_TABLE_SEPARATOR_RE = /^\s*\|[-+]+\|\s*$/
 const SAFE_URL_SCHEME = /^(https?|mailto):/i
+const ORG_TIMESTAMP_RE = /([<[])(\d{4})-(\d{2})-(\d{2})\s+([A-Za-z]{3})([>\]])/g
+const ORG_PLANNING_RE = /^\s*(SCHEDULED|DEADLINE):\s+([<[]\d{4}-\d{2}-\d{2}\s+[A-Za-z]{3}[>\]])/
+const ORG_AGENDA_TARGETS_LOCAL = "org-agenda-targets"
+
+defcustom("org-agenda-files", "sexp", [] as string | string[],
+  "List of Org files or directories scanned by `org-agenda'.", "org")
 
 export type OrgHeadline = {
   /** 0-based line index. */
@@ -27,6 +36,25 @@ export type OrgHeadline = {
 
 /** 0-indexed [startLine, endLine] inclusive ranges that are hidden. */
 export type FoldRange = [number, number]
+export type OrgTimestamp = { start: number; end: number; date: Date; active: boolean }
+export type OrgPlanningKeyword = "SCHEDULED" | "DEADLINE"
+export type OrgAgendaDoc = { file: string; text: string }
+export type OrgAgendaItem = {
+  file: string
+  line: number
+  heading: string
+  todo: boolean
+  kind?: OrgPlanningKeyword
+  date?: string
+  daysFromToday?: number
+}
+export type OrgAgenda = {
+  overdue: OrgAgendaItem[]
+  today: OrgAgendaItem[]
+  upcoming: OrgAgendaItem[]
+  todos: OrgAgendaItem[]
+}
+export type OrgAgendaTarget = { file: string; line: number }
 
 type OrgEditResult = { changed: boolean; message: string }
 type OrgTableCell = { text: string; start: number; end: number }
@@ -54,6 +82,69 @@ export function orgParseHeadlines(text: string): OrgHeadline[] {
     offset += line.length + 1
   }
   return out
+}
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+function dateOnly(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+function ymd(d: Date): string {
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
+export function orgParseDateInput(input: string, today = new Date()): Date | null {
+  const trimmed = input.trim()
+  if (!trimmed) return dateOnly(today)
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  const date = new Date(year, month - 1, day)
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null
+  return date
+}
+
+export function orgFormatTimestamp(date: Date, active = true): string {
+  const d = dateOnly(date)
+  const open = active ? "<" : "["
+  const close = active ? ">" : "]"
+  return `${open}${ymd(d)} ${DAY_NAMES[d.getDay()]}${close}`
+}
+
+export function orgTimestamps(text: string): OrgTimestamp[] {
+  const out: OrgTimestamp[] = []
+  ORG_TIMESTAMP_RE.lastIndex = 0
+  for (let match; (match = ORG_TIMESTAMP_RE.exec(text));) {
+    const date = orgParseDateInput(`${match[2]}-${match[3]}-${match[4]}`)
+    const close = match[6]!
+    if (!date) continue
+    if ((match[1] === "<" && close !== ">") || (match[1] === "[" && close !== "]")) continue
+    out.push({ start: match.index, end: match.index + match[0]!.length, date, active: match[1] === "<" })
+  }
+  return out
+}
+
+export function orgTimestampAtPoint(text: string, point: number): OrgTimestamp | null {
+  return orgTimestamps(text).find(ts => point >= ts.start && point <= ts.end) ?? null
+}
+
+export function orgShiftTimestampText(text: string, point: number, days: number): { text: string; point: number; changed: boolean } {
+  const ts = orgTimestampAtPoint(text, point)
+  if (!ts) return { text, point, changed: false }
+  const shifted = new Date(ts.date)
+  shifted.setDate(shifted.getDate() + days)
+  const replacement = orgFormatTimestamp(shifted, ts.active)
+  return {
+    text: text.slice(0, ts.start) + replacement + text.slice(ts.end),
+    point: ts.start + Math.min(point - ts.start, replacement.length),
+    changed: true,
+  }
 }
 
 /** Headline whose line contains `point`, or null. */
@@ -279,6 +370,118 @@ function replaceLines(buffer: BufferModel, startLine: number, endLine: number, r
   const lines = buffer.text.split("\n")
   lines.splice(startLine, endLine - startLine + 1, ...replacement)
   buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+}
+
+function pointAtLineCol(text: string, line: number, col = 1): number {
+  const lines = text.split("\n")
+  const target = Math.max(0, Math.min(line - 1, lines.length - 1))
+  let offset = 0
+  for (let i = 0; i < target; i++) offset += lines[i]!.length + 1
+  return offset + Math.max(0, Math.min(col - 1, lines[target]?.length ?? 0))
+}
+
+function currentHeading(buffer: BufferModel): OrgHeadline | null {
+  const headlines = orgParseHeadlines(buffer.text)
+  const line = buffer.lineAt(buffer.point)
+  return [...headlines].reverse().find(h => h.line <= line) ?? null
+}
+
+export function orgSetPlanningLineText(
+  text: string,
+  point: number,
+  keyword: OrgPlanningKeyword,
+  timestamp: string,
+): { text: string; point: number; changed: boolean } {
+  const headings = orgParseHeadlines(text)
+  const currentLine = text.slice(0, point).split("\n").length - 1
+  const h = [...headings].reverse().find(headline => headline.line <= currentLine)
+  if (!h) return { text, point, changed: false }
+  const lines = text.split("\n")
+  const next = headings.find(headline => headline.line > h.line && headline.level <= h.level)
+  const endLine = next ? next.line - 1 : lines.length - 1
+  const replacement = `${keyword}: ${timestamp}`
+  let targetLine: number | null = null
+  for (let line = h.line + 1; line <= endLine; line++) {
+    const planning = ORG_PLANNING_RE.exec(lines[line] ?? "")
+    if (!planning) {
+      if ((lines[line] ?? "").trim() !== "") break
+      continue
+    }
+    if (planning[1] === keyword) { targetLine = line; break }
+  }
+  const out = [...lines]
+  if (targetLine == null) {
+    targetLine = h.line + 1
+    out.splice(targetLine, 0, replacement)
+  } else {
+    out[targetLine] = replacement
+  }
+  return { text: out.join("\n"), point: lineStartAt(out.join("\n"), targetLine), changed: true }
+}
+
+function orgSetPlanningLine(buffer: BufferModel, keyword: OrgPlanningKeyword, timestamp: string): boolean {
+  const result = orgSetPlanningLineText(buffer.text, buffer.point, keyword, timestamp)
+  if (!result.changed) return false
+  buffer.replaceRange(0, buffer.text.length, result.text)
+  buffer.point = result.point
+  return true
+}
+
+function parsePlanningTimestamp(line: string): { keyword: OrgPlanningKeyword; date: Date; stamp: string } | null {
+  const match = ORG_PLANNING_RE.exec(line)
+  if (!match) return null
+  const ts = orgTimestamps(match[2]!)
+  const date = ts[0]?.date
+  if (!date) return null
+  return { keyword: match[1] as OrgPlanningKeyword, date, stamp: match[2]! }
+}
+
+export function orgScanAgenda(docs: OrgAgendaDoc[], today = new Date()): OrgAgenda {
+  const overdue: OrgAgendaItem[] = []
+  const todayItems: OrgAgendaItem[] = []
+  const upcoming: OrgAgendaItem[] = []
+  const todos: OrgAgendaItem[] = []
+  const todayDate = dateOnly(today)
+  const todayTime = todayDate.getTime()
+  const horizon = 7
+
+  for (const doc of docs) {
+    const lines = doc.text.split("\n")
+    const headlines = orgParseHeadlines(doc.text)
+    for (let i = 0; i < headlines.length; i++) {
+      const h = headlines[i]!
+      const next = headlines.slice(i + 1).find(candidate => candidate.level <= h.level)
+      const endLine = next ? next.line - 1 : lines.length - 1
+      const itemBase = { file: doc.file, line: h.line + 1, heading: h.title, todo: h.keyword === "TODO" }
+      if (h.keyword === "TODO") todos.push(itemBase)
+      for (let line = h.line + 1; line <= endLine; line++) {
+        const planning = parsePlanningTimestamp(lines[line] ?? "")
+        if (!planning) {
+          if ((lines[line] ?? "").trim() !== "") break
+          continue
+        }
+        const daysFromToday = Math.round((dateOnly(planning.date).getTime() - todayTime) / 86_400_000)
+        if (daysFromToday > horizon) continue
+        const item: OrgAgendaItem = {
+          ...itemBase,
+          kind: planning.keyword,
+          date: ymd(planning.date),
+          daysFromToday,
+        }
+        if (daysFromToday < 0) overdue.push(item)
+        else if (daysFromToday === 0) todayItems.push(item)
+        else upcoming.push(item)
+      }
+    }
+  }
+
+  const byDate = (a: OrgAgendaItem, b: OrgAgendaItem) =>
+    (a.daysFromToday ?? 0) - (b.daysFromToday ?? 0) || a.file.localeCompare(b.file) || a.line - b.line
+  overdue.sort(byDate)
+  todayItems.sort(byDate)
+  upcoming.sort(byDate)
+  todos.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)
+  return { overdue, today: todayItems, upcoming, todos }
 }
 
 function orgTableLine(line: string): boolean {
@@ -663,14 +866,114 @@ function orgParseHeadlinesInRange(text: string, range?: FontLockRange): OrgHeadl
   return out
 }
 
+async function promptOrgTimestamp(editor: Editor, active: boolean, args: unknown[]): Promise<string | null> {
+  const defaultDate = ymd(dateOnly(new Date()))
+  const input = typeof args[0] === "string"
+    ? args[0]
+    : await editor.prompt("Date (YYYY-MM-DD, RET for today): ", defaultDate, active ? "org-time-stamp" : "org-time-stamp-inactive")
+  if (input == null) return null
+  const date = orgParseDateInput(input, new Date())
+  if (!date) {
+    editor.message("Invalid date")
+    return null
+  }
+  return orgFormatTimestamp(date, active)
+}
+
+async function orgAgendaFilesFromCustom(): Promise<string[]> {
+  const configured = getCustom<string | string[]>("org-agenda-files") ?? []
+  const entries = Array.isArray(configured) ? configured : configured ? [configured] : []
+  const out: string[] = []
+  async function visit(path: string): Promise<void> {
+    const full = resolve(path)
+    const st = await stat(full).catch(() => null)
+    if (!st) return
+    if (st.isDirectory()) {
+      const entries = await readdir(full, { withFileTypes: true }).catch(() => [])
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue
+        await visit(join(full, entry.name))
+      }
+      return
+    }
+    if (st.isFile() && /\.org$/i.test(full)) out.push(full)
+  }
+  for (const entry of entries) await visit(entry)
+  return [...new Set(out)].sort((a, b) => a.localeCompare(b))
+}
+
+async function readOrgAgendaDocs(files: string[]): Promise<OrgAgendaDoc[]> {
+  const docs: OrgAgendaDoc[] = []
+  for (const file of files) {
+    const text = await readFile(file, "utf8").catch(() => null)
+    if (text != null) docs.push({ file, text })
+  }
+  return docs
+}
+
+function agendaLine(item: OrgAgendaItem): string {
+  const prefix = item.kind && item.date ? `${item.kind} ${item.date} ` : ""
+  const todo = item.todo ? "TODO " : ""
+  return `${prefix}${basename(item.file)}:${item.line}: ${todo}${item.heading}`
+}
+
+function renderOrgAgenda(agenda: OrgAgenda): { text: string; targets: Array<OrgAgendaTarget | null> } {
+  const lines: string[] = []
+  const targets: Array<OrgAgendaTarget | null> = []
+  const addLine = (line: string, target: OrgAgendaTarget | null = null): void => {
+    lines.push(line)
+    targets.push(target)
+  }
+  const addSection = (title: string, items: OrgAgendaItem[]): void => {
+    addLine(title)
+    if (!items.length) addLine("  (none)")
+    for (const item of items) addLine(`  ${agendaLine(item)}`, { file: item.file, line: item.line })
+    addLine("")
+  }
+  addSection("Overdue", agenda.overdue)
+  addSection("Today", agenda.today)
+  addSection("Upcoming", agenda.upcoming)
+  addSection("All TODOs", agenda.todos)
+  return { text: lines.join("\n") + "\n", targets }
+}
+
+export function orgAgendaTargetForLine(targets: Array<OrgAgendaTarget | null>, line: number): OrgAgendaTarget | null {
+  return targets[line - 1] ?? null
+}
+
+async function showOrgAgenda(editor: Editor): Promise<BufferModel | null> {
+  const files = await orgAgendaFilesFromCustom()
+  const docs = await readOrgAgendaDocs(files)
+  const rendered = renderOrgAgenda(orgScanAgenda(docs))
+  const buffer = editor.scratch("*Org Agenda*", rendered.text, "org-agenda-mode")
+  buffer.readOnly = true
+  buffer.locals.set(ORG_AGENDA_TARGETS_LOCAL, rendered.targets)
+  editor.switchToBuffer(buffer.id)
+  editor.message(`${docs.length} agenda file${docs.length === 1 ? "" : "s"}`)
+  return buffer
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  const agendaMap = new Keymap("org-agenda-mode-map")
+  agendaMap.bind("enter", "org-agenda-goto")
+  agendaMap.bind("return", "org-agenda-goto")
+  agendaMap.bind("C-m", "org-agenda-goto")
+  agendaMap.bind("RET", "org-agenda-goto")
+  defineMode({ name: "org-agenda-mode", parent: "text", keymap: agendaMap })
+
   const keymap = new Keymap("org-mode-map")
   keymap.bind("tab", "org-cycle")
   keymap.bind("S-tab", "org-table-previous-field")
+  keymap.bind("S-left", "org-shiftleft")
+  keymap.bind("S-right", "org-shiftright")
   keymap.bind("|", "org-self-insert-pipe")
   keymap.bind("return", "org-return")
   keymap.bind("enter", "org-return")
   keymap.bind("C-m", "org-return")
+  keymap.bind("C-c .", "org-time-stamp")
+  keymap.bind("C-c !", "org-time-stamp-inactive")
+  keymap.bind("C-c C-s", "org-schedule")
+  keymap.bind("C-c C-d", "org-deadline")
   keymap.bind("C-c C-c", "org-ctrl-c-ctrl-c")
   keymap.bind("C-c |", "org-table-create-or-convert-from-region")
   keymap.bind("C-c C-l", "org-insert-link")
@@ -723,6 +1026,52 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     await editor.run("newline")
   }, "RET in Org: move down in tables, otherwise insert a newline.")
+
+  editor.command("org-time-stamp", async ({ editor, buffer, args }) => {
+    const timestamp = await promptOrgTimestamp(editor, true, args)
+    if (timestamp) buffer.insert(timestamp)
+  }, "Prompt for a date and insert an active Org timestamp.")
+
+  editor.command("org-time-stamp-inactive", async ({ editor, buffer, args }) => {
+    const timestamp = await promptOrgTimestamp(editor, false, args)
+    if (timestamp) buffer.insert(timestamp)
+  }, "Prompt for a date and insert an inactive Org timestamp.")
+
+  editor.command("org-shiftleft", ({ editor, buffer }) => {
+    const shifted = orgShiftTimestampText(buffer.text, buffer.point, -1)
+    if (shifted.changed) {
+      buffer.replaceRange(0, buffer.text.length, shifted.text)
+      buffer.point = shifted.point
+      editor.message("Shifted timestamp")
+      return
+    }
+    shiftLevel(buffer, -1)
+  }, "On a timestamp, shift it one day earlier; otherwise promote the heading.")
+
+  editor.command("org-shiftright", ({ editor, buffer }) => {
+    const shifted = orgShiftTimestampText(buffer.text, buffer.point, 1)
+    if (shifted.changed) {
+      buffer.replaceRange(0, buffer.text.length, shifted.text)
+      buffer.point = shifted.point
+      editor.message("Shifted timestamp")
+      return
+    }
+    shiftLevel(buffer, 1)
+  }, "On a timestamp, shift it one day later; otherwise demote the heading.")
+
+  editor.command("org-schedule", async ({ editor, buffer, args }) => {
+    if (!currentHeading(buffer)) { editor.message("Not in a heading"); return }
+    const timestamp = await promptOrgTimestamp(editor, true, args)
+    if (!timestamp) return
+    if (!orgSetPlanningLine(buffer, "SCHEDULED", timestamp)) editor.message("Not in a heading")
+  }, "Insert or update the SCHEDULED timestamp under the current heading.")
+
+  editor.command("org-deadline", async ({ editor, buffer, args }) => {
+    if (!currentHeading(buffer)) { editor.message("Not in a heading"); return }
+    const timestamp = await promptOrgTimestamp(editor, true, args)
+    if (!timestamp) return
+    if (!orgSetPlanningLine(buffer, "DEADLINE", timestamp)) editor.message("Not in a heading")
+  }, "Insert or update the DEADLINE timestamp under the current heading.")
 
   editor.command("org-table-align", ({ editor, buffer }) => {
     const result = orgTableAlign(buffer)
@@ -805,6 +1154,22 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("org-previous-visible-heading", ({ editor, buffer }) => {
     if (!gotoHeading(buffer, -1)) editor.message("No previous heading")
   }, "Move to the previous heading.")
+
+  editor.command("org-agenda", async ({ editor }) => {
+    await showOrgAgenda(editor)
+  }, "Show a minimal Org agenda.")
+
+  editor.command("org-todo-list", async ({ editor }) => {
+    await showOrgAgenda(editor)
+  }, "Show TODO items in the Org agenda.")
+
+  editor.command("org-agenda-goto", async ({ editor, buffer }) => {
+    const targets = (buffer.locals.get(ORG_AGENDA_TARGETS_LOCAL) as Array<OrgAgendaTarget | null> | undefined) ?? []
+    const target = orgAgendaTargetForLine(targets, buffer.lineCol().line)
+    if (!target) { editor.message("No agenda item here"); return }
+    const source = await editor.openFile(target.file)
+    source.point = pointAtLineCol(source.text, target.line)
+  }, "Visit the Org heading at point in the agenda.")
 
   editor.command("org-mode", ({ editor, buffer }) => editor.enterMode(buffer, "org-mode"),
     "Major mode for editing Org files.")
