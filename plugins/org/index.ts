@@ -8,7 +8,7 @@ import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode, getMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
-import { spawnProcess, writeFileText, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
+import { readFileText, spawnProcess, writeFileText, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
 import { attachEditIndirect, editIndirectBuffer, finishEditIndirect } from "../markdown"
 
 export const ORG_FOLDED_LOCAL = "org-folded"
@@ -27,6 +27,10 @@ const ORG_RESULTS_RE = /^\s*#\+RESULTS:\s*$/i
 
 defcustom("org-agenda-files", "sexp", [] as string | string[],
   "List of Org files or directories scanned by `org-agenda'.", "org")
+defcustom("org-archive-location", "string", "%s_archive::",
+  "Archive location used by `org-archive-subtree'.", "org")
+defcustom("org-capture-templates", "sexp", [] as Array<[string, string, string, string]>,
+  "Capture templates as [key, description, file, template].", "org")
 defcustom("org-babel-interpreters", "sexp", [
   ["python", "python3"],
   ["sh", "bash"],
@@ -90,6 +94,7 @@ type OrgTableCell = { text: string; start: number; end: number }
 type OrgTableRow = { line: number; raw: string; cells: OrgTableCell[]; separator: boolean }
 type OrgTable = { startLine: number; endLine: number; startOffset: number; indent: string; rows: OrgTableRow[] }
 type OrgLink = { start: number; end: number; target: string; description: string | null; targetStart: number }
+type OrgSubtreeRange = { startLine: number; endLine: number; start: number; end: number; text: string; heading: OrgHeadline }
 
 export function orgParseHeadlines(text: string): OrgHeadline[] {
   const out: OrgHeadline[] = []
@@ -624,7 +629,7 @@ function todoCycle(buffer: BufferModel): void {
   buffer.point = h.start
 }
 
-function insertSibling(buffer: BufferModel): void {
+function insertSibling(buffer: BufferModel, todo = false): void {
   const text = buffer.text
   const headlines = orgParseHeadlines(text)
   const before = text.slice(0, buffer.point)
@@ -639,7 +644,7 @@ function insertSibling(buffer: BufferModel): void {
   for (let i = 0; i < insertLine; i++) offset += lines[i]!.length + 1
   offset = Math.min(offset, text.length)
   const needsNl = offset > 0 && text[offset - 1] !== "\n"
-  const heading = `${"*".repeat(level)} `
+  const heading = `${"*".repeat(level)} ${todo ? "TODO " : ""}`
   buffer.replaceRange(offset, offset, (needsNl ? "\n" : "") + heading + "\n")
   buffer.point = offset + (needsNl ? 1 : 0) + heading.length
 }
@@ -669,6 +674,86 @@ function lineStartAt(text: string, line: number): number {
   const lines = text.split("\n")
   for (let i = 0; i < line && i < lines.length; i++) offset += lines[i]!.length + 1
   return Math.min(offset, text.length)
+}
+
+function lineRangeTextBounds(buffer: BufferModel, startLine: number, endLine: number): { start: number; end: number } {
+  const [start] = buffer.lineBounds(startLine)
+  const [, endNoNewline] = buffer.lineBounds(endLine)
+  return { start, end: endNoNewline < buffer.text.length ? endNoNewline + 1 : endNoNewline }
+}
+
+function lineRangeTextBoundsInText(text: string, startLine: number, endLine: number): { start: number; end: number } {
+  const lines = text.split("\n")
+  const start = lineStartAt(text, startLine)
+  const endNoNewline = lineStartAt(text, endLine) + (lines[endLine]?.length ?? 0)
+  return { start, end: endNoNewline < text.length ? endNoNewline + 1 : endNoNewline }
+}
+
+function swapLineRanges(buffer: BufferModel, aStartLine: number, aEndLine: number, bStartLine: number, bEndLine: number): void {
+  const a = lineRangeTextBounds(buffer, aStartLine, aEndLine)
+  const b = lineRangeTextBounds(buffer, bStartLine, bEndLine)
+  const aText = buffer.text.slice(a.start, a.end)
+  const between = buffer.text.slice(a.end, b.start)
+  const bText = buffer.text.slice(b.start, b.end)
+  buffer.replaceRange(a.start, b.end, `${bText}${between}${aText}`)
+}
+
+function orgMoveSubtree(buffer: BufferModel, direction: -1 | 1): OrgEditResult {
+  const heading = orgHeadlineAtPoint(buffer.text, buffer.point)
+  if (!heading) return { changed: false, message: "No heading at point" }
+  const headings = orgParseHeadlines(buffer.text)
+  const lineCount = buffer.text.split("\n").length
+  const currentEnd = orgSubtreeEndLine(headings, heading, lineCount)
+  const siblings = headings.filter(h => h.level === heading.level && h.line !== heading.line)
+  const blocksLowerLevel = (fromLine: number, toLine: number) =>
+    headings.some(h => h.line > fromLine && h.line < toLine && h.level < heading.level)
+  const sibling = direction < 0
+    ? [...siblings].reverse().find(h => h.line < heading.line && !blocksLowerLevel(h.line, heading.line))
+    : siblings.find(h => h.line > currentEnd && !blocksLowerLevel(heading.line, h.line))
+  if (!sibling) return { changed: false, message: direction < 0 ? "No previous subtree" : "No next subtree" }
+
+  const siblingEnd = orgSubtreeEndLine(headings, sibling, lineCount)
+  if (direction < 0) {
+    swapLineRanges(buffer, sibling.line, siblingEnd, heading.line, currentEnd)
+    buffer.point = lineStartAt(buffer.text, sibling.line)
+  } else {
+    swapLineRanges(buffer, heading.line, currentEnd, sibling.line, siblingEnd)
+    const movedLine = sibling.line + (siblingEnd - sibling.line + 1)
+    buffer.point = lineStartAt(buffer.text, movedLine)
+  }
+  return { changed: true, message: direction < 0 ? "Moved subtree up" : "Moved subtree down" }
+}
+
+function replaceCurrentHeadline(buffer: BufferModel, replace: (line: string, heading: OrgHeadline) => string): boolean {
+  const h = orgHeadlineAtPoint(buffer.text, buffer.point)
+  if (!h) return false
+  const line = buffer.text.slice(h.start, h.end)
+  buffer.replaceRange(h.start, h.end, replace(line, h))
+  buffer.point = h.start
+  return true
+}
+
+function orgSetTags(buffer: BufferModel, tags: string): boolean {
+  return replaceCurrentHeadline(buffer, line => {
+    const stripped = line.replace(/\s+:[A-Za-z0-9_@#%:]+:\s*$/, "")
+    const normalized = tags.trim()
+    if (!normalized) return stripped
+    const body = normalized.replace(/^:+|:+$/g, "").split(":").filter(Boolean).join(":")
+    return body ? `${stripped} :${body}:` : stripped
+  })
+}
+
+function orgSetPriority(buffer: BufferModel, priority: string): boolean {
+  return replaceCurrentHeadline(buffer, (line, heading) => {
+    const stars = "*".repeat(heading.level)
+    let rest = line.slice(stars.length + 1).replace(/^\[#([A-Z])\]\s*/, "")
+    if (heading.keyword) rest = rest.replace(new RegExp(`^${heading.keyword}\\s+\\[#([A-Z])\\]\\s*`), `${heading.keyword} `)
+    const clear = priority.trim() === ""
+    const pri = priority.trim().toUpperCase()
+    if (clear || !/^[A-Z]$/.test(pri)) return `${stars} ${rest}`
+    if (heading.keyword) return `${stars} ${heading.keyword} [#${pri}] ${rest.replace(new RegExp(`^${heading.keyword}\\s+`), "")}`
+    return `${stars} [#${pri}] ${rest}`
+  })
 }
 
 export function orgParseSrcBlocks(text: string): OrgSrcBlock[] {
@@ -1069,6 +1154,66 @@ function orgTableNextRow(buffer: BufferModel): OrgEditResult {
   return { changed: true, message: "Inserted table row" }
 }
 
+function orgTableColumnCount(table: OrgTable): number {
+  return Math.max(1, ...table.rows.map(row => row.cells.length))
+}
+
+function orgTableInsertRow(buffer: BufferModel): OrgEditResult {
+  const table = orgTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentOrgTableCell(table, buffer.point)
+  const row = current?.rowIndex ?? 0
+  const columns = orgTableColumnCount(table)
+  const insertAt = table.rows[row]?.separator ? row + 1 : row
+  const empty = makeOrgTableRow(table, insertAt, Array.from({ length: columns }, () => ""))
+  const rows = renumberOrgTableRows(table, [...table.rows.slice(0, insertAt), empty, ...table.rows.slice(insertAt)])
+  replaceOrgTable(buffer, table, rows, { row: insertAt, col: 0 })
+  return { changed: true, message: "Inserted table row" }
+}
+
+function orgTableKillRow(buffer: BufferModel): OrgEditResult {
+  const table = orgTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentOrgTableCell(table, buffer.point)
+  const row = current?.rowIndex ?? 0
+  if (table.rows[row]?.separator) return { changed: false, message: "Cannot delete separator row" }
+  if (table.rows.filter(r => !r.separator).length <= 1) return { changed: false, message: "Cannot delete only table row" }
+  const rows = renumberOrgTableRows(table, table.rows.filter((_, i) => i !== row))
+  replaceOrgTable(buffer, table, rows, { row: Math.min(row, rows.length - 1), col: 0 })
+  return { changed: true, message: "Deleted table row" }
+}
+
+function orgTableInsertColumn(buffer: BufferModel): OrgEditResult {
+  const table = orgTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const current = currentOrgTableCell(table, buffer.point)
+  const col = current?.colIndex ?? 0
+  const columns = orgTableColumnCount(table)
+  const rows = table.rows.map((row, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_, i) => row.cells[i]?.text ?? "")
+    cells.splice(col, 0, "")
+    return makeOrgTableRow(table, rowIndex, cells, row.separator)
+  })
+  replaceOrgTable(buffer, table, rows, { row: current?.rowIndex ?? 0, col })
+  return { changed: true, message: "Inserted table column" }
+}
+
+function orgTableDeleteColumn(buffer: BufferModel): OrgEditResult {
+  const table = orgTableAtPoint(buffer.text, buffer.point)
+  if (!table) return { changed: false, message: "No table at point" }
+  const columns = orgTableColumnCount(table)
+  if (columns <= 1) return { changed: false, message: "Cannot delete only table column" }
+  const current = currentOrgTableCell(table, buffer.point)
+  const col = current?.colIndex ?? 0
+  const rows = table.rows.map((row, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_, i) => row.cells[i]?.text ?? "")
+    cells.splice(col, 1)
+    return makeOrgTableRow(table, rowIndex, cells, row.separator)
+  })
+  replaceOrgTable(buffer, table, rows, { row: current?.rowIndex ?? 0, col: Math.min(col, columns - 2) })
+  return { changed: true, message: "Deleted table column" }
+}
+
 function orgTableCreateOrConvertFromRegion(buffer: BufferModel): OrgEditResult {
   if (buffer.mark == null || buffer.mark === buffer.point) {
     const line = buffer.lineBoundsAt()
@@ -1322,6 +1467,154 @@ async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<st
   return out + decoder.decode()
 }
 
+function currentSubtreeRange(buffer: BufferModel): OrgSubtreeRange | null {
+  const heading = orgHeadlineAtPoint(buffer.text, buffer.point)
+  if (!heading) return null
+  const headings = orgParseHeadlines(buffer.text)
+  const endLine = orgSubtreeEndLine(headings, heading, buffer.text.split("\n").length)
+  const bounds = lineRangeTextBounds(buffer, heading.line, endLine)
+  return {
+    startLine: heading.line,
+    endLine,
+    start: bounds.start,
+    end: bounds.end,
+    text: buffer.text.slice(bounds.start, bounds.end),
+    heading,
+  }
+}
+
+function archivePathFor(buffer: BufferModel): string | null {
+  if (!buffer.path) return null
+  const location = getCustom<string>("org-archive-location") ?? "%s_archive::"
+  const target = location.split("::")[0] ?? "%s_archive"
+  return target.includes("%s") ? target.replace(/%s/g, buffer.path) : resolve(buffer.directory(), target)
+}
+
+async function orgArchiveSubtree(editor: Editor, buffer: BufferModel, deps: OrgDeps): Promise<boolean> {
+  const range = currentSubtreeRange(buffer)
+  if (!range) { editor.message("No heading at point"); return false }
+  const target = archivePathFor(buffer)
+  if (!target) { editor.message("Buffer is not visiting a file"); return false }
+  const existing = await readFileText(target)
+  const sep = existing.length && !existing.endsWith("\n") ? "\n" : ""
+  const archived = range.text.endsWith("\n") ? range.text : `${range.text}\n`
+  await (deps.writeFile ?? writeFileText)(target, `${existing}${sep}${archived}`)
+  buffer.replaceRange(range.start, range.end, "")
+  buffer.point = Math.min(range.start, buffer.text.length)
+  editor.message(`Archived to ${target}`)
+  return true
+}
+
+function adjustOrgSubtreeLevel(text: string, delta: number): string {
+  if (delta === 0) return text
+  return text.split("\n").map(line => {
+    const match = /^(\*+)( .*)$/.exec(line)
+    if (!match) return line
+    const level = Math.max(1, match[1]!.length + delta)
+    return `${"*".repeat(level)}${match[2]}`
+  }).join("\n")
+}
+
+async function orgRefile(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const range = currentSubtreeRange(buffer)
+  if (!range) { editor.message("No heading at point"); return false }
+  const headings = orgParseHeadlines(buffer.text)
+    .filter(h => h.line < range.startLine || h.line > range.endLine)
+  const labels = headings.map(h => `${h.line + 1}: ${"*".repeat(h.level)} ${h.keyword ? `${h.keyword} ` : ""}${h.title}`)
+  const choice = await editor.completingRead("Refile to: ", { collection: labels, history: "org-refile" })
+  if (!choice) return false
+  const target = headings[labels.indexOf(choice)]
+  if (!target) return false
+
+  const removedPrefix = buffer.text.slice(0, range.start)
+  const removedSuffix = buffer.text.slice(range.end)
+  const without = removedPrefix + removedSuffix
+  const targetLineAfterDelete = target.line - (target.line > range.startLine ? range.endLine - range.startLine + 1 : 0)
+  const adjusted = adjustOrgSubtreeLevel(range.text, target.level + 1 - range.heading.level)
+  const withoutHeadings = orgParseHeadlines(without)
+  const withoutTarget = withoutHeadings.find(h => h.line === targetLineAfterDelete)
+  if (!withoutTarget) return false
+  const targetEnd = orgSubtreeEndLine(withoutHeadings, withoutTarget, without.split("\n").length)
+  const insertAt = lineRangeTextBoundsInText(without, targetEnd, targetEnd).end
+  const needsNl = insertAt > 0 && without[insertAt - 1] !== "\n"
+  const insertion = `${needsNl ? "\n" : ""}${adjusted.endsWith("\n") ? adjusted : `${adjusted}\n`}`
+  buffer.replaceRange(0, buffer.text.length, without.slice(0, insertAt) + insertion + without.slice(insertAt))
+  buffer.point = insertAt + (needsNl ? 1 : 0)
+  editor.message(`Refiled to ${target.title}`)
+  return true
+}
+
+function inactiveTimestampWithTime(date = new Date()): string {
+  const base = orgFormatTimestamp(date, false)
+  const hh = String(date.getHours()).padStart(2, "0")
+  const mm = String(date.getMinutes()).padStart(2, "0")
+  return base.replace("]", ` ${hh}:${mm}]`)
+}
+
+function expandOrgCaptureTemplate(template: string): { text: string; pointMarker: number | null } {
+  let pointMarker: number | null = null
+  let out = ""
+  for (let i = 0; i < template.length; i++) {
+    if (template.startsWith("%?", i)) {
+      pointMarker = out.length
+      i++
+    } else if (template.startsWith("%U", i)) {
+      out += inactiveTimestampWithTime()
+      i++
+    } else {
+      out += template[i]
+    }
+  }
+  return { text: out, pointMarker }
+}
+
+async function orgCapture(editor: Editor): Promise<boolean> {
+  const templates = getCustom<Array<[string, string, string, string]>>("org-capture-templates") ?? []
+  const labels = templates.map(t => `${t[0]} ${t[1]}`)
+  const choice = await editor.completingRead("Capture: ", { collection: labels, history: "org-capture" })
+  if (!choice) return false
+  const template = templates[labels.indexOf(choice)]
+  if (!template) return false
+  const target = resolve(template[2])
+  const existing = await readFileText(target)
+  const expanded = expandOrgCaptureTemplate(template[3])
+  const prefix = existing.length && !existing.endsWith("\n") ? "\n" : ""
+  const insert = expanded.text.endsWith("\n") ? expanded.text : `${expanded.text}\n`
+  const start = existing.length + prefix.length
+  const finalText = `${existing}${prefix}${insert}`
+  await writeFileText(target, finalText)
+  const existingBuffer = [...editor.buffers.values()].find(buffer => buffer.path === target)
+  const buffer = existingBuffer ? editor.switchToBuffer(existingBuffer.id) : await editor.openFile(target)
+  if (existingBuffer) buffer.setText(finalText, false)
+  buffer.point = start + (expanded.pointMarker ?? insert.length)
+  editor.message(`Captured to ${target}`)
+  return true
+}
+
+function tangleTarget(switches: string): string | null {
+  const parts = switches.match(/(?:[^\s"]+|"[^"]*")+/g) ?? []
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] !== ":tangle") continue
+    const raw = parts[i + 1]
+    if (!raw || raw === "no") return null
+    return raw.replace(/^"|"$/g, "")
+  }
+  return null
+}
+
+async function orgBabelTangle(editor: Editor, buffer: BufferModel, deps: OrgDeps): Promise<boolean> {
+  const outputs = new Map<string, string[]>()
+  for (const block of orgParseSrcBlocks(buffer.text)) {
+    const target = tangleTarget(block.switches)
+    if (!target) continue
+    const full = resolve(buffer.directory(), target)
+    outputs.set(full, [...(outputs.get(full) ?? []), buffer.text.slice(block.bodyStart, block.bodyEnd).replace(/\n*$/, "\n")])
+  }
+  for (const [file, bodies] of outputs) await (deps.writeFile ?? writeFileText)(file, bodies.join("\n"))
+  editor.message(`Tangled ${outputs.size} file${outputs.size === 1 ? "" : "s"}`)
+  return outputs.size > 0
+}
+
 async function orgBabelExecuteSrcBlock(editor: Editor, buffer: BufferModel, deps: OrgDeps): Promise<boolean> {
   const block = orgSrcBlockAtPoint(buffer.text, buffer.point)
   if (!block) {
@@ -1455,14 +1748,29 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
   keymap.bind("C-c C-d", "org-deadline")
   keymap.bind("C-c C-c", "org-ctrl-c-ctrl-c")
   keymap.bind("C-c '", "org-edit-special")
+  keymap.bind("C-c $", "org-archive-subtree")
+  keymap.bind("C-c C-w", "org-refile")
+  keymap.bind("C-c C-q", "org-set-tags-command")
+  keymap.bind("C-c ,", "org-priority")
   keymap.bind("C-c |", "org-table-create-or-convert-from-region")
   keymap.bind("C-c C-l", "org-insert-link")
   keymap.bind("C-c C-o", "org-open-at-point")
   keymap.bind("C-c C-e", "org-export-dispatch")
   keymap.bind("C-c C-t", "org-todo")
   keymap.bind("M-RET", "org-meta-return")
+  keymap.bind("M-S-RET", "org-insert-todo-heading")
   keymap.bind("M-left", "org-promote")
   keymap.bind("M-right", "org-demote")
+  keymap.bind("M-up", "org-move-subtree-up")
+  keymap.bind("M-down", "org-move-subtree-down")
+  keymap.bind("S-M-up", "org-shiftmetaup")
+  keymap.bind("M-S-up", "org-shiftmetaup")
+  keymap.bind("S-M-down", "org-shiftmetadown")
+  keymap.bind("M-S-down", "org-shiftmetadown")
+  keymap.bind("S-M-left", "org-shiftmetaleft")
+  keymap.bind("M-S-left", "org-shiftmetaleft")
+  keymap.bind("S-M-right", "org-shiftmetaright")
+  keymap.bind("M-S-right", "org-shiftmetaright")
   keymap.bind("C-c C-n", "org-next-visible-heading")
   keymap.bind("C-c C-p", "org-previous-visible-heading")
   keymap.bind("C-c C-x C-n", "org-next-link")
@@ -1559,6 +1867,62 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
     editor.message(result.message)
   }, "Align the Org table at point.")
 
+  editor.command("org-table-insert-row", ({ editor, buffer }) => {
+    const result = orgTableInsertRow(buffer)
+    editor.message(result.message)
+  }, "Insert an Org table row above the current row.")
+
+  editor.command("org-table-kill-row", ({ editor, buffer }) => {
+    const result = orgTableKillRow(buffer)
+    editor.message(result.message)
+  }, "Delete the current Org table row.")
+
+  editor.command("org-table-insert-column", ({ editor, buffer }) => {
+    const result = orgTableInsertColumn(buffer)
+    editor.message(result.message)
+  }, "Insert an Org table column to the left.")
+
+  editor.command("org-table-delete-column", ({ editor, buffer }) => {
+    const result = orgTableDeleteColumn(buffer)
+    editor.message(result.message)
+  }, "Delete the current Org table column.")
+
+  editor.command("org-shiftmetaup", async ({ editor, buffer }) => {
+    if (orgTableAtPoint(buffer.text, buffer.point)) {
+      const result = orgTableKillRow(buffer)
+      editor.message(result.message)
+      return
+    }
+    await editor.run("org-move-subtree-up")
+  }, "In tables, delete the current row; otherwise move the current subtree up.")
+
+  editor.command("org-shiftmetadown", async ({ editor, buffer }) => {
+    if (orgTableAtPoint(buffer.text, buffer.point)) {
+      const result = orgTableInsertRow(buffer)
+      editor.message(result.message)
+      return
+    }
+    await editor.run("org-move-subtree-down")
+  }, "In tables, insert a row; otherwise move the current subtree down.")
+
+  editor.command("org-shiftmetaleft", async ({ editor, buffer }) => {
+    if (orgTableAtPoint(buffer.text, buffer.point)) {
+      const result = orgTableDeleteColumn(buffer)
+      editor.message(result.message)
+      return
+    }
+    await editor.run("org-promote")
+  }, "In tables, delete the current column; otherwise promote the heading.")
+
+  editor.command("org-shiftmetaright", async ({ editor, buffer }) => {
+    if (orgTableAtPoint(buffer.text, buffer.point)) {
+      const result = orgTableInsertColumn(buffer)
+      editor.message(result.message)
+      return
+    }
+    await editor.run("org-demote")
+  }, "In tables, insert a column; otherwise demote the heading.")
+
   editor.command("org-table-create-or-convert-from-region", ({ editor, buffer }) => {
     const result = orgTableCreateOrConvertFromRegion(buffer)
     editor.message(result.message)
@@ -1626,6 +1990,10 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
     await orgBabelExecuteSrcBlock(editor, buffer, deps)
   }, "Execute the Org Babel source block at point and insert plain results.")
 
+  editor.command("org-babel-tangle", async ({ editor, buffer }) => {
+    await orgBabelTangle(editor, buffer, deps)
+  }, "Write Org Babel source blocks with :tangle header arguments.")
+
   editor.command("org-html-export-to-html", async ({ editor, buffer }) => {
     try {
       const outputPath = await orgHtmlExportToHtml(buffer, deps)
@@ -1688,6 +2056,45 @@ export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {},
 
   editor.command("org-meta-return", ({ buffer }) => insertSibling(buffer),
     "Insert a new sibling heading after the current subtree.")
+  editor.command("org-insert-heading", ({ buffer }) => insertSibling(buffer),
+    "Insert a new sibling heading after the current subtree.")
+  editor.command("org-insert-todo-heading", ({ buffer }) => insertSibling(buffer, true),
+    "Insert a new sibling TODO heading after the current subtree.")
+
+  editor.command("org-move-subtree-up", ({ editor, buffer }) => {
+    const result = orgMoveSubtree(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current Org subtree before its previous sibling.")
+
+  editor.command("org-move-subtree-down", ({ editor, buffer }) => {
+    const result = orgMoveSubtree(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current Org subtree after its next sibling.")
+
+  editor.command("org-set-tags-command", async ({ editor, buffer }) => {
+    const tags = await editor.prompt("Tags: ", "", "org-tags")
+    if (tags == null) return
+    if (!orgSetTags(buffer, tags)) editor.message("No heading at point")
+  }, "Set the tags on the current Org headline.")
+
+  editor.command("org-priority", async ({ editor, buffer }) => {
+    const priority = await editor.prompt("Priority A/B/C, SPC to clear: ", "", "org-priority")
+    if (priority == null) return
+    const value = priority === " " ? "" : priority
+    if (!orgSetPriority(buffer, value)) editor.message("No heading at point")
+  }, "Set or clear the priority cookie on the current Org headline.")
+
+  editor.command("org-archive-subtree", async ({ editor, buffer }) => {
+    await orgArchiveSubtree(editor, buffer, deps)
+  }, "Archive the current Org subtree.")
+
+  editor.command("org-refile", async ({ editor, buffer }) => {
+    await orgRefile(editor, buffer)
+  }, "Move the current Org subtree below a selected heading in this buffer.")
+
+  editor.command("org-capture", async ({ editor }) => {
+    await orgCapture(editor)
+  }, "Capture a template into its target Org file.")
 
   editor.command("org-promote", ({ buffer }) => shiftLevel(buffer, -1),
     "Decrease the level of the current heading by one.")

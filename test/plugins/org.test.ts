@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
@@ -88,6 +88,8 @@ const tempDirs: string[] = []
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   setCustom("org-agenda-files", [])
+  setCustom("org-archive-location", "%s_archive::")
+  setCustom("org-capture-templates", [])
 })
 
 describe("orgParseHeadlines", () => {
@@ -245,6 +247,76 @@ describe("org babel source blocks", () => {
 
     expect(source.text).toBe(SRC)
     expect(editor.currentBuffer).toBe(source)
+  })
+
+  test("org-babel-tangle writes blocks with :tangle targets", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-org-tangle-"))
+    tempDirs.push(dir)
+    const text = [
+      "#+begin_src sh :tangle a.sh",
+      "echo one",
+      "#+end_src",
+      "#+begin_src sh :tangle a.sh",
+      "echo two",
+      "#+end_src",
+      "#+begin_src js :tangle b.js",
+      "console.log(1)",
+      "#+end_src",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(text, 0)
+    buffer.path = join(dir, "notes.org")
+
+    await editor.run("org-babel-tangle")
+
+    expect(await readFile(join(dir, "a.sh"), "utf8")).toBe("echo one\n\necho two\n")
+    expect(await readFile(join(dir, "b.js"), "utf8")).toBe("console.log(1)\n")
+  })
+})
+
+describe("org archive, refile, and capture", () => {
+  test("org-archive-subtree cuts the subtree and appends to the archive file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-org-archive-"))
+    tempDirs.push(dir)
+    const file = join(dir, "tasks.org")
+    const { editor, buffer } = setup("* Keep\n* Archive\nbody\n** Child\n", "* Keep\n".length)
+    buffer.path = file
+
+    await keySeq(editor, "C-c", "$")
+
+    expect(buffer.text).toBe("* Keep\n")
+    expect(await readFile(`${file}_archive`, "utf8")).toBe("* Archive\nbody\n** Child\n")
+  })
+
+  test("org-refile moves the current subtree as a child of the selected heading", async () => {
+    const text = "* Target\nbody\n* Move\n** Child\n* Other\n"
+    const { editor, buffer } = setup(text, text.indexOf("* Move"))
+    editor.completingRead = (_prompt, opts) => {
+      expect(opts.collection).toContain("1: * Target")
+      return Promise.resolve("1: * Target")
+    }
+
+    await keySeq(editor, "C-c", "C-w")
+
+    expect(buffer.text).toBe("* Target\nbody\n** Move\n*** Child\n* Other\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("** Move"))
+  })
+
+  test("org-capture expands a selected template, appends it, and opens at %?", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-org-capture-"))
+    tempDirs.push(dir)
+    const file = join(dir, "capture.org")
+    await writeFile(file, "Existing\n")
+    const editor = makeEditor()
+    install(editor)
+    setCustom("org-capture-templates", [["t", "Task", file, "* TODO %?\nCaptured %U"]])
+    editor.completingRead = (_prompt, opts) => Promise.resolve(opts.collection?.[0] ?? null)
+
+    await editor.run("org-capture")
+
+    expect(editor.currentBuffer.path).toBe(file)
+    expect(editor.currentBuffer.text).toContain("Existing\n* TODO \nCaptured [")
+    expect(editor.currentBuffer.point).toBe(editor.currentBuffer.text.indexOf("* TODO ") + "* TODO ".length)
   })
 })
 
@@ -610,6 +682,82 @@ describe("org-meta-return (M-RET)", () => {
     expect(buffer.text).toBe("* \n")
     expect(buffer.point).toBe(2)
   })
+
+  test("registers org-insert-heading and org-insert-todo-heading command names", async () => {
+    const { editor, buffer } = setup("* A\n", 0)
+
+    await editor.run("org-insert-heading")
+    expect(buffer.text).toBe("* A\n* \n")
+
+    buffer.point = 0
+    await editor.run("org-insert-todo-heading")
+    expect(buffer.text).toBe("* A\n* TODO \n* \n")
+  })
+})
+
+describe("org subtree movement", () => {
+  test("moves subtrees up and down across same-level siblings", async () => {
+    const text = [
+      "* Top",
+      "** One",
+      "one body",
+      "** Two",
+      "*** Two child",
+      "** Three",
+      "",
+    ].join("\n")
+    const { editor, buffer } = setup(text, text.indexOf("** Two"))
+
+    await editor.run("org-move-subtree-up")
+    expect(buffer.text).toBe([
+      "* Top",
+      "** Two",
+      "*** Two child",
+      "** One",
+      "one body",
+      "** Three",
+      "",
+    ].join("\n"))
+
+    await editor.run("org-move-subtree-down")
+    expect(buffer.text).toBe(text)
+  })
+
+  test("M-up and M-down dispatch through org-mode keymap", async () => {
+    const text = "* A\n* B\n"
+    const { editor, buffer } = setup(text, text.indexOf("* B"))
+
+    await keySeq(editor, "M-up")
+    expect(buffer.text).toBe("* B\n* A\n")
+    await keySeq(editor, "M-down")
+    expect(buffer.text).toBe(text)
+  })
+})
+
+describe("org tags and priority", () => {
+  test("org-set-tags-command sets and replaces headline tags", async () => {
+    const { editor, buffer } = setup("* TODO Task :old:\n", 0)
+    const answers = [":work:home:", ""]
+    editor.prompt = async () => answers.shift() ?? null
+
+    await keySeq(editor, "C-c", "C-q")
+    expect(buffer.text).toBe("* TODO Task :work:home:\n")
+
+    await editor.run("org-set-tags-command")
+    expect(buffer.text).toBe("* TODO Task\n")
+  })
+
+  test("org-priority inserts after TODO and clears with space", async () => {
+    const { editor, buffer } = setup("* TODO Task\n* Plain\n", 0)
+    const answers = ["A", " "]
+    editor.prompt = async () => answers.shift() ?? null
+
+    await keySeq(editor, "C-c", ",")
+    expect(buffer.text).toBe("* TODO [#A] Task\n* Plain\n")
+
+    await editor.run("org-priority")
+    expect(buffer.text).toBe("* TODO Task\n* Plain\n")
+  })
 })
 
 describe("promote / demote (M-left / M-right)", () => {
@@ -715,6 +863,38 @@ describe("org tables", () => {
 
     expect(buffer.text).toBe("| Name | Age |\n| Ann  | 9   |\n")
     expect(buffer.point).toBe(2)
+  })
+
+  test("row and column commands mirror markdown table operations", async () => {
+    const text = "| Name | Age |\n|---+---|\n| Al | 9 |\n"
+    const { editor, buffer } = setup(text, text.indexOf("Al"))
+
+    await editor.run("org-table-insert-row")
+    expect(buffer.text).toBe("| Name | Age |\n|------+-----|\n|      |     |\n| Al   | 9   |\n")
+
+    buffer.point = buffer.text.indexOf("Al")
+    await editor.run("org-table-kill-row")
+    expect(buffer.text).toBe("| Name | Age |\n|------+-----|\n|      |     |\n")
+
+    buffer.point = buffer.text.indexOf("Age")
+    await editor.run("org-table-insert-column")
+    expect(buffer.text).toBe("| Name |   | Age |\n|------+---+-----|\n|      |   |     |\n")
+
+    buffer.point = buffer.text.indexOf("Age")
+    await editor.run("org-table-delete-column")
+    expect(buffer.text).toBe("| Name |   |\n|------+---|\n|      |   |\n")
+  })
+
+  test("S-M-arrow table bindings do table ops and fall back outside tables", async () => {
+    const text = "* Head\n| A | B |\n|---+---|\n| x | y |\n"
+    const { editor, buffer } = setup(text, text.indexOf("x"))
+
+    await keySeq(editor, "M-S-down")
+    expect(buffer.text).toContain("|   |   |\n| x | y |")
+
+    buffer.point = 0
+    await keySeq(editor, "M-S-right")
+    expect(buffer.text.startsWith("** Head")).toBe(true)
   })
 })
 
