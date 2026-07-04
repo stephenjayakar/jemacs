@@ -121,3 +121,27 @@ test("Buffer Menu toggles file-visiting buffers only", async () => {
   expect(list.text).toContain("file-only.txt")
   expect(list.text).toContain("scratch-only")
 })
+
+test("Buffer Menu S cycles sort order by name size and mode", async () => {
+  const editor = await script({ plugins: false }).done()
+  editor.addBuffer(new BufferModel({ name: "ccc", text: "1", mode: "zmode" }))
+  editor.addBuffer(new BufferModel({ name: "aaa", text: "333", mode: "ymode" }))
+  editor.addBuffer(new BufferModel({ name: "bbb", text: "22", mode: "xmode" }))
+  await editor.run("list-buffers")
+  const list = editor.currentBuffer
+
+  const names = () => list.text.split("\n")
+    .filter(line => / aaa | bbb | ccc /.test(line))
+    .map(line => line.slice(4, 4 + 24).trim())
+
+  // Default is visit order (buffers listed as created).
+  expect(names()).toEqual(["ccc", "aaa", "bbb"])
+  await keySeq(editor, { name: "s", sequence: "S", shift: true })
+  expect(names()).toEqual(["aaa", "bbb", "ccc"])
+  await keySeq(editor, { name: "s", sequence: "S", shift: true })
+  expect(names()).toEqual(["ccc", "bbb", "aaa"])
+  await keySeq(editor, { name: "s", sequence: "S", shift: true })
+  expect(names()).toEqual(["bbb", "aaa", "ccc"])
+  await keySeq(editor, { name: "s", sequence: "S", shift: true })
+  expect(names()).toEqual(["ccc", "aaa", "bbb"])
+})

@@ -8,6 +8,7 @@ import {
   compilationStart,
   compilationErrorRegexpAlist,
   parseCompilationOutput,
+  compilationErrorLineTarget,
   stripAnsi,
   lastCompileCommand,
   lastCompileDirectory,
@@ -211,6 +212,8 @@ test("install registers commands and compilation mode keymap", () => {
   expect(mode?.keymap?.get("g")).toBe("recompile")
   expect(mode?.keymap?.get("enter")).toBe("compile-goto-error")
   expect(mode?.keymap?.get("C-c C-k")).toBe("kill-compilation")
+  expect(mode?.keymap?.get("n")).toBe("compilation-next-error")
+  expect(mode?.keymap?.get("p")).toBe("compilation-previous-error")
 })
 
 test("compile prompts with compile-command history defaulting to make -k", async () => {
@@ -337,6 +340,32 @@ test("compile-goto-error visits the parsed location at point in *compilation*", 
   expect(editor.currentBuffer.path).toBe(srcB)
   expect(editor.currentBuffer.lineCol()).toEqual({ line: 2, col: 1 })
   expect(locationIndex(editor)).toBe(0)
+})
+
+test("n and p in compilation-mode move between error lines without visiting files", async () => {
+  const editor = makeEditor()
+  installNextError(editor)
+  const out = `a.c:2:10: error: x\nnoise\n  File "b.py", line 2\n`
+  const { spawn } = fakeSpawn(() => ({ stdout: [out], code: 1 }))
+  install(editor, { spawn, projectRoot: async () => dir })
+
+  await editor.openFile(srcA)
+  await editor.run("compile", ["make"])
+  const compilation = editor.currentBuffer
+  compilation.point = 0
+  expect(compilationErrorLineTarget(compilation, 1)).not.toBeNull()
+
+  await editor.handleKey({ name: "n", sequence: "n" })
+  expect(editor.currentBuffer).toBe(compilation)
+  expect(compilation.text.slice(compilation.point).startsWith("a.c:2:10")).toBe(true)
+
+  await editor.handleKey({ name: "n", sequence: "n" })
+  expect(editor.currentBuffer).toBe(compilation)
+  expect(compilation.text.slice(compilation.point).startsWith('  File "b.py"')).toBe(true)
+
+  await editor.handleKey({ name: "p", sequence: "p" })
+  expect(editor.currentBuffer).toBe(compilation)
+  expect(compilation.text.slice(compilation.point).startsWith("a.c:2:10")).toBe(true)
 })
 
 test("g in *compilation* runs recompile and reuses the last command/directory", async () => {

@@ -65,12 +65,15 @@ async function jumpToBookmark(
   name: string,
   options: { otherWindow?: boolean } = {},
 ): Promise<void> {
-  if (isRemotePath(record.filename)) {
-    editor.message(`Bookmark ${name}: remote paths (${record.filename}) are not supported yet`)
+  if (options.otherWindow) editor.ensureOtherWindowSelected()
+  let buffer: BufferModel
+  try {
+    buffer = await editor.openFile(record.filename)
+  } catch (err) {
+    const remote = isRemotePath(record.filename) ? " remote" : ""
+    editor.message(`Cannot open${remote} bookmark ${name}: ${(err as Error).message}`)
     return
   }
-  if (options.otherWindow) editor.ensureOtherWindowSelected()
-  const buffer = await editor.openFile(record.filename)
   const pos = Math.min(Math.max(0, record.position), buffer.text.length)
   buffer.point = pos
   editor.message(`Jumped to bookmark ${name}`)

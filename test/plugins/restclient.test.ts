@@ -3,6 +3,7 @@ import { makeEditor } from "./helper"
 import {
   install,
   buildCurlInvocation,
+  curlCommandString,
   formatHttpResponse,
   nextRequestPoint,
   parseRequestAt,
@@ -10,6 +11,7 @@ import {
   requestStarts,
 } from "../../plugins/restclient"
 import { getMode } from "../../src/modes/mode"
+import { currentKill } from "../../src/runtime/kill-ring"
 import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
 
 function streamOf(text: string): ReadableStream<Uint8Array> {
@@ -124,6 +126,15 @@ test("buildCurlInvocation omits stdin for bodyless requests", () => {
   })
 })
 
+test("curlCommandString shell-quotes argv and includes stdin heredoc", () => {
+  const req = parseRequestAt("POST https://example.test/a b\nX-Token: can't\n\n{\"ok\":true}\n", 0)!
+  expect(curlCommandString(buildCurlInvocation(req))).toBe([
+    "curl -sS -i -X POST -H 'X-Token: can'\\''t' --data-binary @- 'https://example.test/a b' <<'EOF'",
+    "{\"ok\":true}",
+    "EOF",
+  ].join("\n"))
+})
+
 test("requestStarts and jump helpers skip comment separators", () => {
   const text = "# one\nGET https://one.test\n# two\nPOST https://two.test\n\nbody\n# three\nDELETE https://three.test\n"
   const starts = requestStarts(text)
@@ -146,10 +157,20 @@ test("install registers commands and restclient mode bindings", () => {
   expect(editor.commands.get("restclient-http-send-current-raw")).toBeDefined()
   expect(editor.commands.get("restclient-jump-next")).toBeDefined()
   expect(editor.commands.get("restclient-jump-previous")).toBeDefined()
+  expect(editor.commands.get("restclient-copy-curl-command")).toBeDefined()
   expect(getMode("restclient")?.keymap?.get("C-c C-c")).toBe("restclient-http-send-current")
   expect(getMode("restclient")?.keymap?.get("C-c C-r")).toBe("restclient-http-send-current-raw")
   expect(getMode("restclient")?.keymap?.get("C-c C-n")).toBe("restclient-jump-next")
   expect(getMode("restclient")?.keymap?.get("C-c C-p")).toBe("restclient-jump-previous")
+  expect(getMode("restclient")?.keymap?.get("C-c C-u")).toBe("restclient-copy-curl-command")
+})
+
+test("restclient-copy-curl-command copies the curl command to the kill ring", async () => {
+  const editor = makeEditor()
+  install(editor)
+  editor.scratch("api.http", "GET https://example.test/search?q=hello world\nAccept: text/plain\n", "restclient")
+  await editor.run("restclient-copy-curl-command")
+  expect(currentKill(editor)).toBe("curl -sS -i -X GET -H 'Accept: text/plain' 'https://example.test/search?q=hello world'")
 })
 
 test("restclient commands use injected spawn and pretty-print JSON responses", async () => {

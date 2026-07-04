@@ -1,6 +1,6 @@
-import { unlink, writeFile } from "node:fs/promises"
+import { realpath, unlink, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { basename, isAbsolute, join } from "node:path"
+import { basename, isAbsolute, join, relative } from "node:path"
 import { tmpdir } from "node:os"
 import type { Editor, TransientDefinition } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
@@ -422,12 +422,87 @@ export function logShaAtPoint(buffer: BufferModel): string | null {
   return /\b([0-9a-f]{7,40})\b/.exec(text)?.[1] ?? null
 }
 
-async function openLog(editor: Editor, root: string, source?: BufferModel): Promise<BufferModel> {
-  const { out } = await git(["log", "--oneline", "--graph", "-50"], root)
+function lineStartsFor(text: string): number[] {
+  const starts = [0]
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10 && i + 1 < text.length) starts.push(i + 1)
+  return starts
+}
+
+function lineNumberAtTextPoint(text: string, point: number): number {
+  const clamped = Math.max(0, Math.min(point, text.length))
+  let line = 0
+  for (let i = 0; i < clamped; i++) if (text.charCodeAt(i) === 10) line++
+  return line
+}
+
+export function magitDiffVisitTarget(text: string, point: number, fileHint?: string): { file: string; line: number } | null {
+  const starts = lineStartsFor(text)
+  const currentLine = lineNumberAtTextPoint(text, point)
+  let file = fileHint ?? ""
+  let oldLine = 0
+  let newLine = 0
+  let inHunk = false
+
+  for (let i = 0; i <= currentLine && i < starts.length; i++) {
+    const start = starts[i]!
+    const end = text.indexOf("\n", start)
+    const line = text.slice(start, end < 0 ? text.length : end)
+    const diff = /^diff --git a\/(.+) b\/(.+)$/.exec(line)
+    if (diff?.[2]) {
+      file = diff[2]
+      inHunk = false
+      continue
+    }
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (header) {
+      oldLine = Number(header[1])
+      newLine = Number(header[2])
+      inHunk = true
+      if (i === currentLine) return null
+      continue
+    }
+    if (!inHunk) continue
+    if (i === currentLine) {
+      if (!file || !/^[ +\-]/.test(line)) return null
+      if (line.startsWith("-")) return { file, line: oldLine }
+      return { file, line: newLine }
+    }
+    if (line.startsWith(" ")) {
+      oldLine++
+      newLine++
+    } else if (line.startsWith("-")) {
+      oldLine++
+    } else if (line.startsWith("+")) {
+      newLine++
+    } else if (!line.startsWith("\\")) {
+      inHunk = false
+    }
+  }
+  return null
+}
+
+async function repositoryRootForFile(path: string): Promise<string | null> {
+  const dir = path.slice(0, path.lastIndexOf("/")) || "/"
+  const rootResult = await git(["rev-parse", "--show-toplevel"], dir)
+  const root = rootResult.out.trim()
+  return rootResult.code === 0 && root ? root : null
+}
+
+/** git prints realpaths (macOS /var → /private/var), so resolve the buffer's
+ *  path the same way before computing a repo-relative pathspec. */
+async function repoRelativePath(root: string, path: string): Promise<string> {
+  const real = await realpath(path).catch(() => path)
+  return relative(root, real)
+}
+
+async function openLog(editor: Editor, root: string, source?: BufferModel, pathspec?: string): Promise<BufferModel> {
+  const args = ["log", "--oneline", "--graph", "-50", ...(pathspec ? ["--", pathspec] : [])]
+  const { out } = await git(args, root)
   const buf = editor.scratch("*magit-log*", out || "(no commits)\n", "magit-log")
   buf.readOnly = true
   buf.path = root
   buf.locals.set("magit-root", root)
+  if (pathspec) buf.locals.set("magit-log-file", pathspec)
   if (source) pushMagitHistory(buf, source)
   buf.point = 0
   return buf
@@ -1148,8 +1223,20 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    await openLog(editor, root, buffer)
+    const pathspec = buffer.locals.get("magit-log-file") as string | undefined
+    await openLog(editor, root, buffer, pathspec)
   }, "Show recent history in a *magit-log* buffer.")
+
+  editor.command("magit-log-buffer-file", async ({ editor, buffer }) => {
+    const path = buffer.path
+    if (!path || buffer.kind === "directory") {
+      editor.message("Buffer is not visiting a file")
+      return
+    }
+    const root = await repositoryRootForFile(path)
+    if (!root) return editor.message("Not in a git repository")
+    await openLog(editor, root, buffer, await repoRelativePath(root, path))
+  }, "Show recent history for the current file in a *magit-log* buffer.")
 
   editor.command("magit-log-show-commit", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -1261,6 +1348,23 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await refresh(editor, root)
     editor.message(`Discarded ${entry.file}`)
   }, "Discard unstaged changes to the file at point (with confirmation).")
+
+  editor.command("magit-file-checkout", async ({ editor, buffer, args }) => {
+    const path = buffer.path
+    if (!path || buffer.kind === "directory") {
+      editor.message("Buffer is not visiting a file")
+      return
+    }
+    const root = await repositoryRootForFile(path)
+    if (!root) return editor.message("Not in a git repository")
+    const rev = args[0] ?? await editor.prompt("Checkout file from revision: ", "HEAD", "magit-file-checkout")
+    if (!rev) return
+    const file = await repoRelativePath(root, path)
+    const { err, code } = await git(["checkout", refname(rev), "--", file], root)
+    if (code !== 0) return editor.message(`git checkout failed: ${err.trim() || code}`)
+    await buffer.revert()
+    editor.message(`Checked out ${file} from ${rev}`)
+  }, "Checkout the current file from a revision and revert the buffer.")
 
   editor.command("magit-reset-quickly", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -1435,9 +1539,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.run("magit-log")
   }, "Refresh or open log buffer.")
 
+  editor.command("magit-diff-visit-file", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Nothing to visit at point")
+    const hunk = hunkAtPoint(buffer)
+    const target = magitDiffVisitTarget(buffer.text, buffer.point, hunk?.file)
+    if (!target) return editor.message("No diff line at point")
+    const source = await editor.openFile(join(root, target.file))
+    const [start] = source.lineBounds(Math.max(0, target.line - 1))
+    source.point = start
+  }, "Visit the source file and line for the diff hunk line at point.")
+
   editor.command("magit-visit-thing", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Nothing to visit at point")
+    const hunk = hunkAtPoint(buffer)
+    const target = magitDiffVisitTarget(buffer.text, buffer.point, hunk?.file)
+    if (target) {
+      const source = await editor.openFile(join(root, target.file))
+      const [start] = source.lineBounds(Math.max(0, target.line - 1))
+      source.point = start
+      return
+    }
     const entry = entryAtPoint(buffer)
     if (entry) {
       await editor.openFile(join(root, entry.file))

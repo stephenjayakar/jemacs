@@ -2,6 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import { BufferModel } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { spawnProcess, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
+import { killNew } from "../../src/runtime/kill-ring"
 
 export type RestclientRequest = {
   method: string
@@ -136,6 +137,16 @@ export function buildCurlInvocation(request: RestclientRequest): CurlInvocation 
   return { cmd, stdin: request.body.length > 0 ? request.body : null }
 }
 
+export function shellQuoteArg(arg: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg
+  return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+export function curlCommandString(invocation: CurlInvocation): string {
+  const cmd = invocation.cmd.map(shellQuoteArg).join(" ")
+  return invocation.stdin == null ? cmd : `${cmd} <<'EOF'\n${invocation.stdin}\nEOF`
+}
+
 export function requestStarts(text: string): number[] {
   const out: number[] = []
   const starts = lineStarts(text)
@@ -237,8 +248,20 @@ export function install(editor: Editor, deps: RestclientDeps = {}, ctx: PluginCo
     else buffer.point = point
   }, "Move point to the previous REST request.")
 
+  ctx.command("restclient-copy-curl-command", ({ editor, buffer }) => {
+    const request = parseRequestAt(buffer.text, buffer.point)
+    if (!request) {
+      editor.message("No REST request at point")
+      return
+    }
+    const text = curlCommandString(buildCurlInvocation(request))
+    killNew(editor, text)
+    editor.message("Copied curl command")
+  }, "Copy the REST request at point as a curl command.")
+
   ctx.key("restclient-map", "C-c C-c", "restclient-http-send-current")
   ctx.key("restclient-map", "C-c C-r", "restclient-http-send-current-raw")
   ctx.key("restclient-map", "C-c C-n", "restclient-jump-next")
   ctx.key("restclient-map", "C-c C-p", "restclient-jump-previous")
+  ctx.key("restclient-map", "C-c C-u", "restclient-copy-curl-command")
 }

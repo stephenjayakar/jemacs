@@ -128,6 +128,20 @@ export function parseCompilationOutput(text: string, cwd: string): ErrorLocation
   return parseCompilationLines(text, cwd).map(entry => entry.location)
 }
 
+export function compilationErrorLineTarget(buffer: BufferModel, direction: 1 | -1): number | null {
+  const byLine = buffer.locals.get("next-error-locations") as Map<number, ErrorLocation> | undefined
+  if (!byLine?.size) return null
+  // The locations map is keyed by 1-based buffer line (see compile-goto-error).
+  const current = buffer.lineAt(buffer.point) + 1
+  const lines = [...byLine.keys()].sort((a, b) => a - b)
+  if (direction > 0) return lines.find(line => line > current) ?? null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (line < current) return line
+  }
+  return null
+}
+
 type State = {
   command: string
   directory: string
@@ -257,6 +271,8 @@ export function install(editor: Editor, deps: CompileDeps = {}, ctx: PluginConte
   keymap.bind("return", "compile-goto-error")
   keymap.bind("C-m", "compile-goto-error")
   keymap.bind("C-c C-k", "kill-compilation")
+  keymap.bind("n", "compilation-next-error")
+  keymap.bind("p", "compilation-previous-error")
   defineMode({ name: "compilation", parent: "text", keymap })
 
   const rootFor = async (buffer: BufferModel): Promise<string> =>
@@ -285,4 +301,21 @@ export function install(editor: Editor, deps: CompileDeps = {}, ctx: PluginConte
     s.proc = null
     editor.message("Compilation killed")
   }, "Kill the running compilation process.")
+
+  const moveCompilationError = (buffer: BufferModel, editor: Editor, direction: 1 | -1) => {
+    const target = compilationErrorLineTarget(buffer, direction)
+    if (target == null) {
+      editor.message(direction > 0 ? "No next error" : "No previous error")
+      return
+    }
+    buffer.point = buffer.lineStarts[target - 1] ?? buffer.point
+  }
+
+  editor.command("compilation-next-error", ({ buffer, editor }) => {
+    moveCompilationError(buffer, editor, 1)
+  }, "Move point to the next error in the compilation buffer.")
+
+  editor.command("compilation-previous-error", ({ buffer, editor }) => {
+    moveCompilationError(buffer, editor, -1)
+  }, "Move point to the previous error in the compilation buffer.")
 }

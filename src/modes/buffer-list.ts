@@ -7,8 +7,10 @@ const BUFFER_LIST_NAME = "*Buffer List*"
 const NAME_WIDTH = 24
 
 type BufferMenuMark = "D" | "S" | ">"
+type BufferListSort = "none" | "name" | "size" | "mode"
 type BufferListState = {
   filesOnly: boolean
+  sort: BufferListSort
   marks: Map<string, BufferMenuMark>
 }
 
@@ -31,6 +33,7 @@ export function installBufferListMode(): void {
   keymap.bind("o", "Buffer-menu-other-window")
   keymap.bind("1", "Buffer-menu-1-window")
   keymap.bind("2", "Buffer-menu-2-window")
+  keymap.bind("S-s", "Buffer-menu-sort")
   keymap.bind("S-t", "Buffer-menu-toggle-files-only")
   keymap.bind("enter", "Buffer-menu-select")
   keymap.bind("return", "Buffer-menu-select")
@@ -160,6 +163,13 @@ export function installBufferListCommands(editor: Editor): void {
     refreshBufferList(editor, buffer)
     editor.message(state.filesOnly ? "Buffer Menu: file buffers only" : "Buffer Menu: all buffers")
   }, "Toggle whether Buffer Menu shows only file-visiting buffers.")
+
+  editor.command("Buffer-menu-sort", ({ buffer, editor }) => {
+    const state = stateFor(buffer)
+    state.sort = state.sort === "none" ? "name" : state.sort === "name" ? "size" : state.sort === "size" ? "mode" : "none"
+    refreshBufferList(editor, buffer)
+    editor.message(`Buffer Menu: sort by ${state.sort}`)
+  }, "Cycle Buffer Menu sorting by name, size, and mode.")
 }
 
 export function showBufferList(editor: Editor, options: { filesOnly?: boolean } = {}): BufferModel {
@@ -183,9 +193,11 @@ export function renderBufferList(editor: Editor, buffer: BufferModel, options: {
   for (const id of [...state.marks.keys()]) {
     if (!editor.buffers.has(id)) state.marks.delete(id)
   }
-  const lines = [...editor.buffers.values()]
+  const entries = [...editor.buffers.values()]
     .filter(b => b.kind !== "minibuffer")
     .filter(b => !state.filesOnly || b.path)
+    .sort((a, b) => compareBufferListEntry(editor, a, b, state.sort))
+  const lines = entries
     .map(b => {
       ids.push(b.id)
       const current = b.id === editor.currentBufferId ? "." : " "
@@ -207,10 +219,18 @@ export function bufferListEntryAtPoint(buffer: BufferModel): string | undefined 
 function stateFor(buffer: BufferModel): BufferListState {
   let state = bufferListStates.get(buffer)
   if (!state) {
-    state = { filesOnly: false, marks: new Map() }
+    state = { filesOnly: false, sort: "none", marks: new Map() }
     bufferListStates.set(buffer, state)
   }
   return state
+}
+
+function compareBufferListEntry(editor: Editor, a: BufferModel, b: BufferModel, sort: BufferListSort): number {
+  if (sort === "none") return 0 // stable sort keeps the original visit order
+  const byName = editor.bufferDisplayName(a).localeCompare(editor.bufferDisplayName(b))
+  if (sort === "name") return byName
+  if (sort === "size") return a.text.length - b.text.length || byName
+  return a.mode.localeCompare(b.mode) || byName
 }
 
 function currentLine(buffer: BufferModel): number {

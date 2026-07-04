@@ -426,6 +426,37 @@ export function markdownParseHeadings(text: string): MarkdownHeading[] {
   return out
 }
 
+const MARKDOWN_TOC_START = "<!-- markdown-toc start -->"
+const MARKDOWN_TOC_END = "<!-- markdown-toc end -->"
+
+export function markdownTocSlug(title: string): string {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+}
+
+export function markdownTocText(text: string): string {
+  const items = markdownParseHeadings(text).map(h => {
+    const indent = "  ".repeat(Math.max(0, h.level - 1))
+    const title = h.title.trim()
+    return `${indent}- [${title}](#${markdownTocSlug(title)})`
+  })
+  return [MARKDOWN_TOC_START, ...items, MARKDOWN_TOC_END, ""].join("\n")
+}
+
+export function markdownTocBlockRange(text: string): { start: number; end: number } | null {
+  const start = text.indexOf(MARKDOWN_TOC_START)
+  if (start < 0) return null
+  const endMarker = text.indexOf(MARKDOWN_TOC_END, start + MARKDOWN_TOC_START.length)
+  if (endMarker < 0) return null
+  let end = endMarker + MARKDOWN_TOC_END.length
+  if (text[end] === "\r" && text[end + 1] === "\n") end += 2
+  else if (text[end] === "\n") end += 1
+  return { start, end }
+}
+
 export function markdownHeadingAtPoint(text: string, point: number): MarkdownHeading | null {
   const line = text.slice(0, point).split("\n").length - 1
   return markdownParseHeadings(text).find(h => h.line === line) ?? null
@@ -1184,6 +1215,8 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-x C-m", "markdown-toggle-markup-hiding")
   keymap.bind("C-c C-x C-l", "markdown-toggle-url-hiding")
   keymap.bind("C-c C-x C-f", "markdown-toggle-fontify-code-blocks-natively")
+  // markdown-toc has no default binding upstream; "T" would collide with the
+  // "t" insert-table binding since key lookup case-folds shifted letters.
 }
 
 function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
@@ -1346,6 +1379,26 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.scratch("*Markdown Reference Check*", text, "text")
     editor.message(`${labels.length} undefined reference label${labels.length === 1 ? "" : "s"}`)
   }, "List undefined Markdown reference-link labels.")
+
+  editor.command("markdown-toc-generate-toc", ({ editor, buffer }) => {
+    buffer.insert(markdownTocText(buffer.text))
+    editor.message("Inserted markdown TOC")
+  }, "Insert a markdown-toc table of contents at point.")
+
+  editor.command("markdown-toc-refresh-toc", ({ editor, buffer }) => {
+    const range = markdownTocBlockRange(buffer.text)
+    if (!range) {
+      editor.message("No markdown TOC found")
+      return
+    }
+    buffer.replaceRange(range.start, range.end, markdownTocText(buffer.text))
+    buffer.point = range.start
+    editor.message("Refreshed markdown TOC")
+  }, "Refresh an existing markdown-toc table of contents.")
+
+  editor.command("markdown-narrow-to-subtree", ({ editor }) => {
+    editor.message("Narrowing is not supported")
+  }, "Narrow to the current Markdown subtree.")
 
   editor.command("markdown-outdent-or-delete", ({ buffer }) => {
     if (buffer.deleteActiveRegion()) return

@@ -241,6 +241,35 @@ test("bookmark-relocate changes the bookmarked file and preserves position", asy
   expect(editor.currentBuffer.point).toBe(6)
 })
 
+test("bookmark-jump routes tramp-style remote filenames through openFile", async () => {
+  const editor = makeEditor()
+  const file = join(dir, "note.txt")
+  const bookmarkFile = join(dir, "bookmarks.json")
+  await writeFile(file, "hello\nworld\n", "utf8")
+  await install(editor)
+  setCustom("bookmark-file", bookmarkFile)
+
+  const buffer = await editor.openFile(file)
+  buffer.point = 6
+  await editor.run("bookmark-set", ["remote-note"])
+  const remote = "/ssh:example:/home/me/note.txt"
+  await editor.run("bookmark-relocate", ["remote-note", remote])
+
+  let opened = ""
+  const remoteBuffer = editor.scratch("remote-note.txt", "remote contents", "text")
+  remoteBuffer.path = remote
+  editor.openFile = async path => {
+    opened = path
+    editor.switchToBuffer(remoteBuffer.id)
+    return remoteBuffer
+  }
+
+  await editor.run("bookmark-jump", ["remote-note"])
+  expect(opened).toBe(remote)
+  expect(editor.currentBuffer).toBe(remoteBuffer)
+  expect(editor.currentBuffer.point).toBe(6)
+})
+
 test("bookmark-insert-location inserts the bookmarked file name", async () => {
   const editor = makeEditor()
   const file = join(dir, "note.txt")

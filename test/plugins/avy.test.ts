@@ -13,6 +13,7 @@ import {
   AVY_KEYS,
 } from "../../plugins/avy"
 import { setCustom } from "../../src/runtime/custom"
+import { currentKill } from "../../src/runtime/kill-ring"
 
 const tick = () => new Promise(r => setTimeout(r, 0))
 
@@ -211,6 +212,8 @@ describe("additional avy commands", () => {
     expect(editor.commands.get("avy-goto-char-2")).toBeTruthy()
     expect(editor.commands.get("avy-goto-word-1")).toBeTruthy()
     expect(editor.commands.get("avy-goto-line")).toBeTruthy()
+    expect(editor.commands.get("avy-copy-line")).toBeTruthy()
+    expect(editor.commands.get("avy-move-line")).toBeTruthy()
   })
 
   test("avy-goto-char-2 reads two chars and jumps to a selected pair", async () => {
@@ -245,6 +248,22 @@ describe("additional avy commands", () => {
     expect(buf.point).toBe(4)
     expect(buf.text).toBe("one\ntwo\nthree")
     expect(avySpans(buf)).toEqual([])
+  })
+
+  test("avy-copy-line copies the selected visible line to point", async () => {
+    const { editor, buf, fire } = setup("one\ntwo\nthree\n", 14)
+    void editor.run("avy-copy-line"); await tick()
+    fire("s"); await tick()
+    expect(buf.text).toBe("one\ntwo\nthree\ntwo\n")
+    expect(currentKill(editor)).toBe("two\n")
+  })
+
+  test("avy-move-line moves the selected visible line to point", async () => {
+    const { editor, buf, fire } = setup("one\ntwo\nthree\n", 14)
+    void editor.run("avy-move-line"); await tick()
+    fire("s"); await tick()
+    expect(buf.text).toBe("one\nthree\ntwo\n")
+    expect(currentKill(editor)).toBe("two\n")
   })
 })
 

@@ -16,6 +16,9 @@ import {
   markdownExportBuffer,
   markdownExportHtml,
   markdownParseHeadings,
+  markdownTocBlockRange,
+  markdownTocSlug,
+  markdownTocText,
   markdownUndefinedReferenceLabels,
   parseFencedCodeBlocks,
   MARKDOWN_FOLDED_LOCAL,
@@ -163,6 +166,47 @@ test("markdown-check-refs finds undefined labels and ignores defined labels", ()
   ].join("\n")
 
   expect(markdownUndefinedReferenceLabels(text)).toEqual(["nope", "other label"])
+})
+
+test("markdown-toc helpers generate GitHub-style heading links", () => {
+  const text = "# Top Title!\n\n## Child & More\nTitle Two\n---\n"
+  expect(markdownTocSlug("Child & More")).toBe("child-more")
+  expect(markdownTocText(text)).toBe([
+    "<!-- markdown-toc start -->",
+    "- [Top Title!](#top-title)",
+    "  - [Child & More](#child-more)",
+    "  - [Title Two](#title-two)",
+    "<!-- markdown-toc end -->",
+    "",
+  ].join("\n"))
+})
+
+test("markdown-toc-generate-toc inserts at point and refresh replaces existing block", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "# One\n\ntext\n## Two\n", "markdown")
+  buffer.point = buffer.text.indexOf("text")
+  await editor.run("markdown-toc-generate-toc")
+  expect(buffer.text).toContain("<!-- markdown-toc start -->")
+  expect(buffer.text).toContain("- [One](#one)")
+  expect(buffer.text).toContain("  - [Two](#two)")
+  const range = markdownTocBlockRange(buffer.text)
+  expect(range).not.toBeNull()
+
+  buffer.insert("\n### Three\n")
+  await editor.run("markdown-toc-refresh-toc")
+  expect(buffer.text.match(/markdown-toc start/g)).toHaveLength(1)
+  expect(buffer.text).toContain("    - [Three](#three)")
+})
+
+test("markdown-narrow-to-subtree reports unsupported narrowing", async () => {
+  const editor = makeEditor()
+  install(editor)
+  editor.scratch("doc.md", "# One\n", "markdown")
+  let msg = ""
+  editor.events.on("message", ({ text }) => { msg = text })
+  await editor.run("markdown-narrow-to-subtree")
+  expect(msg).toBe("Narrowing is not supported")
 })
 
 test("markdownExportHtml wraps processor output in a minimal escaped HTML skeleton", () => {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness/script"
-import { install, bindingsUnder, describePrefix, formatWhichKey, paginateWhichKey, showWhichKey, sortWhichKeyEntries } from "../../plugins/which-key"
+import { install, bindingsUnder, describePrefix, describeTopLevelGlobalBindings, formatWhichKey, paginateWhichKey, showWhichKey, sortWhichKeyEntries } from "../../plugins/which-key"
 import { setCustom } from "../../src/runtime/custom"
 import type { Editor } from "../../src/kernel/editor"
 
@@ -109,6 +109,15 @@ describe("describePrefix", () => {
     expect(map.get("a")).toBe("+letters")
     expect(map.get("c")).toBe("+prefix")
   })
+
+  test("describeTopLevelGlobalBindings lists non-prefix global bindings only", () => {
+    editor.key("C-z", "top-command")
+    editor.key("C-y a", "nested-command")
+    const map = new Map(describeTopLevelGlobalBindings(editor))
+    expect(map.get("C-z")).toBe("top-command")
+    expect(map.has("C-y")).toBe(false)
+    expect(map.has("C-y a")).toBe(false)
+  })
 })
 
 describe("formatWhichKey", () => {
@@ -214,5 +223,16 @@ describe("which-key-mode", () => {
 
     await editor.run("which-key-show-previous-page-cycle")
     expect(lastMsg()).toContain("(3/3)")
+  })
+
+  test("which-key-show-top-level displays paged top-level global bindings", async () => {
+    editor.lastViewport = { rows: 24, cols: 34 }
+    editor.key("C-z", "top-command")
+    editor.key("C-y", "yank")
+    await editor.run("which-key-show-top-level")
+    expect(lastMsg().startsWith("Top-level-:")).toBe(true)
+    expect(lastMsg()).toContain("(1/")
+    await editor.run("which-key-show-next-page-cycle")
+    expect(lastMsg().startsWith("Top-level-:")).toBe(true)
   })
 })

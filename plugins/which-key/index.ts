@@ -71,6 +71,18 @@ export function describePrefix(editor: Editor, prefix: string): WhichKeyEntry[] 
   return sortWhichKeyEntries([...out.entries()])
 }
 
+export function describeTopLevelGlobalBindings(editor: Editor): WhichKeyEntry[] {
+  const all = editor.keymap.all()
+  const prefixes = new Set<string>()
+  for (const [seq] of all) {
+    const sp = seq.indexOf(" ")
+    if (sp >= 0) prefixes.add(seq.slice(0, sp))
+  }
+  return sortWhichKeyEntries(all
+    .filter(([seq]) => !seq.includes(" ") && !prefixes.has(seq))
+    .map(([seq, cmd]) => [seq, cmd] as WhichKeyEntry))
+}
+
 function prefixLabel(editor: Editor, prefix: string, next: string): string {
   const full = normalizeSequence(`${prefix} ${next}`)
   const rawCustom = getCustom<unknown>("which-key-prefix-name-alist")
@@ -154,6 +166,10 @@ function paginateWhichKeyWithCount(prefix: string, entries: WhichKeyEntry[], sep
 export function showWhichKey(editor: Editor, prefix: string, page = 0): void {
   const entries = describePrefix(editor, prefix)
   if (!entries.length) return
+  showWhichKeyEntries(editor, prefix, entries, page)
+}
+
+export function showWhichKeyEntries(editor: Editor, prefix: string, entries: WhichKeyEntry[], page = 0): void {
   const sep = getCustom<string>("which-key-separator") ?? " → "
   const pages = paginateWhichKey(prefix, entries, sep, editor.lastViewport?.cols)
   const s = st(editor)
@@ -169,7 +185,9 @@ function showPage(editor: Editor, delta: number): void {
     editor.message("No which-key popup is active")
     return
   }
-  showWhichKey(editor, s.prefix, s.page + delta)
+  const sep = getCustom<string>("which-key-separator") ?? " → "
+  s.page = ((s.page + delta) % s.pages.length + s.pages.length) % s.pages.length
+  editor.message(formatWhichKey(s.prefix, s.pages[s.page]!, sep, { index: s.page, count: s.pages.length }))
 }
 
 function cancel(editor: Editor): void {
@@ -229,6 +247,12 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("which-key-show-previous-page-cycle", ({ editor: ed }) => {
     showPage(ed, -1)
   }, "Show the previous which-key page, cycling at the beginning.")
+
+  editor.command("which-key-show-top-level", ({ editor: ed }) => {
+    const entries = describeTopLevelGlobalBindings(ed)
+    if (!entries.length) return ed.message("No top-level bindings")
+    showWhichKeyEntries(ed, "Top-level", entries)
+  }, "Show all top-level non-prefix global bindings.")
 
   editor.events.on("changed", ({ reason }) => {
     if (!editor.isMinorModeEnabled("which-key-mode")) return

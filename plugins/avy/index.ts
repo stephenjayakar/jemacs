@@ -7,6 +7,7 @@ import { visibleTextRegionFromStart, pageScrollLines } from "../../src/display/v
 import { readKey } from "../../src/core/emacs-standard"
 import { keyToken } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
+import { killNew } from "../../src/runtime/kill-ring"
 
 /** Home-row label alphabet (Emacs avy default `avy-keys`). */
 export const AVY_KEYS = ["a", "s", "d", "f", "g", "h", "j", "k", "l"] as const
@@ -176,11 +177,11 @@ function jump(editor: Editor, t: AvyTarget): void {
   editor.currentBuffer.point = t.point
 }
 
-async function selectTarget(editor: Editor, targets: AvyTarget[]): Promise<void> {
+async function selectTarget(editor: Editor, targets: AvyTarget[], jumpChosen = true): Promise<AvyTarget | null> {
   if (targets.length === 1) {
-    jump(editor, targets[0]!)
+    if (jumpChosen) jump(editor, targets[0]!)
     editor.message("")
-    return
+    return targets[0]!
   }
 
   const labels = avyLabels(targets.length)
@@ -205,9 +206,34 @@ async function selectTarget(editor: Editor, targets: AvyTarget[]): Promise<void>
     void editor.changed("avy")
   }
   if (chosen) {
-    jump(editor, chosen)
+    if (jumpChosen) jump(editor, chosen)
     editor.message("")
   }
+  return chosen ?? null
+}
+
+function lineSpanIncludingNewline(buffer: BufferModel, point: number): { start: number; end: number; text: string } {
+  const line = buffer.lineAt(point)
+  const [start, end] = buffer.lineBounds(line)
+  const fullEnd = buffer.text[end] === "\n" ? end + 1 : end
+  return { start, end: fullEnd, text: buffer.text.slice(start, fullEnd) }
+}
+
+async function avyCopyOrMoveLine(editor: Editor, move: boolean): Promise<void> {
+  const origin = editor.currentBuffer
+  const insertAt = origin.point
+  const target = await selectTarget(editor, avyCollectLine(editor), false)
+  if (!target) return
+  const source = editor.buffers.get(target.bufferId)
+  if (!source) return
+  const span = lineSpanIncludingNewline(source, target.point)
+  killNew(editor, span.text)
+  if (move) {
+    source.deleteRange(span.start, span.end)
+    if (source.id === origin.id && span.start < insertAt) origin.point = Math.max(span.start, insertAt - span.text.length)
+  }
+  origin.insert(span.text)
+  editor.message(move ? "Moved line" : "Copied line")
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
@@ -264,6 +290,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!targets.length) return editor.message("No candidates")
     await selectTarget(editor, targets)
   }, "Label the beginning of each visible line, then jump to the chosen label.")
+
+  editor.command("avy-copy-line", async ({ editor }) => {
+    await avyCopyOrMoveLine(editor, false)
+  }, "Copy a visible line selected with avy to point.")
+
+  editor.command("avy-move-line", async ({ editor }) => {
+    await avyCopyOrMoveLine(editor, true)
+  }, "Move a visible line selected with avy to point.")
 
   editor.key("C-;", "avy-goto-char")
 }
