@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
+import { keySeq } from "./harness"
 
 test("GNU standard keys from emacs-standard are bound", () => {
   const editor = new Editor()
@@ -24,6 +25,11 @@ test("GNU standard keys from emacs-standard are bound", () => {
   expect(editor.keymap.get("C-h f")).toBe("describe-function")
   expect(editor.keymap.get("C-h c")).toBe("describe-key-briefly")
   expect(editor.keymap.get("C-h m")).toBe("describe-mode")
+  expect(editor.keymap.get("C-M-%")).toBe("query-replace-regexp")
+  expect(editor.keymap.get("M-s o")).toBe("occur")
+  expect(editor.keymap.get("M-!")).toBe("shell-command")
+  expect(editor.keymap.get("M-&")).toBe("async-shell-command")
+  expect(editor.keymap.get("M-|")).toBe("shell-command-on-region")
 })
 
 test("beginning-of-buffer and end-of-buffer move point", async () => {
@@ -161,4 +167,78 @@ test("upcase-region and capitalize-region operate on the region", async () => {
 
   await editor.run("capitalize-region")
   expect(buffer.text).toBe("Hello world")
+})
+
+test("replace-regexp supports Emacs-style group references", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("foo12 bar foo34", false)
+  buffer.point = 0
+
+  await editor.run("replace-regexp", ["(foo)([0-9]+)", "\\2-\\1"])
+  expect(buffer.text).toBe("12-foo bar 34-foo")
+})
+
+test("query-replace-regexp reuses query loop and supports group references", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("a1 a2 a3", false)
+  buffer.point = 0
+
+  const done = editor.run("query-replace-regexp", ["a([0-9])", "b\\1"])
+  await keySeq(editor, "!")
+  await done
+  expect(buffer.text).toBe("b1 b2 b3")
+})
+
+test("occur lists matching lines and RET jumps to the source line", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  // scratch() registers the name with the display-name cache; renaming a
+  // buffer's .name field directly would leave the cached name stale.
+  const source = editor.scratch("notes.txt", "alpha\nbeta\nalphabet\ngamma\n")
+
+  await editor.run("occur", ["alpha"])
+  const occur = editor.currentBuffer
+  expect(occur.name).toBe("*Occur*")
+  expect(occur.mode).toBe("occur-mode")
+  expect(occur.text).toBe('2 matches for "alpha" in buffer: notes.txt\n1: alpha\n3: alphabet\n')
+
+  occur.point = occur.text.indexOf("3: alphabet")
+  await editor.run("occur-mode-goto-occurrence")
+  expect(editor.currentBuffer.id).toBe(source.id)
+  expect(source.lineCol().line).toBe(3)
+})
+
+test("sort-lines sorts region ascending and descending with prefix", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("c\na\nb\n", false)
+  buffer.point = 0
+  buffer.mark = buffer.text.length
+
+  await editor.run("sort-lines")
+  expect(buffer.text).toBe("a\nb\nc\n")
+
+  buffer.point = 0
+  buffer.mark = buffer.text.length
+  editor.prefixArg.addDigit(1)
+  await editor.run("sort-lines")
+  expect(buffer.text).toBe("c\nb\na\n")
+})
+
+test("shell-command-on-region can replace the region with command output", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("abc\nkeep", false)
+  buffer.point = 0
+  buffer.mark = 3
+  editor.prefixArg.addDigit(1)
+
+  await editor.run("shell-command-on-region", ["tr a-z A-Z"])
+  expect(buffer.text).toBe("ABC\nkeep")
 })

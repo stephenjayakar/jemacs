@@ -5,9 +5,9 @@ import type { BufferModel } from "../src/kernel/buffer"
 import type { TextSpan } from "../src/modes/mode"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 import { currentKill, getKillRing, killNew, killRingIndex as ringIndex } from "../src/runtime/kill-ring"
-import { isPrintable } from "../src/kernel/keymap"
+import { isPrintable, Keymap } from "../src/kernel/keymap"
 import { scrollDownCommand, scrollUpCommand, selectedWindowBodyBudget } from "../src/display/scroll"
-import { modeFeature } from "../src/modes/mode"
+import { defineMode, modeFeature } from "../src/modes/mode"
 import { spawnProcess } from "../src/platform/runtime"
 import { readKey } from "./misc"
 
@@ -17,6 +17,12 @@ defcustom("read-quoted-char-radix", "number", 8,
   "Radix for numeric character input read by `quoted-insert'.", "editing")
 
 export function install(editor: Editor, ctx?: PluginContext): void {
+  const occurMap = new Keymap("occur-mode-map")
+  occurMap.bind("enter", "occur-mode-goto-occurrence")
+  occurMap.bind("return", "occur-mode-goto-occurrence")
+  occurMap.bind("C-m", "occur-mode-goto-occurrence")
+  defineMode({ name: "occur-mode", parent: "text", keymap: occurMap })
+
   const moveChar = (buffer: BufferModel, editor: Editor, delta: number) => {
     const target = buffer.point + delta
     if (target < 0) {
@@ -697,6 +703,19 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
 
+  editor.command("replace-regexp", async ({ buffer, editor, args }) => {
+    const from = args[0] ?? await editor.prompt("Replace regexp: ", "", "replace")
+    if (!from) return
+    const to = args[1] ?? await editor.prompt(`Replace regexp ${from} with: `, "", "replace")
+    if (to == null) return
+    let re: RegExp
+    try { re = makeSearchRegexp(from, true) }
+    catch (err) { editor.message((err as Error).message); return }
+    const region = replacementRegion(buffer)
+    const replaced = buffer.text.slice(region.start, region.end).replace(re, emacsReplacementToJs(to))
+    buffer.replaceRange(region.start, region.end, replaced)
+  }, "Replace a regexp in the region or current buffer.")
+
   // Kernel has no removeOverlaySource yet, so register the source once per
   // Editor (defvar/WeakMap, like kill-ring) and have each install reuse the
   // same state object — reloads then mutate it instead of stacking closures.
@@ -751,6 +770,131 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     }
     editor.message(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`)
   }, "Replace occurrences with confirmation.")
+
+  editor.command("query-replace-regexp", async ({ buffer, editor, args }) => {
+    const from = args[0] ?? await editor.prompt("Query replace regexp: ", "", "query-replace")
+    if (!from) return
+    const to = args[1] ?? await editor.prompt(`Query replace regexp ${from} with: `, "", "query-replace")
+    if (to == null) return
+    let re: RegExp
+    try { re = makeSearchRegexp(from, true) }
+    catch (err) { editor.message((err as Error).message); return }
+    const replacement = emacsReplacementToJs(to)
+    let index = buffer.point
+    let count = 0
+    let all = false
+    qr!.buffer = buffer
+    const trail: Array<{ at: number; before: string; after: string; replaced: boolean }> = []
+    try {
+    while (index <= buffer.text.length) {
+      re.lastIndex = index
+      const match = re.exec(buffer.text)
+      if (!match) break
+      const at = match.index
+      const before = match[0]!
+      const matchEnd = at + before.length
+      buffer.point = at
+      qr!.spans = [{ start: at, end: matchEnd, face: "isearch" }]
+      const rendered = before.replace(makeSingleReplacementRegexp(from), replacement)
+      const key = all ? "y" : await readKey(editor, `Query replacing ${from} with ${to}: (y n q ! . ^) `)
+      if (key === null || key === "q" || key === "enter" || key === "esc") break
+      if (key === "y" || key === "space" || key === "!" || key === ".") {
+        buffer.replaceRange(at, matchEnd, rendered)
+        trail.push({ at, before, after: rendered, replaced: true })
+        index = at + Math.max(rendered.length, 1)
+        count++
+        if (key === "!") all = true
+        if (key === ".") break
+      } else if (key === "n" || key === "backspace") {
+        trail.push({ at, before, after: rendered, replaced: false })
+        index = at + Math.max(before.length, 1)
+      } else if (key === "^") {
+        const prev = trail.pop()
+        if (!prev) { editor.message("No previous match"); continue }
+        if (prev.replaced) { buffer.replaceRange(prev.at, prev.at + prev.after.length, prev.before); count-- }
+        index = prev.at
+      }
+    }
+    } finally {
+      qr!.spans = []
+      qr!.buffer = null
+    }
+    editor.message(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`)
+  }, "Replace regexp occurrences with confirmation.")
+
+  editor.command("occur", async ({ buffer, editor, args }) => {
+    const input = args[0] ?? await editor.prompt("List lines matching regexp: ", "", "occur")
+    if (!input) return
+    let re: RegExp
+    try { re = makeSearchRegexp(input, false) }
+    catch (err) { editor.message((err as Error).message); return }
+    const source = buffer
+    const rows: Array<{ bufferId: string; line: number } | null> = []
+    const lines: string[] = []
+    let matches = 0
+    const sourceLines = source.text.split("\n")
+    for (let i = 0; i < sourceLines.length; i++) {
+      re.lastIndex = 0
+      if (!re.test(sourceLines[i]!)) continue
+      matches++
+      lines.push(`${i + 1}: ${sourceLines[i]}`)
+      rows.push({ bufferId: source.id, line: i + 1 })
+    }
+    const heading = `${matches} matches for "${input}" in buffer: ${editor.bufferDisplayName(source)}`
+    const out = editor.scratch("*Occur*", [heading, ...lines].join("\n") + "\n", "occur-mode")
+    out.readOnly = true
+    out.locals.set("occur-targets", [null, ...rows])
+    editor.switchToBuffer(out.id)
+    editor.message(matches ? `${matches} match${matches === 1 ? "" : "es"}` : "No matches")
+  }, "Show all lines in the current buffer matching a regexp.")
+
+  editor.command("occur-mode-goto-occurrence", ({ buffer, editor }) => {
+    const targets = (buffer.locals.get("occur-targets") as Array<{ bufferId: string; line: number } | null> | undefined) ?? []
+    const target = targets[buffer.lineCol().line - 1]
+    if (!target) { editor.message("No occurrence on this line"); return }
+    const source = editor.buffers.get(target.bufferId)
+    if (!source) { editor.message("Source buffer is gone"); return }
+    editor.switchToBuffer(source.id)
+    source.point = pointAtLine(source.text, target.line)
+  }, "Visit the occurrence at point.")
+
+  editor.command("sort-lines", ({ buffer, editor, prefixArgument }) => {
+    const region = lineSortRegion(buffer)
+    if (!region) { editor.message("No mark set in this buffer"); return }
+    const original = buffer.text.slice(region.start, region.end)
+    const hadFinalNewline = original.endsWith("\n")
+    const lines = original.replace(/\n$/, "").split("\n")
+    lines.sort((a, b) => a.localeCompare(b))
+    if (prefixArgument != null) lines.reverse()
+    buffer.replaceRange(region.start, region.end, lines.join("\n") + (hadFinalNewline ? "\n" : ""))
+  }, "Sort lines in the region alphabetically; with prefix arg, sort descending.")
+
+  editor.command("shell-command", async ({ buffer, editor, args }) => {
+    const command = args[0] ?? await editor.prompt("Shell command: ", "", "shell-command")
+    if (!command) return
+    const output = await runShellCommand(command, commandDirectory(buffer))
+    showShellCommandOutput(editor, output, "*Shell Command Output*")
+  }, "Execute a shell command and display its output.")
+
+  editor.command("async-shell-command", async ({ buffer, editor, args }) => {
+    const command = args[0] ?? await editor.prompt("Async shell command: ", "", "shell-command")
+    if (!command) return
+    startAsyncShellCommand(editor, command, commandDirectory(buffer))
+  }, "Execute a shell command asynchronously and stream its output.")
+
+  editor.command("shell-command-on-region", async ({ buffer, editor, args, prefixArgument }) => {
+    if (buffer.mark == null || buffer.mark === buffer.point) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+    const command = args[0] ?? await editor.prompt("Shell command on region: ", "", "shell-command")
+    if (!command) return
+    const start = Math.min(buffer.mark, buffer.point)
+    const end = Math.max(buffer.mark, buffer.point)
+    const output = await runShellCommand(command, commandDirectory(buffer), buffer.text.slice(start, end))
+    if (prefixArgument != null) buffer.replaceRange(start, end, output)
+    else showShellCommandOutput(editor, output, "*Shell Command Output*")
+  }, "Execute a shell command with region as input; with prefix arg, replace region with output.")
 
   editor.key("right", "forward-char")
   editor.key("C-f", "forward-char")
@@ -824,6 +968,11 @@ export function install(editor: Editor, ctx?: PluginContext): void {
 
   editor.key("C-c r", "replace-string")
   editor.key("M-%", "query-replace")
+  editor.key("C-M-%", "query-replace-regexp")
+  editor.key("M-s o", "occur")
+  editor.key("M-!", "shell-command")
+  editor.key("M-&", "async-shell-command")
+  editor.key("M-|", "shell-command-on-region")
 }
 
 /** Emacs `simple.el`: N/10 of the way from the beginning or end of the buffer. */
@@ -850,6 +999,120 @@ function recenterEndOfBuffer(editor: Editor): void {
   const fromBottom = 3
   const start = Math.max(0, cursorLine - (bodyBudget - fromBottom - 1))
   editor.setSelectedWindowStartLine(start)
+}
+
+function replacementRegion(buffer: BufferModel): { start: number; end: number } {
+  return buffer.markActive && buffer.mark != null && buffer.mark !== buffer.point
+    ? { start: Math.min(buffer.mark, buffer.point), end: Math.max(buffer.mark, buffer.point) }
+    : { start: buffer.point, end: buffer.text.length }
+}
+
+function makeSearchRegexp(pattern: string, global: boolean): RegExp {
+  return new RegExp(pattern, global ? "g" : "")
+}
+
+function makeSingleReplacementRegexp(pattern: string): RegExp {
+  return new RegExp(pattern)
+}
+
+function emacsReplacementToJs(replacement: string): string {
+  return replacement.replace(/\\([0-9]+)/g, "$$$1")
+}
+
+function pointAtLine(text: string, line: number): number {
+  const target = Math.max(1, line)
+  let offset = 0
+  for (let i = 1; i < target && offset < text.length; i++) {
+    const next = text.indexOf("\n", offset)
+    if (next === -1) return text.length
+    offset = next + 1
+  }
+  return offset
+}
+
+function lineSortRegion(buffer: BufferModel): { start: number; end: number } | null {
+  if (buffer.mark == null || buffer.mark === buffer.point) return null
+  const a = Math.min(buffer.mark, buffer.point)
+  const b = Math.max(buffer.mark, buffer.point)
+  const start = buffer.lineBounds(buffer.lineAt(a))[0]
+  const endLine = buffer.lineAt(Math.max(a, b - 1))
+  const [, lineEnd] = buffer.lineBounds(endLine)
+  const end = buffer.text[lineEnd] === "\n" ? lineEnd + 1 : lineEnd
+  return { start, end }
+}
+
+function commandDirectory(buffer: BufferModel): string {
+  return buffer.directory() ?? (buffer.locals.get("default-directory") as string | undefined) ?? process.cwd()
+}
+
+async function streamText(stream: ReadableStream<Uint8Array> | null, onChunk: (chunk: string) => void): Promise<void> {
+  if (!stream) return
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value?.length) onChunk(decoder.decode(value, { stream: true }))
+  }
+  const tail = decoder.decode()
+  if (tail) onChunk(tail)
+}
+
+async function runShellCommand(command: string, cwd: string, stdin?: string): Promise<string> {
+  const proc = spawnProcess({
+    cmd: ["/bin/sh", "-c", command],
+    cwd,
+    stdin: stdin == null ? "ignore" : "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  if (stdin != null) {
+    proc.stdin?.write(stdin)
+    proc.stdin?.end()
+  }
+  let output = ""
+  await Promise.all([
+    streamText(proc.stdout, chunk => { output += chunk }),
+    streamText(proc.stderr, chunk => { output += chunk }),
+  ])
+  await proc.exited
+  return output
+}
+
+function showShellCommandOutput(editor: Editor, output: string, bufferName: string): void {
+  const trimmed = output.replace(/\n$/, "")
+  if (trimmed && !trimmed.includes("\n") && trimmed.length <= 80) {
+    editor.message(trimmed)
+    return
+  }
+  const buf = editor.scratch(bufferName, output, "text")
+  buf.readOnly = true
+}
+
+function startAsyncShellCommand(editor: Editor, command: string, cwd: string): BufferModel {
+  const buf = editor.scratch("*Async Shell Command*", "", "text")
+  buf.readOnly = true
+  buf.locals.set("default-directory", cwd)
+  let proc: ReturnType<typeof spawnProcess>
+  try {
+    proc = spawnProcess({ cmd: ["/bin/sh", "-c", command], cwd, stdout: "pipe", stderr: "pipe" })
+  } catch (err) {
+    buf.append(`Failed to start process: ${(err as Error).message}\n`)
+    return buf
+  }
+  const append = (chunk: string) => {
+    if (!chunk) return
+    buf.append(chunk)
+    void editor.changed("async-shell-command-filter")
+  }
+  void Promise.all([
+    streamText(proc.stdout, append),
+    streamText(proc.stderr, append),
+  ]).then(async () => {
+    const code = await proc.exited
+    if (code !== 0 && code != null) append(`\nProcess exited with code ${code}\n`)
+  })
+  return buf
 }
 
 function deleteChars(buffer: BufferModel, count: number): string | null {
