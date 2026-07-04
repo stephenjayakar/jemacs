@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness/script"
-import { install, bindingsUnder, describePrefix, formatWhichKey, showWhichKey } from "../../plugins/which-key"
+import { install, bindingsUnder, describePrefix, formatWhichKey, paginateWhichKey, showWhichKey, sortWhichKeyEntries } from "../../plugins/which-key"
 import { setCustom } from "../../src/runtime/custom"
 import type { Editor } from "../../src/kernel/editor"
 
@@ -11,6 +11,10 @@ let messages: string[]
 beforeEach(() => {
   editor = makeEditor()
   install(editor)
+  setCustom("which-key-idle-delay", 0.5)
+  setCustom("which-key-separator", " → ")
+  setCustom("which-key-sort-order", "key-order-alpha")
+  setCustom("which-key-prefix-name-alist", [])
   messages = []
   editor.events.on("message", ({ text }) => { messages.push(text) })
 })
@@ -42,10 +46,10 @@ describe("describePrefix", () => {
     expect(map.get("o")).toBe("other-window")
   })
 
-  test("collapses deeper sequences to +prefix", () => {
+  test("collapses deeper sequences to a prefix group label", () => {
     const entries = describePrefix(editor, "C-x")
     const map = new Map(entries)
-    expect(map.get("4")).toBe("+prefix")
+    expect(map.get("4")).toBe("+other-window")
   })
 
   test("expands a nested prefix on the second keystroke", () => {
@@ -73,12 +77,64 @@ describe("describePrefix", () => {
   test("empty for an unknown prefix", () => {
     expect(describePrefix(editor, "C-q")).toEqual([])
   })
+
+  test("sorts special keys first and prefix groups last", () => {
+    const entries = sortWhichKeyEntries([
+      ["z", "z-command"],
+      ["a", "+prefix"],
+      ["enter", "ret-command"],
+      ["space", "space-command"],
+      ["tab", "tab-command"],
+      ["b", "b-command"],
+    ])
+    expect(entries.map(([k]) => k)).toEqual(["space", "tab", "enter", "b", "z", "a"])
+  })
+
+  test("supports description-order sorting", () => {
+    setCustom("which-key-sort-order", "description-order")
+    const entries = sortWhichKeyEntries([
+      ["z", "zulu-command"],
+      ["b", "alpha-command"],
+      ["a", "+prefix"],
+      ["c", "beta-command"],
+    ])
+    expect(entries.map(([k]) => k)).toEqual(["b", "c", "z", "a"])
+  })
+
+  test("renders named and unnamed prefix groups", () => {
+    setCustom("which-key-prefix-name-alist", [["C-z a", "letters"]])
+    editor.key("C-z a b", "cmd-b")
+    editor.key("C-z c d", "cmd-d")
+    const map = new Map(describePrefix(editor, "C-z"))
+    expect(map.get("a")).toBe("+letters")
+    expect(map.get("c")).toBe("+prefix")
+  })
 })
 
 describe("formatWhichKey", () => {
   test("renders prefix header and key→command pairs", () => {
     const out = formatWhichKey("C-x", [["C-f", "find-file"], ["b", "switch-to-buffer"]], " → ")
     expect(out).toBe("C-x-:  C-f → find-file  b → switch-to-buffer")
+  })
+
+  test("renders Emacs key descriptions for special keys", () => {
+    const out = formatWhichKey("C-c", [["space", "set-mark-command"], ["tab", "indent"], ["enter", "newline"]], " → ")
+    expect(out).toBe("C-c-:  SPC → set-mark-command  TAB → indent  RET → newline")
+  })
+})
+
+describe("paginateWhichKey", () => {
+  test("splits entries by echo-area width", () => {
+    const entries: Array<[string, string]> = [
+      ["a", "alpha-command"],
+      ["b", "bravo-command"],
+      ["c", "charlie-command"],
+    ]
+    expect(paginateWhichKey("C-z", entries, " → ", 34)).toEqual([
+      [["a", "alpha-command"]],
+      [["b", "bravo-command"]],
+      [["c", "charlie-command"]],
+    ])
   })
 })
 
@@ -99,7 +155,7 @@ describe("which-key-mode", () => {
     const ok = await waitFor(() => lastMsg().startsWith("C-x-:"))
     expect(ok).toBe(true)
     expect(lastMsg()).toContain("C-s → save-buffer")
-    expect(lastMsg()).toContain("4 → +prefix")
+    expect(lastMsg()).toContain("4 → +other-window")
   })
 
   test("follow-up key before the delay cancels the popup", async () => {
@@ -132,6 +188,31 @@ describe("which-key-mode", () => {
     editor.enableMinorMode("which-key-mode")
     showWhichKey(editor, "C-h")
     expect(lastMsg()).toContain("b : describe-bindings")
-    setCustom("which-key-separator", " → ")
+  })
+
+  test("cycles pages with which-key page commands", async () => {
+    editor.enableMinorMode("which-key-mode")
+    editor.lastViewport = { rows: 24, cols: 34 }
+    editor.key("C-z a", "alpha-command")
+    editor.key("C-z b", "bravo-command")
+    editor.key("C-z c", "charlie-command")
+
+    showWhichKey(editor, "C-z")
+    expect(lastMsg()).toContain("(1/3)")
+    expect(lastMsg()).toContain("a → alpha-command")
+
+    await editor.run("which-key-show-next-page-cycle")
+    expect(lastMsg()).toContain("(2/3)")
+    expect(lastMsg()).toContain("b → bravo-command")
+
+    await editor.run("which-key-show-next-page-cycle")
+    expect(lastMsg()).toContain("(3/3)")
+    expect(lastMsg()).toContain("c → charlie-command")
+
+    await editor.run("which-key-show-next-page-cycle")
+    expect(lastMsg()).toContain("(1/3)")
+
+    await editor.run("which-key-show-previous-page-cycle")
+    expect(lastMsg()).toContain("(3/3)")
   })
 })
