@@ -122,3 +122,43 @@ test("beginning-of-buffer and end-of-buffer with prefix preserve active mark", a
   expect(buffer.mark).toBe(1)
   expect(buffer.markActive).toBe(true)
 })
+
+test("word case commands transform and move like Emacs", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello world foo", false)
+  buffer.point = 0
+
+  await editor.run("upcase-word")
+  expect(buffer.text).toBe("HELLO world foo")
+  expect(buffer.point).toBe(5)
+
+  await editor.run("capitalize-word")
+  expect(buffer.text).toBe("HELLO World foo")
+  expect(buffer.point).toBe(11)
+
+  await editor.run("downcase-word")
+  expect(buffer.text).toBe("HELLO World foo")
+
+  expect(editor.keymap.get("M-u")).toBe("upcase-word")
+  expect(editor.keymap.get("M-l")).toBe("downcase-word")
+  expect(editor.keymap.get("M-c")).toBe("capitalize-word")
+  expect(editor.keymap.get("C-x C-u")).toBe("upcase-region")
+})
+
+test("upcase-region and capitalize-region operate on the region", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  buffer.setText("hello world", false)
+  buffer.point = 0
+  buffer.setMark()
+  buffer.point = 5
+
+  await editor.run("upcase-region")
+  expect(buffer.text).toBe("HELLO world")
+
+  await editor.run("capitalize-region")
+  expect(buffer.text).toBe("Hello world")
+})

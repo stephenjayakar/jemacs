@@ -644,6 +644,47 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     replaceRegionText(buffer, text => text.toLowerCase())
   }, "Convert the region to lower case.")
 
+  editor.command("upcase-region", ({ buffer, editor }) => {
+    if (buffer.mark == null) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+    replaceRegionText(buffer, text => text.toUpperCase())
+  }, "Convert the region to upper case.")
+
+  editor.command("capitalize-region", ({ buffer, editor }) => {
+    if (buffer.mark == null) {
+      editor.message("No mark set in this buffer")
+      return
+    }
+    replaceRegionText(buffer, capitalizeWords)
+  }, "Capitalize each word in the region.")
+
+  // Word case commands move by `moveByWord`, so they respect subword-mode's
+  // buffer-local word regexps like the kill/motion commands do.
+  const caseWords = (buffer: CommandContext["buffer"], n: number, transform: (text: string) => string) => {
+    if (n === 0) return
+    const start = buffer.point
+    const dir = n < 0 ? -1 : 1
+    for (let i = 0; i < Math.abs(n); i++) moveByWord(buffer, dir)
+    const [a, b] = dir > 0 ? [start, buffer.point] : [buffer.point, start]
+    buffer.replaceRange(a, b, transform(buffer.text.slice(a, b)))
+    // Negative arg: operate on preceding words, leaving point where it was.
+    buffer.point = dir > 0 ? buffer.point : start
+  }
+
+  editor.command("upcase-word", ({ buffer, prefixArgument }) => {
+    caseWords(buffer, prefixArgument ?? 1, text => text.toUpperCase())
+  }, "Convert the word after point to upper case, moving over it.")
+
+  editor.command("downcase-word", ({ buffer, prefixArgument }) => {
+    caseWords(buffer, prefixArgument ?? 1, text => text.toLowerCase())
+  }, "Convert the word after point to lower case, moving over it.")
+
+  editor.command("capitalize-word", ({ buffer, prefixArgument }) => {
+    caseWords(buffer, prefixArgument ?? 1, capitalizeWords)
+  }, "Capitalize the word after point, moving over it.")
+
   editor.command("replace-string", async ({ buffer, editor, args }) => {
     const from = args[0] ?? await editor.prompt("Replace string: ", "", "replace")
     if (!from) return
@@ -776,6 +817,10 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.key("C-/", "undo")
   editor.key("C-x u", "undo")
   editor.key("C-x C-l", "downcase-region")
+  editor.key("C-x C-u", "upcase-region")
+  editor.key("M-u", "upcase-word")
+  editor.key("M-l", "downcase-word")
+  editor.key("M-c", "capitalize-word")
 
   editor.key("C-c r", "replace-string")
   editor.key("M-%", "query-replace")
@@ -990,4 +1035,8 @@ function moveByWord(buffer: CommandContext["buffer"], dir: 1 | -1): boolean {
     buffer.point = match.index
     return true
   }
+}
+
+function capitalizeWords(text: string): string {
+  return text.replace(/[\p{L}\p{M}\p{N}_]+/gu, w => w[0]!.toUpperCase() + w.slice(1).toLowerCase())
 }
