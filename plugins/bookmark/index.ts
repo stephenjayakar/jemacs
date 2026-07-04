@@ -217,6 +217,50 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     editor.message(`Renamed bookmark ${oldName} to ${newName}`)
   }, "Change the name of OLD-NAME bookmark to NEW-NAME name.")
 
+  editor.command("bookmark-edit-annotation", async ({ editor, args }) => {
+    const table = tableFor(editor)
+    const names = bookmarkNames(table)
+    if (!names.length) {
+      editor.message("No bookmarks")
+      return
+    }
+    const name = args[0]
+      ?? await editor.completingRead("Edit annotation of bookmark: ", {
+        collection: names,
+        history: "bookmark",
+      })
+    if (!name) return
+    const record = table[name]
+    if (!record) {
+      editor.message(`No bookmark named ${name}`)
+      return
+    }
+    const annotation = args[1]
+      ?? await editor.prompt(`Annotation for ${name}: `, record.annotation ?? "", "bookmark-annotation")
+    if (annotation == null) return
+    if (annotation.trim()) record.annotation = annotation
+    else delete record.annotation
+    await bookmarkSave(table)
+    editor.message(annotation.trim() ? `Annotated bookmark ${name}` : `Removed annotation from ${name}`)
+  }, "Set or clear the annotation of a bookmark (empty input clears it).")
+
+  editor.command("bookmark-show-annotation", async ({ editor, args }) => {
+    const table = tableFor(editor)
+    const names = bookmarkNames(table)
+    const name = args[0]
+      ?? await editor.completingRead("Show annotation of bookmark: ", {
+        collection: names,
+        history: "bookmark",
+      })
+    if (!name) return
+    const record = table[name]
+    if (!record) {
+      editor.message(`No bookmark named ${name}`)
+      return
+    }
+    editor.message(record.annotation ? `${name}: ${record.annotation}` : `Bookmark ${name} has no annotation`)
+  }, "Display the annotation of a bookmark.")
+
   editor.command("bookmark-relocate", async ({ editor, args }) => {
     const table = tableFor(editor)
     const names = bookmarkNames(table)
@@ -314,9 +358,10 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
       editor.message("No bookmarks")
       return
     }
-    const lines = names.map((name, i) => {
+    const lines = names.flatMap((name, i) => {
       const rec = table[name]!
-      return `${String(i + 1).padStart(3)}  ${name} — ${rec.filename}${rec.position ? ` @${rec.position + 1}` : ""}`
+      const head = `${String(i + 1).padStart(3)}  ${name} — ${rec.filename}${rec.position ? ` @${rec.position + 1}` : ""}`
+      return rec.annotation ? [head, `       ${rec.annotation}`] : [head]
     })
     editor.scratch("*Bookmark List*", lines.join("\n"), "text")
   }

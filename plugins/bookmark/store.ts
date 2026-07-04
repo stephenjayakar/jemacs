@@ -8,6 +8,7 @@ export type BookmarkRecord = {
   position: number
   frontContext?: string
   rearContext?: string
+  annotation?: string
 }
 
 export type BookmarkTable = Record<string, BookmarkRecord>

@@ -309,3 +309,32 @@ test("bookmark-jump-other-window jumps in another selected window", async () => 
   expect(editor.currentBuffer.path).toBe(file)
   expect(editor.currentBuffer.point).toBe(6)
 })
+
+test("bookmark-edit-annotation sets, shows, persists, and clears", async () => {
+  const editor = makeEditor()
+  const file = join(dir, "note.txt")
+  const bookmarkFile = join(dir, "bookmarks.json")
+  await writeFile(file, "hello\nworld\n", "utf8")
+  await install(editor)
+  setCustom("bookmark-file", bookmarkFile)
+
+  const buffer = await editor.openFile(file)
+  buffer.point = 0
+  await editor.run("bookmark-set", ["noted"])
+  await editor.run("bookmark-edit-annotation", ["noted", "remember this"])
+
+  let saved = JSON.parse(await readFile(bookmarkFile, "utf8")) as Record<string, { annotation?: string }>
+  expect(saved["noted"]!.annotation).toBe("remember this")
+
+  await editor.run("bookmark-bmenu-list")
+  expect(editor.currentBuffer.text).toContain("remember this")
+
+  let msg = ""
+  editor.events.on("message", ({ text }) => { msg = text })
+  await editor.run("bookmark-show-annotation", ["noted"])
+  expect(msg).toContain("remember this")
+
+  await editor.run("bookmark-edit-annotation", ["noted", ""])
+  saved = JSON.parse(await readFile(bookmarkFile, "utf8")) as Record<string, { annotation?: string }>
+  expect(saved["noted"]!.annotation).toBeUndefined()
+})
