@@ -11,6 +11,7 @@ import { spawnProcess } from "../../src/platform/runtime"
 import { diffFontLockText } from "../../src/modes/diff"
 import { projectRoot } from "../project"
 import { BLAME_SHAS_LOCAL, blameChunkTarget, blameShaAtPoint, parseBlamePorcelain, renderBlame } from "./blame"
+import { parseBisectOutput } from "./bisect"
 
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
@@ -142,13 +143,14 @@ function foldKey(file: string, staged: boolean): string {
 
 export async function buildStatus(root: string, folded: ReadonlySet<string> = new Set(), context = DEFAULT_DIFF_CONTEXT): Promise<MagitStatus> {
   const diffContextArgs = magitDiffContextArgs(context)
-  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList] = await Promise.all([
+  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, bisectPath] = await Promise.all([
     git(["status", "--porcelain=v2", "--branch"], root),
     git(["log", "-1", "--pretty=%s"], root),
     git(["diff", ...diffContextArgs], root),
     git(["diff", "--cached", ...diffContextArgs], root),
     git(["log", "-n", "10", "--pretty=%h %s"], root),
     git(["stash", "list"], root),
+    git(["rev-parse", "--git-path", "BISECT_LOG"], root),
   ])
   const { branch, upstream, files } = parsePorcelain(status.out)
   const unstagedDiffs = new Map(parseDiff(unstagedDiff.out).map(d => [d.file, d]))
@@ -164,6 +166,10 @@ export async function buildStatus(root: string, folded: ReadonlySet<string> = ne
 
   push(`Head:     ${branch ?? "(detached)"} ${headMsg.out.trim()}`)
   if (upstream) push(`Merge:    ${upstream}`)
+  const bisectLog = bisectPath.out.trim()
+  if (bisectPath.code === 0 && bisectLog && existsSync(isAbsolute(bisectLog) ? bisectLog : join(root, bisectLog))) {
+    push("Bisect:   in progress")
+  }
   push("")
 
   const section = (title: string, items: FileChange[], isStaged: boolean, diffs: Map<string, FileDiff>) => {
@@ -357,6 +363,17 @@ function commitMessageBuffer(editor: Editor): BufferModel | null {
   return [...editor.buffers.values()].find(buffer => buffer.mode === "magit-commit") ?? null
 }
 
+async function showRevision(editor: Editor, root: string, sha: string, source?: BufferModel): Promise<BufferModel> {
+  const { out } = await git(["show", "--stat", "-p", sha], root)
+  const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "magit-revision-mode")
+  buf.readOnly = true
+  buf.locals.set("magit-root", root)
+  buf.locals.set("magit-diff-args", ["diff", `${sha}^!`])
+  if (source) pushMagitHistory(buf, source)
+  buf.point = 0
+  return buf
+}
+
 function prefixCount(prefix: unknown): number {
   if (typeof prefix === "number" && Number.isFinite(prefix)) return Math.max(1, Math.trunc(Math.abs(prefix)))
   return 1
@@ -369,7 +386,7 @@ export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): T
   let offset = base
   for (const line of text.split("\n")) {
     const end = offset + line.length
-    if (/^(Head|Merge|Unstaged|Staged|Stashes|Recent)\b/.test(line)) sectionSpans.push({ start: offset, end, face: "keyword" })
+    if (/^(Head|Merge|Bisect|Unstaged|Staged|Stashes|Recent)\b/.test(line)) sectionSpans.push({ start: offset, end, face: "keyword" })
     offset = end + 1
   }
   return [...sectionSpans, ...diffFontLockText(text, base)]
@@ -423,6 +440,7 @@ const magitDispatchTransient: TransientDefinition = {
       { key: "d", label: "diff", command: "magit-diff-popup" },
       { key: "z", label: "stash", command: "magit-stash-popup" },
       { key: "x", label: "reset", command: "magit-reset-popup" },
+      { key: "S-b", label: "bisect", command: "magit-bisect-popup" },
       { key: "m", label: "merge", command: "magit-merge-popup" },
       { key: "r", label: "rebase", command: "magit-rebase-popup" },
       { key: "S-a", label: "cherry-pick", command: "magit-cherry-pick-popup" },
@@ -606,6 +624,18 @@ const magitRemoteTransient: TransientDefinition = {
   ] }],
 }
 
+const magitBisectTransient: TransientDefinition = {
+  name: "magit-bisect",
+  title: "Bisect",
+  groups: [{ title: "Actions", suffixes: [
+    { key: "s", label: "start", command: "magit-bisect-start" },
+    { key: "g", label: "good", command: "magit-bisect-good" },
+    { key: "b", label: "bad", command: "magit-bisect-bad" },
+    { key: "k", label: "skip", command: "magit-bisect-skip" },
+    { key: "r", label: "reset", command: "magit-bisect-reset" },
+  ] }],
+}
+
 function defineTransientCommand(editor: Editor, command: string, definition: TransientDefinition, description: string): void {
   editor.command(command, ({ editor }) => editor.openTransient(definition), description)
 }
@@ -634,6 +664,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   magitModeMap.bind("-", "magit-diff-less-context")
   magitModeMap.bind("0", "magit-diff-default-context")
   magitModeMap.bind("d", "magit-diff-popup")
+  magitModeMap.bind("S-b", "magit-bisect-popup")
   magitModeMap.bind("S-d", "magit-diff-refresh")
   magitModeMap.bind("g", "magit-refresh")
   magitModeMap.bind("S-g", "magit-refresh-all")
@@ -688,6 +719,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("z k", "magit-stash-drop")
   statusMap.bind("z l", "magit-stash-list")
   statusMap.bind("z s", "magit-stash-save")
+  statusMap.bind("S-b s", "magit-bisect-start")
+  statusMap.bind("S-b g", "magit-bisect-good")
+  statusMap.bind("S-b b", "magit-bisect-bad")
+  statusMap.bind("S-b k", "magit-bisect-skip")
+  statusMap.bind("S-b r", "magit-bisect-reset")
   statusMap.bind("m m", "magit-merge")
   statusMap.bind("m a", "magit-merge-abort")
   statusMap.bind("r r", "magit-rebase-continue")
@@ -736,6 +772,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("z", "magit-stash-popup")
   statusMap.bind("x", "magit-reset-popup")
   statusMap.bind("S-x", "magit-reset-popup")
+  statusMap.bind("S-b", "magit-bisect-popup")
   statusMap.bind("m", "magit-merge-popup")
   statusMap.bind("r", "magit-rebase-popup")
   statusMap.bind("S-a", "magit-cherry-pick-popup")
@@ -815,12 +852,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("No commit at point")
       return
     }
-    const { out } = await git(["show", "--stat", "-p", sha], root)
-    const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "magit-revision-mode")
-    buf.readOnly = true
-    buf.locals.set("magit-root", root)
-    buf.locals.set("magit-diff-args", ["diff", `${sha}^!`])
-    buf.point = 0
+    await showRevision(editor, root, sha)
   }, "Show the commit blamed for the line at point.")
 
   editor.command("magit-blame-next-chunk", ({ buffer, editor }) => {
@@ -923,6 +955,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   defineTransientCommand(editor, "magit-diff-popup", magitDiffTransient, "Show the Magit diff popup.")
   defineTransientCommand(editor, "magit-stash-popup", magitStashTransient, "Show the Magit stash popup.")
   defineTransientCommand(editor, "magit-reset-popup", magitResetTransient, "Show the Magit reset popup.")
+  defineTransientCommand(editor, "magit-bisect-popup", magitBisectTransient, "Show the Magit bisect popup.")
   defineTransientCommand(editor, "magit-merge-popup", magitMergeTransient, "Show the Magit merge popup.")
   defineTransientCommand(editor, "magit-rebase-popup", magitRebaseTransient, "Show the Magit rebase popup.")
   defineTransientCommand(editor, "magit-cherry-pick-popup", magitCherryPickTransient, "Show the Magit cherry-pick popup.")
@@ -1095,16 +1128,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("No commit at point")
       return
     }
-    const { out } = await git(["show", "--stat", "-p", sha], root)
     const logWindow = editor.selectedWindowId
     editor.splitWindowBelow()
     editor.selectWindow(nextWindowId(editor.windowLayout, editor.selectedWindowId, 1))
-    const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "magit-revision-mode")
-    buf.readOnly = true
-    buf.locals.set("magit-root", root)
-    buf.locals.set("magit-diff-args", ["diff", `${sha}^!`])
-    pushMagitHistory(buf, buffer)
-    buf.point = 0
+    await showRevision(editor, root, sha, buffer)
     editor.selectWindow(logWindow)
   }, "Show the commit at point in a split below, keeping the log selected.")
 
@@ -1480,6 +1507,67 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bury-buffer", async ({ editor }) => {
     await editor.run("magit-mode-bury-buffer")
   }, "Alias for magit-mode-bury-buffer.")
+
+  const gitOutputMessage = (out: string, err: string, fallback: string): string => {
+    return `${out}${err}`.trim() || fallback
+  }
+
+  const finishBisectStep = async (editor: Editor, buffer: BufferModel, root: string, out: string, err: string, fallback: string): Promise<void> => {
+    const parsed = parseBisectOutput(`${out}\n${err}`)
+    await refresh(editor, root)
+    if (parsed?.kind === "culprit") {
+      await showRevision(editor, root, parsed.sha, buffer)
+      editor.message(parsed.line)
+      return
+    }
+    editor.message(parsed?.line ?? gitOutputMessage(out, err, fallback))
+  }
+
+  editor.command("magit-bisect-start", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const bad = args[0] ?? await editor.prompt("Bisect bad revision: ", "HEAD", "magit-bisect-bad")
+    if (!bad) return
+    const good = args[1] ?? await editor.prompt("Bisect good revision: ", "", "magit-bisect-good")
+    if (!good) return
+    const { out, err, code } = await git(["bisect", "start", refname(bad), refname(good)], root)
+    if (code !== 0) return editor.message(`git bisect start failed: ${err.trim() || code}`)
+    await refresh(editor, root, 0)
+    editor.message(gitOutputMessage(out, err, `Bisect started: bad ${bad}, good ${good}`))
+  }, "Start a git bisect session.")
+
+  editor.command("magit-bisect-good", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(["bisect", "good"], root)
+    if (code !== 0) return editor.message(`git bisect good failed: ${err.trim() || code}`)
+    await finishBisectStep(editor, buffer, root, out, err, "Marked current revision good")
+  }, "Mark the current bisect revision as good.")
+
+  editor.command("magit-bisect-bad", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(["bisect", "bad"], root)
+    if (code !== 0) return editor.message(`git bisect bad failed: ${err.trim() || code}`)
+    await finishBisectStep(editor, buffer, root, out, err, "Marked current revision bad")
+  }, "Mark the current bisect revision as bad.")
+
+  editor.command("magit-bisect-skip", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(["bisect", "skip"], root)
+    if (code !== 0) return editor.message(`git bisect skip failed: ${err.trim() || code}`)
+    await finishBisectStep(editor, buffer, root, out, err, "Skipped current revision")
+  }, "Skip the current bisect revision.")
+
+  editor.command("magit-bisect-reset", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(["bisect", "reset"], root)
+    if (code !== 0) return editor.message(`git bisect reset failed: ${err.trim() || code}`)
+    await refresh(editor, root, 0)
+    editor.message(gitOutputMessage(out, err, "Bisect reset"))
+  }, "Reset the current git bisect session.")
 
   // --- Parity batch: merge, rebase, cherry-pick, revert, tag, remote, more ---
 
