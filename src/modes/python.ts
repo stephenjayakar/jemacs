@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate } from "./mode"
+import { defineMode, type CompletionCandidate, type ImenuIndexEntry } from "./mode"
 import { createTreeSitterFontLock } from "./tree-sitter"
 import { codeFontLock } from "./generic"
 
@@ -34,7 +34,28 @@ export function installPythonMode(): void {
     completeAtPoint: pythonCompleteAtPoint,
     beginningOfDefun: pythonBeginningOfDefun,
     endOfDefun: pythonEndOfDefun,
+    imenuIndex: pythonImenuIndex,
   })
+}
+
+export function pythonImenuIndex(buffer: BufferModel): ImenuIndexEntry[] {
+  const entries: ImenuIndexEntry[] = []
+  const classStack: Array<{ name: string; indent: number }> = []
+  for (const match of buffer.text.matchAll(defunRegex)) {
+    const point = match.index ?? 0
+    const kind = match[1] ?? ""
+    const name = match[2] ?? ""
+    const indent = indentationAt(buffer.text, point)
+    while (classStack.length && indent <= classStack[classStack.length - 1]!.indent) classStack.pop()
+    if (kind === "class") {
+      entries.push({ name, point })
+      classStack.push({ name, indent })
+    } else {
+      const parent = classStack[classStack.length - 1]?.name
+      entries.push({ name: parent ? `${parent}.${name}` : name, point })
+    }
+  }
+  return entries
 }
 
 export function pythonIndentLine(buffer: BufferModel): void {

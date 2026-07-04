@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate, type FontLockRange, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type ImenuIndexEntry, type TextSpan } from "./mode"
 
 const emacsLispKeywords = new Set([
   "and", "catch", "cond", "condition-case", "defconst", "defcustom", "defface", "defgroup", "define-derived-mode", "define-key", "define-minor-mode", "defmacro", "defun", "defvar", "function", "if", "interactive", "lambda", "let", "let*", "or", "prog1", "prog2", "progn", "quote", "save-excursion", "save-restriction", "setq", "setq-default", "unwind-protect", "while",
@@ -28,7 +28,16 @@ export function installEmacsLispMode(): void {
     completeAtPoint: emacsLispCompleteAtPoint,
     beginningOfDefun: emacsLispBeginningOfDefun,
     endOfDefun: emacsLispEndOfDefun,
+    imenuIndex: emacsLispImenuIndex,
   })
+}
+
+export function emacsLispImenuIndex(buffer: BufferModel): ImenuIndexEntry[] {
+  const entries: ImenuIndexEntry[] = []
+  for (const match of buffer.text.matchAll(defunRegex)) {
+    entries.push({ name: match[1] ?? match[0], point: match.index ?? 0 })
+  }
+  return entries
 }
 
 export function emacsLispIndentLine(buffer: BufferModel): void {

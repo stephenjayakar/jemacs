@@ -21,6 +21,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["isearch-regexp", () => import("./isearch-regexp")],
   ["windmove", () => import("./windmove")],
   ["next-error", () => import("./next-error")],
+  ["imenu", () => import("./imenu")],
   ["flymake-nav", () => import("./flymake-nav")],
   ["fido", () => import("./fido")],
   ["persist", () => import("./persist")],

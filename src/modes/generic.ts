@@ -1,5 +1,5 @@
 import type { BufferModel } from "../kernel/buffer"
-import { defineMode, type CompletionCandidate, type FontLockRange, type Mode, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type ImenuIndexEntry, type Mode, type TextSpan } from "./mode"
 import { createTreeSitterFontLock } from "./tree-sitter"
 
 const javascriptKeywords = new Set("async await break case catch class const continue default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield".split(" "))
@@ -59,7 +59,47 @@ function defineTreeSitterCodeMode(name: string, keywords: Set<string>, commentSt
     indentLine: buffer => braceIndentLine(buffer, indentWidth),
     fontLock: hybridCodeFontLock(name, keywords, commentStart),
     completeAtPoint: buffer => wordCompleteAtPoint(buffer, keywords),
+    imenuIndex: name === "javascript" || name === "typescript" ? javascriptImenuIndex : undefined,
   })
+}
+
+export function javascriptImenuIndex(buffer: BufferModel): ImenuIndexEntry[] {
+  const entries: ImenuIndexEntry[] = []
+  const classStack: Array<{ name: string; depth: number }> = []
+  let depth = 0
+  let lineStart = 0
+
+  while (lineStart <= buffer.text.length) {
+    const lineEndIndex = lineEnd(buffer.text, lineStart)
+    const line = buffer.text.slice(lineStart, lineEndIndex)
+    const trimmed = line.trim()
+    const currentClass = classStack[classStack.length - 1]
+    const classMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)\b/)
+    const functionMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/)
+    const constArrowMatch = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
+    const methodMatch = currentClass && trimmed.match(/^(?:async\s+|static\s+)*(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::[^{]+)?\{/)
+
+    if (classMatch) {
+      const name = classMatch[1]!
+      entries.push({ name, point: lineStart })
+      classStack.push({ name, depth: depth + countChar(line, "{") - countChar(line, "}") })
+    } else if (functionMatch) {
+      entries.push({ name: functionMatch[1]!, point: lineStart })
+    } else if (constArrowMatch) {
+      entries.push({ name: constArrowMatch[1]!, point: lineStart })
+    } else if (methodMatch && currentClass) {
+      const method = methodMatch[1]!
+      if (method !== "if" && method !== "for" && method !== "while" && method !== "switch" && method !== "catch") {
+        entries.push({ name: `${currentClass.name}.${method}`, point: lineStart })
+      }
+    }
+
+    depth += countChar(line, "{") - countChar(line, "}")
+    while (classStack.length && depth < classStack[classStack.length - 1]!.depth) classStack.pop()
+    if (lineEndIndex === buffer.text.length) break
+    lineStart = lineEndIndex + 1
+  }
+  return entries
 }
 
 export function braceIndentLine(buffer: BufferModel, width: number): void {
@@ -145,6 +185,12 @@ function insideStringOrComment(spans: TextSpan[], point: number): boolean {
 function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
+}
+
+function countChar(text: string, char: string): number {
+  let count = 0
+  for (const ch of text) if (ch === char) count++
+  return count
 }
 
 function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {

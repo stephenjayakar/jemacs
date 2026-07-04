@@ -132,6 +132,11 @@ export type PaneAction = {
   payload?: Record<string, string | number | boolean>
 }
 
+export type ImenuIndexEntry = {
+  name: string
+  point: number
+}
+
 // ── Host / display state the kernel receives but does not compute ───────────
 
 /** Viewport state a host hands to `clickWindow` so kernel can map cell→point. */
@@ -168,6 +173,7 @@ export type ModeSpec = {
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void
+  imenuIndex?: (buffer: BufferModel) => ImenuIndexEntry[]
 }
 
 export type MinorModeSpec = {

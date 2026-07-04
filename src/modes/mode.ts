@@ -1,13 +1,13 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import type { CompletionCandidate, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
+import type { CompletionCandidate, FontLockRange, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
 import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
-export type { CompletionCandidate, FaceName, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
+export type { CompletionCandidate, FaceName, FontLockRange, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
 
 export type Mode = {
   name: string
@@ -26,6 +26,7 @@ export type Mode = {
   paneAction?: (buffer: BufferModel, action: PaneAction) => boolean | void
   mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
+  imenuIndex?: (buffer: BufferModel) => ImenuIndexEntry[]
 }
 
 export const modes = new Map<string, Mode>()
@@ -43,6 +44,7 @@ const MODE_GENERICS = {
   mouseClick: "mouse-click",
   beginningOfDefun: "beginning-of-defun-function",
   endOfDefun: "end-of-defun-function",
+  imenuIndex: "imenu-create-index-function",
 } as const
 type ModeGenericField = keyof typeof MODE_GENERICS
 
