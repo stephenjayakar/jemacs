@@ -1,7 +1,8 @@
+import { displayLineNumbersType, lineNumberPrefixLen } from "../ui/line-numbers"
+
 /** Gutter width in cells when line numbers are shown (matches `formatWithLineNumbers`). */
-export function gutterPrefixLen(startLine: number, visibleLineCount: number): number {
-  const width = Math.max(1, String(startLine + Math.max(0, visibleLineCount - 1)).length)
-  return width + 2
+export function gutterPrefixLen(startLine: number, visibleLineCount: number, currentLine = startLine): number {
+  return lineNumberPrefixLen(startLine, visibleLineCount, displayLineNumbersType(), currentLine)
 }
 
 export type WindowClickState = {
@@ -17,11 +18,12 @@ export function windowClickState(
   startLine: number,
   maxLines: number,
   showLineNumbers: boolean,
+  currentLine = startLine + 1,
 ): WindowClickState {
   const lines = bufferText.split("\n")
   const start = Math.max(0, Math.min(startLine, Math.max(0, lines.length - maxLines)))
   const visibleLineCount = Math.min(maxLines, Math.max(1, lines.length - start))
-  const gutter = showLineNumbers ? gutterPrefixLen(start + 1, visibleLineCount) : 0
+  const gutter = showLineNumbers ? gutterPrefixLen(start + 1, visibleLineCount, currentLine) : 0
   return { startLine: start, gutterPrefixLen: gutter, displayText: bufferText }
 }
 

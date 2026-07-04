@@ -2,6 +2,7 @@ import type { BufferModel } from "../kernel/buffer"
 import type { TextSpan } from "../modes/mode"
 import {
   adjustSpansForLineNumbers,
+  displayLineNumbersType,
   firstVisibleLineNumber,
   formatWithLineNumbers,
   gutterSpans,
@@ -91,9 +92,9 @@ function styledRegion(
   if (!options.showLineNumbers) return applyTheme(visible, shiftedSpans, options.theme, { buffer: options.buffer })
 
   const firstLine = firstVisibleLineNumber(region.visibleStart, text)
-  const format = formatWithLineNumbers(visible, firstLine)
   const visibleLineCount = visible.split("\n").length
   const cursorLine = text.slice(0, Math.min(point, text.length)).split("\n").length
+  const format = formatWithLineNumbers(visible, firstLine, displayLineNumbersType(), cursorLine)
   const currentLineIndex = options.showCursor
     && cursorLine >= firstLine
     && cursorLine < firstLine + visibleLineCount

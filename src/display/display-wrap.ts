@@ -26,7 +26,7 @@ export function paneWrapLayout(
   startLine: number,
   lineBudget: number,
 ): PaneWrapLayout {
-  return paneWrapLayoutFor(displayTextForBuffer(buffer), buffer.locals, cols, showLineNumbers, startLine, lineBudget)
+  return paneWrapLayoutFor(displayTextForBuffer(buffer), buffer.locals, cols, showLineNumbers, startLine, lineBudget, buffer.lineAt(buffer.point) + 1)
 }
 
 /** `paneWrapLayout` over a precomputed display text + locals (no `BufferModel`). */
@@ -37,10 +37,11 @@ export function paneWrapLayoutFor(
   showLineNumbers: boolean,
   startLine: number,
   lineBudget: number,
+  currentLine = startLine + 1,
 ): PaneWrapLayout {
   const lineCount = displayText.split("\n").length
   const visibleLineCount = Math.min(lineBudget, Math.max(1, lineCount - startLine))
-  const gutter = showLineNumbers ? gutterPrefixLen(startLine + 1, visibleLineCount) : 0
+  const gutter = showLineNumbers ? gutterPrefixLen(startLine + 1, visibleLineCount, currentLine) : 0
   const wordWrap = locals.get("word-wrap") === true
   if (cols == null) return { gutterPrefixLen: gutter, wordWrap }
   if (locals.get(MARKDOWN_VISUAL_FILL) !== true) {

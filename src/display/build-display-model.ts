@@ -104,7 +104,7 @@ function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number,
   const cursorLine = pointLineCol(dText, dPoint).line - 1
   const displayLines = dText.split("\n")
   const lineRange = visualRowLineRange(pane.startLine, cursorLine, maxLines, displayLines.length)
-  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
+  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines, cursorLine + 1)
   if (!useFontMetrics) {
     const wrappedRows = computeWrappedLineRows(displayLines, {
       wrapCols: wrapLayout.wrapCols,

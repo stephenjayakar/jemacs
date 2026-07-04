@@ -173,6 +173,7 @@ function layoutLeafPane(
   const dLines = dText.split("\n")
   const lineCount = dLines.length
   let startLine = Math.max(0, Math.min(pane.startLine, lineCount - 1))
+  const cursorLine = pane.selected ? pointLineCol(dText, dPoint).line - 1 : startLine
   const wrapLayout = paneWrapLayoutFor(
     dText,
     pane.locals,
@@ -180,9 +181,9 @@ function layoutLeafPane(
     pane.showLineNumbers,
     startLine,
     maxLines,
+    cursorLine + 1,
   )
   const useVisualWeights = hostCapabilities?.perFaceFonts === true
-  const cursorLine = pane.selected ? pointLineCol(dText, dPoint).line - 1 : startLine
   const lineRange = visualRowLineRange(startLine, cursorLine, maxLines, lineCount)
   const wrappedRows = useVisualWeights ? undefined : computeWrappedLineRows(dLines, {
     wrapCols: wrapLayout.wrapCols,
@@ -209,7 +210,7 @@ function layoutLeafPane(
     ? visibleLineCountForBudget(startLine, maxLines, lineCount, visualRows)
     : maxLines
   const syncSpans = bufferHighlightSpans(pane.point, mark, pane.spans)
-  const clickState = windowClickState(dText, startLine, displayLines, pane.showLineNumbers)
+  const clickState = windowClickState(dText, startLine, displayLines, pane.showLineNumbers, cursorLine + 1)
   if (pane.displayUnmap) clickState.displayToBuffer = pane.displayUnmap
   // Hosts hard-wrap overflowing rows at column 0, which paints continuation
   // text into the next line's gutter (t-16be1a86). Pre-wrap here so every
@@ -222,6 +223,7 @@ function layoutLeafPane(
     pane.showLineNumbers,
     startLine,
     displayLines,
+    cursorLine + 1,
   )
   const visualFill = visualFillSettings(pane.locals)
   const contentWidth = availableCols != null

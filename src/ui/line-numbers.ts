@@ -1,4 +1,5 @@
 import type { TextSpan } from "../modes/mode"
+import { getCustom } from "../runtime/custom"
 
 export type LineNumberFormat = {
   text: string
@@ -6,16 +7,59 @@ export type LineNumberFormat = {
   firstLine: number
 }
 
+export type DisplayLineNumbersType = true | "relative" | "visual"
+
 const GUTTER_SEPARATOR = "  "
 
-export function formatWithLineNumbers(visible: string, firstLine: number): LineNumberFormat {
+export function displayLineNumbersType(): DisplayLineNumbersType {
+  const value = getCustom<DisplayLineNumbersType>("display-line-numbers-type")
+  return value === "relative" || value === "visual" ? value : true
+}
+
+export function lineNumberPrefixLen(
+  firstLine: number,
+  visibleLineCount: number,
+  type: DisplayLineNumbersType = true,
+  currentLine = firstLine,
+): number {
+  const width = lineNumberWidth(firstLine, visibleLineCount, type, currentLine)
+  return width + GUTTER_SEPARATOR.length
+}
+
+export function formatWithLineNumbers(
+  visible: string,
+  firstLine: number,
+  type: DisplayLineNumbersType = true,
+  currentLine = firstLine,
+): LineNumberFormat {
   const lines = visible.split("\n")
-  const width = Math.max(1, String(firstLine + Math.max(0, lines.length - 1)).length)
+  const width = lineNumberWidth(firstLine, lines.length, type, currentLine)
   const prefixLen = width + GUTTER_SEPARATOR.length
   const text = lines
-    .map((line, index) => `${String(firstLine + index).padStart(width, " ")}${GUTTER_SEPARATOR}${line}`)
+    .map((line, index) => `${lineNumberText(firstLine + index, type, currentLine).padStart(width, " ")}${GUTTER_SEPARATOR}${line}`)
     .join("\n")
   return { text, prefixLen, firstLine }
+}
+
+function lineNumberWidth(
+  firstLine: number,
+  visibleLineCount: number,
+  type: DisplayLineNumbersType,
+  currentLine: number,
+): number {
+  const lastLine = firstLine + Math.max(0, visibleLineCount - 1)
+  if (type === true) return Math.max(1, String(Math.max(firstLine, lastLine)).length)
+  const maxAbsolute = Math.max(firstLine, lastLine, currentLine)
+  const maxRelative = Math.max(Math.abs(firstLine - currentLine), Math.abs(lastLine - currentLine))
+  return Math.max(1, String(maxAbsolute).length, String(maxRelative).length)
+}
+
+function lineNumberText(line: number, type: DisplayLineNumbersType, currentLine: number): string {
+  if (type === true || line === currentLine) return String(line)
+  // The formatter receives logical display lines before hard wrapping, so
+  // `visual` cannot cheaply count continuation rows here. Match relative
+  // numbering until the display pipeline exposes visual row positions.
+  return String(Math.abs(line - currentLine))
 }
 
 /** Apply region highlight only to buffer text, not the line-number gutter on each line. */
