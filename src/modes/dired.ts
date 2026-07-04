@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path"
-import { chmod, cp, cwd, isDirectory, link, mkdir, readdir, rename, rm, spawnProcess, stat, symlink, utimes } from "../platform/runtime"
+import { chmod, cp, cwd, isDirectory, isSymbolicLink, link, lstat, mkdir, readdir, readlink, rename, rm, spawnProcess, stat, symlink, utimes } from "../platform/runtime"
 import type { Editor } from "../kernel/editor"
 import { expandUserPath } from "../kernel/completion"
 import { BufferModel } from "../kernel/buffer"
@@ -10,6 +10,9 @@ export type DiredEntry = {
   name: string
   path: string
   isDirectory: boolean
+  isSymlink?: boolean
+  mode?: number
+  linkTarget?: string
   size: number
   mtime: Date
 }
@@ -22,7 +25,7 @@ const diredMarks = new WeakMap<BufferModel, Map<string, DiredMark>>()
 const diredSortOrders = new WeakMap<BufferModel, DiredSortOrder>()
 
 export const HEADER_LINES = 2
-export const NAME_OFFSET = 22
+export const NAME_OFFSET = 31
 
 export function installDiredMode(): void {
   const keymap = new Keymap("dired-map")
@@ -545,11 +548,31 @@ function diredNamePoint(lines: string[], entryIndex: number): number {
 
 function formatEntry(entry: DiredEntry, mark?: DiredMark): string {
   const markChar = mark === "delete" ? "D" : mark === "marked" ? "*" : "-"
-  const type = entry.isDirectory ? "d" : "-"
+  const mode = formatModeString(entry)
   const size = entry.isDirectory ? "     " : entry.size.toString().padStart(5)
   const date = entry.mtime.toISOString().slice(0, 10)
-  const name = entry.name + (entry.isDirectory && !entry.name.endsWith("/") ? "/" : "")
-  return `${markChar} ${type} ${size} ${date}  ${name}`
+  const suffix = entry.isSymlink && entry.linkTarget != null
+    ? ` -> ${entry.linkTarget}`
+    : entry.isDirectory && !entry.name.endsWith("/") ? "/" : ""
+  const name = entry.name + suffix
+  return `${markChar} ${mode} ${size} ${date}  ${name}`
+}
+
+function formatModeString(entry: DiredEntry): string {
+  const type = entry.isSymlink ? "l" : entry.isDirectory ? "d" : "-"
+  const mode = entry.mode ?? (entry.isDirectory ? 0o755 : 0o644)
+  const chars = [
+    mode & 0o400 ? "r" : "-",
+    mode & 0o200 ? "w" : "-",
+    mode & 0o100 ? "x" : "-",
+    mode & 0o040 ? "r" : "-",
+    mode & 0o020 ? "w" : "-",
+    mode & 0o010 ? "x" : "-",
+    mode & 0o004 ? "r" : "-",
+    mode & 0o002 ? "w" : "-",
+    mode & 0o001 ? "x" : "-",
+  ].join("")
+  return `${type}${chars}`
 }
 
 async function diredRemoveEntries(editor: Editor, buffer: BufferModel, entries: DiredEntry[]): Promise<void> {
@@ -656,7 +679,22 @@ function diredSpecialEntry(entry: DiredEntry): boolean {
 
 async function entryFor(parent: string, name: string): Promise<DiredEntry | null> {
   const path = name === "." ? parent : name === ".." ? dirname(parent) : join(parent, name)
-  const info = await stat(path)
+  const [linkInfo, info] = await Promise.all([lstat(path), stat(path)])
   if (!info) return null
-  return { name, path, isDirectory: isDirectory(info), size: info.size, mtime: new Date(info.mtime) }
+  const isSymlinkEntry = linkInfo != null && isSymbolicLink(linkInfo)
+  let linkTarget: string | undefined
+  if (isSymlinkEntry) {
+    try { linkTarget = await readlink(path) } catch { /* leave target hidden if host cannot read it */ }
+  }
+  const displayInfo = linkInfo ?? info
+  return {
+    name,
+    path,
+    isDirectory: isDirectory(info),
+    isSymlink: isSymlinkEntry,
+    mode: displayInfo.mode,
+    linkTarget,
+    size: displayInfo.size,
+    mtime: new Date(displayInfo.mtime),
+  }
 }

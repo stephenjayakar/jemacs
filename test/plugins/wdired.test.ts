@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readlink, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
-import { install } from "../../plugins/wdired"
+import { install, parseWdiredSymbolicPermissions } from "../../plugins/wdired"
 import { keySeq } from "../harness"
 import { clearHooks } from "../../src/kernel/hooks"
+import { setCustom } from "../../src/runtime/custom"
 import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 
@@ -19,6 +20,8 @@ beforeEach(async () => {
   await writeFile(join(dir, "beta.txt"), "beta")
   editor = makeEditor()
   install(editor)
+  setCustom("wdired-allow-to-change-permissions", false)
+  setCustom("wdired-allow-to-redirect-links", true)
 })
 
 afterEach(async () => {
@@ -36,6 +39,27 @@ function replaceName(buffer: BufferModel, from: string, to: string): void {
   expect(idx).toBeGreaterThanOrEqual(0)
   buffer.setText(buffer.text.slice(0, idx) + to + buffer.text.slice(idx + from.length))
 }
+
+function replaceText(buffer: BufferModel, from: string, to: string): void {
+  const idx = buffer.text.indexOf(from)
+  expect(idx).toBeGreaterThanOrEqual(0)
+  buffer.setText(buffer.text.slice(0, idx) + to + buffer.text.slice(idx + from.length))
+}
+
+function replaceSymlinkTarget(buffer: BufferModel, linkName: string, from: string, to: string): void {
+  const prefix = `${linkName} -> ${from}`
+  const idx = buffer.text.indexOf(prefix)
+  expect(idx).toBeGreaterThanOrEqual(0)
+  const targetStart = idx + linkName.length + 4
+  buffer.setText(buffer.text.slice(0, targetStart) + to + buffer.text.slice(targetStart + from.length))
+}
+
+test("parseWdiredSymbolicPermissions parses rwx strings and rejects invalid input", () => {
+  expect(parseWdiredSymbolicPermissions("rwxr-x--x")).toBe(0o751)
+  expect(parseWdiredSymbolicPermissions("rw-------")).toBe(0o600)
+  expect(() => parseWdiredSymbolicPermissions("rwxr-x--")).toThrow(/Invalid permission string/)
+  expect(() => parseWdiredSymbolicPermissions("rwxr-S--x")).toThrow(/Invalid permission string/)
+})
 
 test("C-x C-q in dired enters wdired mode and makes buffer writable", async () => {
   const buffer = await editor.openDirectory(dir)
@@ -144,4 +168,53 @@ test("renaming into a subdirectory creates parent directories", async () => {
 
   expect(await exists(join(dir, "sub", "alpha.txt"))).toBe(true)
   expect(await exists(join(dir, "alpha.txt"))).toBe(false)
+})
+
+test("wdired-finish-edit chmods edited permission strings when enabled", async () => {
+  const path = join(dir, "alpha.txt")
+  await chmod(path, 0o600)
+  setCustom("wdired-allow-to-change-permissions", true)
+  const buffer = await editor.openDirectory(dir)
+  await editor.run("wdired-change-to-wdired-mode")
+
+  replaceText(buffer, "rw-------", "rwxr-x--x")
+  await editor.run("wdired-finish-edit")
+
+  expect((await stat(path)).mode & 0o777).toBe(0o751)
+})
+
+test("wdired-finish-edit does not chmod edited permission strings when disabled", async () => {
+  const path = join(dir, "alpha.txt")
+  await chmod(path, 0o600)
+  const buffer = await editor.openDirectory(dir)
+  await editor.run("wdired-change-to-wdired-mode")
+
+  replaceText(buffer, "rw-------", "rwxrwxrwx")
+  await editor.run("wdired-finish-edit")
+
+  expect((await stat(path)).mode & 0o777).toBe(0o600)
+})
+
+test("wdired-finish-edit keeps renames working when a permission edit is invalid", async () => {
+  const buffer = await editor.openDirectory(dir)
+  setCustom("wdired-allow-to-change-permissions", true)
+  await editor.run("wdired-change-to-wdired-mode")
+
+  replaceText(buffer, "rw-", "rS-")
+  replaceName(buffer, "beta.txt", "renamed-beta.txt")
+  await editor.run("wdired-finish-edit")
+
+  expect(await exists(join(dir, "renamed-beta.txt"))).toBe(true)
+  expect(await exists(join(dir, "beta.txt"))).toBe(false)
+})
+
+test("wdired-finish-edit retargets edited symlink arrows", async () => {
+  await symlink("alpha.txt", join(dir, "link.txt"))
+  const buffer = await editor.openDirectory(dir)
+  await editor.run("wdired-change-to-wdired-mode")
+
+  replaceSymlinkTarget(buffer, "link.txt", "alpha.txt", "beta.txt")
+  await editor.run("wdired-finish-edit")
+
+  expect(await readlink(join(dir, "link.txt"))).toBe("beta.txt")
 })

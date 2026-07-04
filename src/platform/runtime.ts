@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, existsSync, watch as nodeWatch } from "node:fs"
-import { access, chmod as nodeChmod, cp as nodeCp, link as nodeLink, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, stat as nodeStat, symlink as nodeSymlink, unlink as nodeUnlink, utimes as nodeUtimes, writeFile } from "node:fs/promises"
+import { access, chmod as nodeChmod, cp as nodeCp, link as nodeLink, lstat as nodeLstat, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, readlink as nodeReadlink, rename as nodeRename, rm as nodeRm, stat as nodeStat, symlink as nodeSymlink, unlink as nodeUnlink, utimes as nodeUtimes, writeFile } from "node:fs/promises"
 import { homedir as nodeHomedir } from "node:os"
 import { join } from "node:path"
 import type { Readable } from "node:stream"
@@ -9,10 +9,15 @@ import type { Readable } from "node:stream"
 export type StatLike = { mode: number; size: number; mtime: number }
 
 const S_IFDIR = 0o040000
+const S_IFLNK = 0o120000
 /** True when `st.mode` has the directory bit — works for both nodeRuntime
  *  (POSIX `st_mode`) and RemoteRuntime (manifest entries use the same bit). */
 export function isDirectory(st: StatLike): boolean {
   return (st.mode & S_IFDIR) !== 0
+}
+
+export function isSymbolicLink(st: StatLike): boolean {
+  return (st.mode & S_IFLNK) === S_IFLNK
 }
 
 /** Returned by `watch`; call `close()` to stop receiving events. */
@@ -33,6 +38,8 @@ export type PlatformRuntime = {
   writeFileText(path: string, text: string): Promise<void>
   fileExists(path: string): Promise<boolean>
   stat(path: string): Promise<StatLike | null>
+  lstat?(path: string): Promise<StatLike | null>
+  readlink?(path: string): Promise<string>
   /** Remove a file. Optional: hosts that lack it (RemoteRuntime today) fall
    *  through to nodeRuntime; callers already `.catch` the no-op throw. */
   unlink?(path: string): Promise<void>
@@ -191,6 +198,17 @@ export const nodeRuntime: PlatformRuntime = {
       return null
     }
   },
+  async lstat(path) {
+    try {
+      const s = await nodeLstat(path)
+      return { mode: s.mode, size: s.size, mtime: s.mtimeMs }
+    } catch {
+      return null
+    }
+  },
+  async readlink(path) {
+    return nodeReadlink(path)
+  },
   async unlink(path) {
     await nodeUnlink(path)
   },
@@ -272,6 +290,14 @@ export async function writeFileText(path: string, text: string): Promise<void> {
 
 export async function stat(path: string): Promise<StatLike | null> {
   return (override?.stat ?? nodeRuntime.stat)(path)
+}
+
+export async function lstat(path: string): Promise<StatLike | null> {
+  return (override?.lstat ?? nodeRuntime.lstat!)(path)
+}
+
+export async function readlink(path: string): Promise<string> {
+  return (override?.readlink ?? nodeRuntime.readlink!)(path)
 }
 
 export async function unlink(path: string): Promise<void> {

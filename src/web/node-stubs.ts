@@ -57,6 +57,8 @@ export const chmod = stub("fs/promises.chmod")
 export const utimes = stub("fs/promises.utimes")
 export const symlink = stub("fs/promises.symlink")
 export const link = stub("fs/promises.link")
+export const lstat = stub("fs/promises.lstat")
+export const readlink = stub("fs/promises.readlink")
 
 // node:child_process
 export const spawn = stub("child_process.spawn")
