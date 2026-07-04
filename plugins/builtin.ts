@@ -10,6 +10,7 @@ import { Evaluator, type InstallFn } from "../src/runtime/evaluator"
  */
 const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>]> = [
   ["motion", () => import("./motion")],
+  ["fill", () => import("./fill")],
   ["window", () => import("./window")],
   ["mark-ring", () => import("./mark-ring")],
   ["save-hooks", () => import("./save-hooks")],
