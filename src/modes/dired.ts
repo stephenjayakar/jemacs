@@ -19,6 +19,14 @@ export type DiredEntry = {
 
 export type DiredMark = "marked" | "delete"
 type DiredSortOrder = "name" | "date"
+export type DiredFileOps = {
+  listDirectory(path: string): Promise<DiredEntry[]>
+  deleteFile(path: string, recursive?: boolean): Promise<void>
+  copyFile(from: string, to: string, recursive?: boolean): Promise<void>
+  rename(from: string, to: string): Promise<void>
+  mkdir(path: string): Promise<void>
+  touch(path: string, mtime: Date): Promise<void>
+}
 
 export const diredEntryLines = new WeakMap<BufferModel, DiredEntry[]>()
 const diredMarks = new WeakMap<BufferModel, Map<string, DiredMark>>()
@@ -95,18 +103,13 @@ export async function refreshDiredBuffer(buffer: BufferModel): Promise<void> {
   if (!buffer.path) throw new Error(`Dired buffer ${buffer.name} has no directory path`)
   const previousMarks = diredMarks.get(buffer) ?? new Map()
   const order = diredSortOrders.get(buffer) ?? "name"
-  const names = await readdir(buffer.path)
-  const childEntries = (await Promise.all(names.map(name => entryFor(buffer.path!, name))))
-    .filter((entry): entry is DiredEntry => entry != null)
+  const allEntries = await diredFileOps(buffer).listDirectory(buffer.path)
+  const parentEntries = allEntries.filter(diredSpecialEntry)
+  const childEntries = allEntries.filter(entry => !diredSpecialEntry(entry))
   childEntries.sort(order === "date"
     ? (a, b) => b.mtime.getTime() - a.mtime.getTime() || a.name.localeCompare(b.name)
     : (a, b) => a.name.localeCompare(b.name))
-  const entries: DiredEntry[] = []
-  for (const name of [".."]) {
-    const entry = await entryFor(buffer.path, name)
-    if (entry) entries.push(entry)
-  }
-  entries.push(...childEntries)
+  const entries: DiredEntry[] = [...parentEntries, ...childEntries]
 
   const marks = new Map<string, DiredMark>()
   for (const entry of entries) {
@@ -346,14 +349,15 @@ export async function diredDoCopy(editor: Editor, buffer: BufferModel, prefixArg
     initialValue: buffer.path ?? cwd(),
   })
   if (!target) return
-  const destDir = resolve(target)
-  await mkdir(destDir, { recursive: true })
+  const ops = diredFileOps(buffer)
+  const destDir = diredResolve(target)
+  await ops.mkdir(destDir)
   const failed: { entry: DiredEntry; err: Error }[] = []
   let ok = 0
   try {
     for (const entry of entries) {
       try {
-        await cp(entry.path, join(destDir, basename(entry.path)), { recursive: entry.isDirectory, force: true })
+        await ops.copyFile(entry.path, join(destDir, basename(entry.path)), entry.isDirectory)
         ok++
       } catch (err) {
         failed.push({ entry, err: err as Error })
@@ -376,7 +380,7 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
     const target = await editor.prompt("Rename to: ", entry.name, "dired-rename")
     if (!target || target === entry.name) return
     const dest = join(dirname(entry.path), target)
-    await rename(entry.path, dest)
+    await diredFileOps(buffer).rename(entry.path, dest)
     await refreshDiredBuffer(buffer)
     editor.message(`Renamed to ${basename(dest)}`)
     return
@@ -387,14 +391,15 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
     initialValue: buffer.path ?? cwd(),
   })
   if (!target) return
-  const destDir = resolve(target)
-  await mkdir(destDir, { recursive: true })
+  const ops = diredFileOps(buffer)
+  const destDir = diredResolve(target)
+  await ops.mkdir(destDir)
   const failed: { entry: DiredEntry; err: Error }[] = []
   let ok = 0
   try {
     for (const entry of entries) {
       try {
-        await rename(entry.path, join(destDir, basename(entry.path)))
+        await ops.rename(entry.path, join(destDir, basename(entry.path)))
         ok++
       } catch (err) {
         failed.push({ entry, err: err as Error })
@@ -437,7 +442,8 @@ export async function diredDoTouch(editor: Editor, buffer: BufferModel, prefixAr
     editor.message(`Invalid timestamp: ${input}`)
     return
   }
-  for (const entry of entries) await utimes(entry.path, mtime, mtime)
+  const ops = diredFileOps(buffer)
+  for (const entry of entries) await ops.touch(entry.path, mtime)
   await refreshDiredBuffer(buffer)
   editor.message(`Touched ${entries.length} file(s)`)
 }
@@ -490,8 +496,8 @@ export async function makeDirectory(
 ): Promise<string | null> {
   const dirName = name?.trim() || await editor.prompt("Make directory: ", "", "make-directory")
   if (!dirName?.trim()) return null
-  const path = resolve(parent, expandUserPath(dirName.trim()))
-  await mkdir(path, { recursive: true })
+  const path = diredResolve(parent, expandUserPath(dirName.trim()))
+  await (refresh ? diredFileOps(refresh) : localDiredFileOps).mkdir(path)
   if (refresh?.kind === "directory" && refresh.path) await refreshDiredBuffer(refresh)
   editor.message(`Created ${path}`)
   return path
@@ -576,12 +582,46 @@ function formatModeString(entry: DiredEntry): string {
 }
 
 async function diredRemoveEntries(editor: Editor, buffer: BufferModel, entries: DiredEntry[]): Promise<void> {
+  const ops = diredFileOps(buffer)
   for (const entry of entries) {
     if (diredSpecialEntry(entry)) continue
-    await rm(entry.path, { recursive: entry.isDirectory, force: true })
+    await ops.deleteFile(entry.path, entry.isDirectory)
   }
   void editor
   void buffer
+}
+
+const localDiredFileOps: DiredFileOps = {
+  async listDirectory(path: string): Promise<DiredEntry[]> {
+    const names = await readdir(path)
+    const childEntries = (await Promise.all(names.map(name => entryFor(path, name))))
+      .filter((entry): entry is DiredEntry => entry != null)
+    const parent = await entryFor(path, "..")
+    return parent ? [parent, ...childEntries] : childEntries
+  },
+  async deleteFile(path: string, recursive = false): Promise<void> {
+    await rm(path, { recursive, force: true })
+  },
+  async copyFile(from: string, to: string, recursive = false): Promise<void> {
+    await cp(from, to, { recursive, force: true })
+  },
+  async rename(from: string, to: string): Promise<void> {
+    await rename(from, to)
+  },
+  async mkdir(path: string): Promise<void> {
+    await mkdir(path, { recursive: true })
+  },
+  async touch(path: string, mtime: Date): Promise<void> {
+    await utimes(path, mtime, mtime)
+  },
+}
+
+function diredFileOps(buffer: BufferModel): DiredFileOps {
+  return buffer.locals.get("dired-file-ops") as DiredFileOps | undefined ?? localDiredFileOps
+}
+
+function diredResolve(...paths: string[]): string {
+  return resolve(...paths)
 }
 
 function formatFailures(failed: { entry: DiredEntry; err: Error }[]): string {

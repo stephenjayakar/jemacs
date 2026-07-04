@@ -6,12 +6,12 @@ import { Keymap } from "../../src/kernel/keymap"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { spawnProcess } from "../../src/platform/runtime"
 import { defineMode } from "../../src/modes/mode"
-import { diredEntryLines, renderDiredBuffer, type DiredEntry } from "../../src/modes/dired"
+import { refreshDiredBuffer, type DiredEntry, type DiredFileOps } from "../../src/modes/dired"
 
 export type TrampFileName = {
-  method: "ssh" | "scp"
+  method: "ssh" | "scp" | "sudo"
   user?: string
-  host: string
+  host?: string
   port?: number
   localname: string
 }
@@ -24,7 +24,11 @@ export type RemoteTransport = {
   writeFile(file: TrampFileName, text: string): Promise<void>
   statMtime(file: TrampFileName): Promise<number | undefined>
   listDirectory(file: TrampFileName): Promise<DiredEntry[]>
-  copyFile?(from: TrampFileName, to: TrampFileName): Promise<void>
+  copyFile?(from: TrampFileName, to: TrampFileName, recursive?: boolean): Promise<void>
+  deleteFile(file: TrampFileName, recursive?: boolean): Promise<void>
+  rename(from: TrampFileName, to: TrampFileName): Promise<void>
+  mkdir(file: TrampFileName): Promise<void>
+  touch(file: TrampFileName): Promise<void>
 }
 
 export type TrampOptions = {
@@ -32,8 +36,16 @@ export type TrampOptions = {
 }
 
 const TRAMP_RE = /^\/(ssh|scp):(?:(?<user>[^@/:#\s]+)@)?(?<host>[^:/#\s]+)(?:#(?<port>\d+))?:(?<localname>.*)$/
+const SUDO_TRAMP_RE = /^\/sudo::(?<localname>.*)$/
 
 export function parseTrampFileName(input: string): TrampFileName | null {
+  const sudoMatch = SUDO_TRAMP_RE.exec(input)
+  if (sudoMatch?.groups) {
+    return {
+      method: "sudo",
+      localname: sudoMatch.groups.localname || "/",
+    }
+  }
   const match = TRAMP_RE.exec(input)
   if (!match?.groups) return null
   const method = match[1] as TrampFileName["method"]
@@ -49,6 +61,7 @@ export function parseTrampFileName(input: string): TrampFileName | null {
 }
 
 export function formatTrampFileName(file: TrampFileName, localname = file.localname): string {
+  if (file.method === "sudo") return `/sudo::${localname}`
   const user = file.user ? `${file.user}@` : ""
   const port = file.port ? `#${file.port}` : ""
   return `/${file.method}:${user}${file.host}${port}:${localname}`
@@ -106,11 +119,27 @@ done
     }).sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  async copyFile(from: TrampFileName, to: TrampFileName): Promise<void> {
-    await this.ssh(from, `cp -p -- ${shQuote(from.localname)} ${shQuote(to.localname)}`)
+  async copyFile(from: TrampFileName, to: TrampFileName, recursive = false): Promise<void> {
+    await this.ssh(from, `cp -p${recursive ? " -R" : ""} -- ${shQuote(from.localname)} ${shQuote(to.localname)}`)
   }
 
-  private async ssh(file: TrampFileName, script: string, stdin?: string): Promise<{ stdout: string; stderr: string }> {
+  async deleteFile(file: TrampFileName, recursive = false): Promise<void> {
+    await this.ssh(file, `${recursive ? "rm -r" : "rm"} -- ${shQuote(file.localname)}`)
+  }
+
+  async rename(from: TrampFileName, to: TrampFileName): Promise<void> {
+    await this.ssh(from, `mv -- ${shQuote(from.localname)} ${shQuote(to.localname)}`)
+  }
+
+  async mkdir(file: TrampFileName): Promise<void> {
+    await this.ssh(file, `mkdir -p -- ${shQuote(file.localname)}`)
+  }
+
+  async touch(file: TrampFileName): Promise<void> {
+    await this.ssh(file, `touch -- ${shQuote(file.localname)}`)
+  }
+
+  protected async ssh(file: TrampFileName, script: string, stdin?: string): Promise<{ stdout: string; stderr: string }> {
     const target = `${file.user ? `${file.user}@` : ""}${file.host}`
     const cmd = ["ssh"]
     if (file.port) cmd.push("-p", String(file.port))
@@ -130,11 +159,29 @@ done
   }
 }
 
+export class SudoRemoteTransport extends SshRemoteTransport {
+  protected override async ssh(_file: TrampFileName, script: string, stdin?: string): Promise<{ stdout: string; stderr: string }> {
+    const proc = spawnProcess({ cmd: ["sudo", "sh", "-c", script], stdin: stdin == null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" })
+    if (stdin != null) {
+      proc.stdin?.write(stdin)
+      proc.stdin?.end()
+    }
+    const [stdout, stderr, code] = await Promise.all([
+      readStream(proc.stdout),
+      readStream(proc.stderr),
+      proc.exited,
+    ])
+    if (code !== 0) throw new Error(stderr.trim() || `sudo exited ${code}`)
+    return { stdout, stderr }
+  }
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor), options: TrampOptions = {}): void {
   defineMode({ name: "tramp", parent: "text", keymap: new Keymap("tramp-map") })
   ctx.minorMode({ name: "tramp-mode", lighter: " Tramp" })
 
   const transport = options.transport ?? new SshRemoteTransport()
+  const sudoTransport = options.transport ?? new SudoRemoteTransport()
   const previousOpenFile = editor.openFile.bind(editor)
   const previousOpenDirectory = editor.openDirectory.bind(editor)
   const previousAutoSavePath = editor.autoSavePath.bind(editor)
@@ -142,13 +189,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.openFile = async (path: string) => {
     const file = parseTrampFileName(path)
     if (!file) return previousOpenFile(path)
-    return openTrampFile(editor, transport, file)
+    return openTrampFile(editor, transportFor(file, transport, sudoTransport), file)
   }
 
   editor.openDirectory = async (path: string) => {
     const file = parseTrampFileName(path)
     if (!file) return previousOpenDirectory(path)
-    return openTrampDirectory(editor, transport, file)
+    return openTrampDirectory(editor, transportFor(file, transport, sudoTransport), file)
   }
 
   editor.autoSavePath = buffer => buffer.path && parseTrampFileName(buffer.path) ? null : previousAutoSavePath(buffer)
@@ -179,27 +226,69 @@ async function openTrampFile(editor: Editor, transport: RemoteTransport, file: T
 async function openTrampDirectory(editor: Editor, transport: RemoteTransport, file: TrampFileName): Promise<BufferModel> {
   const path = formatTrampFileName(file)
   const buffer = await editor.visitPath(path, async () => {
-    const entries = await transport.listDirectory(file)
-    const parent = posixDirname(file.localname)
-    const allEntries: DiredEntry[] = [
-      {
-        name: "..",
-        path: formatTrampFileName(file, parent === "." ? "~" : parent),
-        isDirectory: true,
-        size: 0,
-        mtime: new Date(0),
-      },
-      ...entries,
-    ]
     const b = new BufferModel({ name: `${posixBasename(file.localname) || file.localname}/`, path, kind: "directory", mode: "dired" })
     b.readOnly = true
     b.minorModes.add("tramp-mode")
-    diredEntryLines.set(b, allEntries)
-    renderDiredBuffer(b, allEntries)
+    b.locals.set("dired-file-ops", trampDiredFileOps(transport))
+    await refreshDiredBuffer(b)
     return b
   }, "dired")
   editor.message(`Opened ${path}`)
   return buffer
+}
+
+function trampDiredFileOps(transport: RemoteTransport): DiredFileOps {
+  const parse = (path: string) => {
+    const file = parseTrampFileName(path)
+    if (!file) throw new Error(`Not a TRAMP path: ${path}`)
+    return file
+  }
+  return {
+    async listDirectory(path: string): Promise<DiredEntry[]> {
+      const file = parse(path)
+      const parent = posixDirname(file.localname)
+      return [
+        {
+          name: "..",
+          path: formatTrampFileName(file, parent === "." ? "~" : parent),
+          isDirectory: true,
+          size: 0,
+          mtime: new Date(0),
+        },
+        ...await transport.listDirectory(file),
+      ]
+    },
+    async deleteFile(path: string, recursive = false): Promise<void> {
+      await transport.deleteFile(parse(path), recursive)
+    },
+    async copyFile(from: string, to: string, recursive = false): Promise<void> {
+      const source = parse(from)
+      const dest = parse(to)
+      if (!sameRemoteEndpoint(source, dest)) throw new Error(`Cannot copy between different TRAMP endpoints`)
+      if (!transport.copyFile) throw new Error(`TRAMP transport does not support copy`)
+      await transport.copyFile(source, dest, recursive)
+    },
+    async rename(from: string, to: string): Promise<void> {
+      const source = parse(from)
+      const dest = parse(to)
+      if (!sameRemoteEndpoint(source, dest)) throw new Error(`Cannot rename between different TRAMP endpoints`)
+      await transport.rename(source, dest)
+    },
+    async mkdir(path: string): Promise<void> {
+      await transport.mkdir(parse(path))
+    },
+    async touch(path: string): Promise<void> {
+      await transport.touch(parse(path))
+    },
+  }
+}
+
+function sameRemoteEndpoint(a: TrampFileName, b: TrampFileName): boolean {
+  return a.method === b.method && a.user === b.user && a.host === b.host && a.port === b.port
+}
+
+function transportFor(file: TrampFileName, transport: RemoteTransport, sudoTransport: RemoteTransport): RemoteTransport {
+  return file.method === "sudo" ? sudoTransport : transport
 }
 
 async function visitWithoutLsp(editor: Editor, path: string, make: () => Promise<BufferModel>): Promise<BufferModel> {
