@@ -8,6 +8,7 @@ import {
   compilationStart,
   compilationErrorRegexpAlist,
   parseCompilationOutput,
+  stripAnsi,
   lastCompileCommand,
   lastCompileDirectory,
   type CompileDeps,
@@ -55,39 +56,148 @@ function fakeSpawn(behavior: (opts: SpawnOptions) => { stdout?: string[]; stderr
   return { spawn, calls }
 }
 
-test("compilationErrorRegexpAlist covers gnu/rustc/msft/python/node patterns", () => {
+test("compilationErrorRegexpAlist covers common Emacs compilation patterns", () => {
   const names = compilationErrorRegexpAlist.map(r => r.name)
+  expect(names).toContain("gcc-include")
   expect(names).toContain("gnu")
   expect(names).toContain("rustc")
+  expect(names).toContain("cargo-test-panic")
   expect(names).toContain("msft")
   expect(names).toContain("python-tracebacks")
   expect(names).toContain("node-stack")
+  expect(names).toContain("tsc")
+  expect(names).toContain("go")
+  expect(names).toContain("java")
+  expect(names).toContain("java-maven")
 })
 
-test("parseCompilationOutput resolves relative paths against cwd and recognises each pattern", () => {
-  const out = [
-    "a.c:2:10: error: use of undeclared identifier 'x'",
-    "src/main.rs:5: warning: unused variable",
-    "  --> src/lib.rs:14:3",
-    "src/app.ts(7,12): error TS2304: Cannot find name 'foo'.",
-    '  File "b.py", line 2, in f',
-    "    at Object.<anonymous> (/abs/node.js:10:5)",
-    "make: *** [all] Error 1",
-  ].join("\n")
-  const locs = parseCompilationOutput(out, dir)
-  expect(locs).toEqual([
-    { file: join(dir, "a.c"), line: 2, col: 10, text: "a.c:2:10: error: use of undeclared identifier 'x'" },
-    { file: join(dir, "src/main.rs"), line: 5, col: 1, text: "src/main.rs:5: warning: unused variable" },
-    { file: join(dir, "src/lib.rs"), line: 14, col: 3, text: "--> src/lib.rs:14:3" },
-    { file: join(dir, "src/app.ts"), line: 7, col: 12, text: "src/app.ts(7,12): error TS2304: Cannot find name 'foo'." },
-    { file: join(dir, "b.py"), line: 2, col: 1, text: 'File "b.py", line 2, in f' },
-    { file: "/abs/node.js", line: 10, col: 5, text: "at Object.<anonymous> (/abs/node.js:10:5)" },
-  ])
+test("parseCompilationOutput resolves common tool output patterns", () => {
+  const cases = [
+    {
+      name: "gnu error",
+      raw: "a.c:2:10: error: use of undeclared identifier 'x'",
+      file: join(dir, "a.c"),
+      line: 2,
+      col: 10,
+      severity: "error",
+    },
+    {
+      name: "gnu warning",
+      raw: "src/main.rs:5: warning: unused variable",
+      file: join(dir, "src/main.rs"),
+      line: 5,
+      col: 1,
+      severity: "warning",
+    },
+    {
+      name: "gcc include",
+      raw: "In file included from include/foo.h:3:2,",
+      file: join(dir, "include/foo.h"),
+      line: 3,
+      col: 2,
+      severity: "info",
+    },
+    {
+      name: "rust",
+      raw: "  --> src/lib.rs:14:3",
+      file: join(dir, "src/lib.rs"),
+      line: 14,
+      col: 3,
+      severity: "info",
+    },
+    {
+      name: "cargo test panic",
+      raw: "thread 'tests::it_works' panicked at src/x.rs:10:5:",
+      file: join(dir, "src/x.rs"),
+      line: 10,
+      col: 5,
+      severity: "error",
+    },
+    {
+      name: "python traceback",
+      raw: '  File "b.py", line 2, in f',
+      file: join(dir, "b.py"),
+      line: 2,
+      col: 1,
+      severity: "error",
+    },
+    {
+      name: "node stack",
+      raw: "    at Object.<anonymous> (/abs/node.js:10:5)",
+      file: "/abs/node.js",
+      line: 10,
+      col: 5,
+      severity: "error",
+    },
+    {
+      name: "bun/jest anonymous stack",
+      raw: "    at <anonymous> (/abs/test.ts:11:6)",
+      file: "/abs/test.ts",
+      line: 11,
+      col: 6,
+      severity: "error",
+    },
+    {
+      name: "tsc",
+      raw: "src/app.ts(7,12): error TS2304: Cannot find name 'foo'.",
+      file: join(dir, "src/app.ts"),
+      line: 7,
+      col: 12,
+      severity: "error",
+    },
+    {
+      name: "go",
+      raw: "./main.go:10:5: undefined: thing",
+      file: join(dir, "main.go"),
+      line: 10,
+      col: 5,
+      severity: "error",
+    },
+    {
+      name: "java",
+      raw: "src/App.java:12: warning: [deprecation] old() has been deprecated",
+      file: join(dir, "src/App.java"),
+      line: 12,
+      col: 1,
+      severity: "warning",
+    },
+    {
+      name: "maven java",
+      raw: `[ERROR] ${join(dir, "src/App.java")}:[42,9] cannot find symbol`,
+      file: join(dir, "src/App.java"),
+      line: 42,
+      col: 9,
+      severity: "error",
+    },
+  ] as const
+
+  for (const c of cases) {
+    const locs = parseCompilationOutput(c.raw, dir)
+    expect(locs).toEqual([{
+      file: c.file,
+      line: c.line,
+      col: c.col,
+      text: c.raw.trim(),
+      severity: c.severity,
+    }])
+  }
 })
 
 test("parseCompilationOutput skips timestamps and non-file lines", () => {
   const locs = parseCompilationOutput("12:34:56 build started\nno colons here\n", "/tmp")
   expect(locs).toEqual([])
+})
+
+test("stripAnsi removes CSI SGR and OSC escape sequences", () => {
+  const text = "\x1b[31merror\x1b[0m plain \x1b]8;;https://example.test\x07link\x1b]8;;\x07"
+  expect(stripAnsi(text)).toBe("error plain link")
+  expect(parseCompilationOutput("\x1b[31ma.c:2:10: error: x\x1b[0m", dir)).toEqual([{
+    file: srcA,
+    line: 2,
+    col: 10,
+    text: "a.c:2:10: error: x",
+    severity: "error",
+  }])
 })
 
 test("install registers commands and compilation mode keymap", () => {
@@ -156,9 +266,36 @@ test("compile spawns via shell in project root, streams output, populates locati
     line: 2,
     col: 10,
     text: "a.c:2:10: error: use of undeclared identifier 'x'",
+    severity: "error",
   })
   expect(lastCompileCommand(editor)).toBe("cc -c a.c")
   expect(lastCompileDirectory(editor)).toBe(dir)
+})
+
+test("compile strips ANSI escapes before inserting and parsing output", async () => {
+  const editor = makeEditor()
+  installNextError(editor)
+  const stderr = [
+    "\x1b[31m",
+    "a.c:2:10: error: red\x1b[0m\n",
+    "\x1b]8;;https://example.test\x07link\x1b]8;;\x07\n",
+  ]
+  const { spawn } = fakeSpawn(() => ({ stderr, code: 1 }))
+  install(editor, { spawn, projectRoot: async () => dir })
+
+  await editor.openFile(srcA)
+  await editor.run("compile", ["cc -c a.c"])
+
+  expect(editor.currentBuffer.text).toContain("a.c:2:10: error: red")
+  expect(editor.currentBuffer.text).toContain("link")
+  expect(editor.currentBuffer.text).not.toContain("\x1b")
+  expect(locationList(editor)).toEqual([{
+    file: srcA,
+    line: 2,
+    col: 10,
+    text: "a.c:2:10: error: red",
+    severity: "error",
+  }])
 })
 
 test("next-error visits parsed compilation locations", async () => {
@@ -181,6 +318,25 @@ test("next-error visits parsed compilation locations", async () => {
   expect(locationIndex(editor)).toBe(1)
   expect(editor.currentBuffer.path).toBe(srcB)
   expect(editor.currentBuffer.lineCol()).toEqual({ line: 2, col: 1 })
+})
+
+test("compile-goto-error visits the parsed location at point in *compilation*", async () => {
+  const editor = makeEditor()
+  installNextError(editor)
+  const out = `noise\n  File "b.py", line 2\n`
+  const { spawn } = fakeSpawn(() => ({ stdout: [out], code: 1 }))
+  install(editor, { spawn, projectRoot: async () => dir })
+
+  await editor.openFile(srcA)
+  await editor.run("compile", ["make"])
+  const compilation = editor.currentBuffer
+  compilation.point = compilation.text.indexOf('File "b.py"')
+
+  await editor.run("compile-goto-error")
+
+  expect(editor.currentBuffer.path).toBe(srcB)
+  expect(editor.currentBuffer.lineCol()).toEqual({ line: 2, col: 1 })
+  expect(locationIndex(editor)).toBe(0)
 })
 
 test("g in *compilation* runs recompile and reuses the last command/directory", async () => {

@@ -8,6 +8,16 @@ import { spawnProcess, type SpawnHandle, type SpawnOptions } from "../../src/pla
 import { findProjectRoot } from "../../src/lsp/project-root"
 import { setLocationList, type ErrorLocation } from "../next-error"
 
+export type CompilationSeverity = NonNullable<ErrorLocation["severity"]>
+
+type SeveritySpec =
+  | CompilationSeverity
+  | {
+    group: number
+    map?: Record<string, CompilationSeverity>
+    default?: CompilationSeverity
+  }
+
 export type CompileDeps = {
   spawn?: (opts: SpawnOptions) => SpawnHandle
   projectRoot?: (filePath: string) => Promise<string>
@@ -20,20 +30,74 @@ export type ErrorRegexp = {
   file: number
   line: number
   col?: number
+  severity?: SeveritySpec
 }
 
 /** Subset of Emacs `compilation-error-regexp-alist-alist`, ordered specific → general. */
 export const compilationErrorRegexpAlist: ErrorRegexp[] = [
-  { name: "rustc", re: /^\s*-->\s+(\S+?):(\d+):(\d+)/, file: 1, line: 2, col: 3 },
-  { name: "msft", re: /^\s*(?:\d+>)?((?:[A-Za-z]:)?[^\s(][^(\n]*?)\((\d+)(?:,(\d+))?\)\s*:/, file: 1, line: 2, col: 3 },
-  { name: "python-tracebacks", re: /^\s*File "([^"]+)", lines? (\d+)/, file: 1, line: 2 },
-  { name: "node-stack", re: /^\s+at .+\(([^()]+):(\d+):(\d+)\)$/, file: 1, line: 2, col: 3 },
-  { name: "gnu", re: /^((?:[A-Za-z]:)?[^\s:][^:\n]*?):(\d+)(?:[.:](\d+))?:(?=\D|$)/, file: 1, line: 2, col: 3 },
+  { name: "gcc-include", re: /^\s*(?:In file included from|from)\s+(.+?):(\d+)(?::(\d+))?[,:]/, file: 1, line: 2, col: 3, severity: "info" },
+  { name: "rustc", re: /^\s*-->\s+(.+?):(\d+):(\d+)/, file: 1, line: 2, col: 3, severity: "info" },
+  { name: "cargo-test-panic", re: /^\s*(?:thread '[^']+' )?panicked at (.+?):(\d+):(\d+):/, file: 1, line: 2, col: 3, severity: "error" },
+  { name: "java-maven", re: /^\s*\[(ERROR|WARNING|INFO)\]\s+((?:[A-Za-z]:)?[^:\n]+?\.java):\[(\d+),(\d+)\]/i, file: 2, line: 3, col: 4, severity: { group: 1 } },
+  { name: "java", re: /^\s*((?:[A-Za-z]:)?[^\s:\n]+?\.java):(\d+):\s*(error|warning)\b/i, file: 1, line: 2, severity: { group: 3 } },
+  { name: "tsc", re: /^\s*((?:[A-Za-z]:)?[^\s(\n][^(\n]*?\.[cm]?[tj]sx?)\((\d+),(\d+)\):\s*(error|warning|info)\b/i, file: 1, line: 2, col: 3, severity: { group: 4 } },
+  { name: "msft", re: /^\s*(?:\d+>)?((?:[A-Za-z]:)?[^\s(][^(\n]*?)\((\d+)(?:,(\d+))?\)\s*:\s*(error|warning)?/i, file: 1, line: 2, col: 3, severity: { group: 4 } },
+  { name: "python-tracebacks", re: /^\s*File "([^"]+)", lines? (\d+)/, file: 1, line: 2, severity: "error" },
+  { name: "node-stack", re: /^\s*at\s+(?:.+?\s+)?\((.+):(\d+):(\d+)\)\s*$/, file: 1, line: 2, col: 3, severity: "error" },
+  { name: "node-stack-bare", re: /^\s*at\s+(.+):(\d+):(\d+)\s*$/, file: 1, line: 2, col: 3, severity: "error" },
+  { name: "go", re: /^\s*((?:[A-Za-z]:)?(?:\.{1,2}\/|\/)?[^\s:\n]+?\.go):(\d+):(\d+):/, file: 1, line: 2, col: 3, severity: "error" },
+  // The (?!\d+:) guard keeps pure-digit "files" (timestamps like 12:34:56) from matching.
+  { name: "gnu", re: /^(?!\d+:)((?:[A-Za-z]:)?[^\s:][^:\n]*?):(\d+)(?:[.:](\d+))?:\s*(?:(error|warning|note|info)\b)?/i, file: 1, line: 2, col: 3, severity: { group: 4, map: { note: "info" } } },
 ]
 
-export function parseCompilationOutput(text: string, cwd: string): ErrorLocation[] {
-  const out: ErrorLocation[] = []
-  for (const raw of text.split("\n")) {
+const ANSI_RE = /(?:\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_]|\x9B[0-?]*[ -/]*[@-~])/g
+const COMPLETE_ANSI_RE = /^(?:\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_]|\x9B[0-?]*[ -/]*[@-~])/
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "")
+}
+
+function trailingIncompleteAnsiStart(text: string): number {
+  const esc = text.lastIndexOf("\x1b")
+  const csi = text.lastIndexOf("\x9b")
+  const start = Math.max(esc, csi)
+  if (start < 0) return -1
+  const tail = text.slice(start)
+  return COMPLETE_ANSI_RE.test(tail) ? -1 : start
+}
+
+function createAnsiStripper(): { write(chunk: string): string; flush(): string } {
+  let pending = ""
+  return {
+    write(chunk: string): string {
+      const text = pending + chunk
+      const pendingStart = trailingIncompleteAnsiStart(text)
+      pending = pendingStart >= 0 ? text.slice(pendingStart) : ""
+      return stripAnsi(pendingStart >= 0 ? text.slice(0, pendingStart) : text)
+    },
+    flush(): string {
+      pending = ""
+      return ""
+    },
+  }
+}
+
+function severityFor(pat: ErrorRegexp, m: RegExpExecArray): CompilationSeverity | undefined {
+  const spec = pat.severity
+  if (!spec) return undefined
+  if (typeof spec === "string") return spec
+  const raw = m[spec.group]?.toLowerCase()
+  if (!raw) return spec.default
+  return spec.map?.[raw] ?? (raw === "warning" ? "warning" : raw === "info" ? "info" : "error")
+}
+
+function parseCompilationLines(text: string, cwd: string): Array<{ lineNumber: number; location: ErrorLocation }> {
+  const out: Array<{ lineNumber: number; location: ErrorLocation }> = []
+  let lineNumber = 0
+  for (const raw of stripAnsi(text).split("\n")) {
+    lineNumber++
+    const lineText = raw.trim()
+    if (!lineText) continue
     for (const pat of compilationErrorRegexpAlist) {
       const m = pat.re.exec(raw)
       if (!m) continue
@@ -41,12 +105,27 @@ export function parseCompilationOutput(text: string, cwd: string): ErrorLocation
       const line = Number(m[pat.line])
       if (!file || !Number.isFinite(line)) break
       const col = pat.col != null && m[pat.col] ? Number(m[pat.col]) : 1
+      if (!Number.isFinite(col)) break
       const abs = isAbsolute(file) ? file : resolve(cwd, file)
-      out.push({ file: abs, line, col, text: raw.trim() })
+      const severity = severityFor(pat, m)
+      out.push({
+        lineNumber,
+        location: {
+          file: abs,
+          line,
+          col,
+          text: lineText,
+          ...(severity ? { severity } : {}),
+        },
+      })
       break
     }
   }
   return out
+}
+
+export function parseCompilationOutput(text: string, cwd: string): ErrorLocation[] {
+  return parseCompilationLines(text, cwd).map(entry => entry.location)
 }
 
 type State = {
@@ -131,16 +210,28 @@ export async function compilationStart(
 
   let output = ""
   const onChunk = (chunk: string) => {
+    if (!chunk) return
     output += chunk
     append(editor, buf, chunk)
   }
-  await Promise.all([pump(proc.stdout, onChunk), pump(proc.stderr, onChunk)])
+  const stdoutStripper = createAnsiStripper()
+  const stderrStripper = createAnsiStripper()
+  await Promise.all([
+    pump(proc.stdout, chunk => onChunk(stdoutStripper.write(chunk))),
+    pump(proc.stderr, chunk => onChunk(stderrStripper.write(chunk))),
+  ])
+  onChunk(stdoutStripper.flush())
+  onChunk(stderrStripper.flush())
   const code = await proc.exited
   s.proc = null
 
-  const locations = parseCompilationOutput(output, cwd)
+  const parsed = parseCompilationLines(output, cwd)
+  const locations = parsed.map(entry => entry.location)
   setLocationList(editor, locations)
-  buf.locals.set("next-error-locations", locations)
+  const byLine = new Map<number, ErrorLocation>()
+  const outputStartLine = header.split("\n").length
+  for (const entry of parsed) byLine.set(outputStartLine + entry.lineNumber - 1, entry.location)
+  buf.locals.set("next-error-locations", byLine)
 
   const status = code === 0
     ? "Compilation finished"

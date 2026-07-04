@@ -12,6 +12,7 @@ export type ErrorLocation = {
   line: number
   col: number
   text: string
+  severity?: "error" | "warning" | "info"
 }
 
 type State = {
