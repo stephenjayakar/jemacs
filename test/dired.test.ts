@@ -1,22 +1,30 @@
 import { expect, test } from "bun:test"
-import { lstat, mkdir, readFile, readlink, rm, stat } from "node:fs/promises"
+import { chmod, lstat, mkdir, readFile, readlink, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
 import { Editor } from "../src/kernel/editor"
 import {
   diredChangeMarks,
   diredDoChmod,
+  diredDoCompress,
+  diredDoCompressTo,
   diredDoCopy,
   diredDoDelete,
+  diredFindRegexpCommand,
   diredDoFlaggedDelete,
   diredDoShellCommand,
   diredDoSymlink,
   diredDoTouch,
+  diredEntryLines,
   diredEntryAtPoint,
   diredFlagFileDeletion,
   diredFlaggedEntries,
+  diredHideDetailsMode,
   diredMarkAll,
+  diredMarkDirectories,
   diredMarkEntry,
+  diredMarkExecutables,
+  diredMarkExtension,
   diredMarkedFilesSummary,
   diredMarkFilesRegexp,
   diredSortToggleOrEdit,
@@ -163,6 +171,14 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(editor.commands.get("dired-unmark-all-files")?.description).toContain("specific mark")
   expect(editor.commands.get("dired-number-of-marked-files")?.description).toContain("total size")
   expect(editor.commands.get("dired-change-marks")?.description).toContain("OLD marks")
+  expect(editor.commands.get("dired-hide-details-mode")?.description).toContain("Toggle hiding details")
+  expect(editor.commands.get("dired-do-compress")?.description).toContain("Compress")
+  expect(editor.commands.get("dired-do-compress-to")?.description).toContain("tar.gz")
+  expect(editor.commands.get("dired-do-find-regexp")?.description).toContain("Search marked files")
+  expect(editor.commands.get("dired-do-query-replace-regexp")?.description).toContain("Query replace")
+  expect(editor.commands.get("dired-mark-extension")?.description).toContain("extension")
+  expect(editor.commands.get("dired-mark-directories")?.description).toContain("directories")
+  expect(editor.commands.get("dired-mark-executables")?.description).toContain("executable")
   expect(keymap?.get("m")).toBe("dired-mark")
   expect(keymap?.get("S-c")).toBe("dired-do-copy")
   expect(keymap?.get("d")).toBe("dired-flag-file-deletion")
@@ -172,6 +188,14 @@ test("dired keymap binds mark, copy, delete, and regexp commands", async () => {
   expect(keymap?.get("S-s")).toBe("dired-do-symlink")
   expect(keymap?.get("S-h")).toBe("dired-do-hardlink")
   expect(keymap?.get("!")).toBe("dired-do-shell-command")
+  expect(keymap?.get("Z")).toBe("dired-do-compress")
+  expect(keymap?.get("c")).toBe("dired-do-compress-to")
+  expect(keymap?.get("S-a")).toBe("dired-do-find-regexp")
+  expect(keymap?.get("S-q")).toBe("dired-do-query-replace-regexp")
+  expect(keymap?.get("(")).toBe("dired-hide-details-mode")
+  expect(keymap?.get("* /")).toBe("dired-mark-directories")
+  expect(keymap?.get("* *")).toBe("dired-mark-executables")
+  expect(keymap?.get("* ?")).toBe("dired-unmark-all-files")
   expect(keymap?.get("s")).toBe("dired-sort-toggle-or-edit")
   expect(keymap?.get("u")).toBe("dired-unmark")
   expect(keymap?.get("S-u")).toBe("dired-unmark-all-marks")
@@ -237,6 +261,123 @@ test("dired mark commands apply numeric prefix arguments", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test("dired-hide-details-mode renders only marks and names without changing entries", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    const entries = diredEntryLines.get(buffer)
+    expect(buffer.text).toMatch(/^- -.*\d{4}-\d{2}-\d{2}  alpha\.txt/m)
+
+    const enabled = diredHideDetailsMode(buffer)
+
+    expect(enabled).toBe(true)
+    expect(diredEntryLines.get(buffer)).toBe(entries)
+    expect(buffer.text).toMatch(/^- alpha\.txt$/m)
+    expect(buffer.text).not.toMatch(/^- -.*alpha\.txt/m)
+
+    diredHideDetailsMode(buffer)
+    expect(buffer.text).toMatch(/^- -.*alpha\.txt/m)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-compress gzips in place and gunzips gz files", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+
+    await diredDoCompress(editor, buffer, null)
+
+    await expect(stat(join(dir, "alpha.txt"))).rejects.toThrow()
+    expect((await stat(join(dir, "alpha.txt.gz"))).isFile()).toBe(true)
+    expect(buffer.text).toContain("alpha.txt.gz")
+
+    buffer.point = buffer.text.indexOf("alpha.txt.gz")
+    await diredDoCompress(editor, buffer, null)
+
+    expect(await readFile(join(dir, "alpha.txt"), "utf8")).toBe("alpha")
+    await expect(stat(join(dir, "alpha.txt.gz"))).rejects.toThrow()
+    expect(buffer.text).toContain("alpha.txt")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-compress-to creates a tar.gz archive for marked files", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+    buffer.point = buffer.text.indexOf("beta.txt")
+    diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
+
+    await diredDoCompressTo(editor, buffer, null, "bundle.tar.gz")
+
+    const archive = join(dir, "bundle.tar.gz")
+    expect((await stat(archive)).isFile()).toBe(true)
+    const proc = Bun.spawn(["tar", "-tzf", archive], { stdout: "pipe", stderr: "pipe" })
+    const listing = await new Response(proc.stdout).text()
+    expect(await proc.exited).toBe(0)
+    expect(listing).toContain("alpha.txt")
+    expect(listing).toContain("beta.txt")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired bulk mark helpers mark extensions, directories, and executables", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    await mkdir(join(dir, "subdir"))
+    await Bun.write(join(dir, "run.sh"), "#!/bin/sh\nexit 0\n")
+    await chmod(join(dir, "run.sh"), 0o755)
+    const buffer = await editor.openDirectory(dir)
+
+    expect(diredMarkExtension(buffer, "txt")).toBe(2)
+    expect(buffer.text).toMatch(/^\* -.*alpha\.txt/m)
+    expect(buffer.text).toMatch(/^\* -.*beta\.txt/m)
+    expect(buffer.text).not.toMatch(/^\* -.*run\.sh/m)
+
+    diredUnmarkAll(buffer)
+    expect(diredMarkDirectories(buffer)).toBe(1)
+    expect(buffer.text).toMatch(/^\* d.*subdir\/$/m)
+    expect(buffer.text).not.toMatch(/^\* d.*\.\.\/$/m)
+
+    diredUnmarkAll(buffer)
+    expect(diredMarkExecutables(buffer)).toBe(1)
+    expect(buffer.text).toMatch(/^\* -.*run\.sh/m)
+    expect(buffer.text).not.toMatch(/^\* d.*subdir\/$/m)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-find-regexp command builder searches exactly selected paths", () => {
+  const entries = [
+    { name: "a.txt", path: "/tmp/dired/a.txt", isDirectory: false, size: 1, mtime: new Date(0) },
+    { name: "b's.txt", path: "/tmp/dired/b's.txt", isDirectory: false, size: 1, mtime: new Date(0) },
+  ]
+
+  expect(diredFindRegexpCommand("foo bar", entries)).toBe(
+    "rg --line-number --column --no-heading -- 'foo bar' '/tmp/dired/a.txt' '/tmp/dired/b'\\''s.txt'",
+  )
 })
 
 test("dired-number-of-marked-files reports count and total size", async () => {

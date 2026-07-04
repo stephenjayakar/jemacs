@@ -58,6 +58,14 @@ export function installDiredMode(): void {
   keymap.bind("S-s", "dired-do-symlink")
   keymap.bind("S-h", "dired-do-hardlink")
   keymap.bind("!", "dired-do-shell-command")
+  keymap.bind("Z", "dired-do-compress")
+  keymap.bind("c", "dired-do-compress-to")
+  keymap.bind("S-a", "dired-do-find-regexp")
+  keymap.bind("S-q", "dired-do-query-replace-regexp")
+  keymap.bind("(", "dired-hide-details-mode")
+  keymap.bind("* /", "dired-mark-directories")
+  keymap.bind("* *", "dired-mark-executables")
+  keymap.bind("* ?", "dired-unmark-all-files")
   keymap.bind("s", "dired-sort-toggle-or-edit")
   keymap.bind("+", "dired-create-directory")
   keymap.bind("backspace", "dired-unmark-backward")
@@ -130,16 +138,23 @@ export function diredEntryAtPoint(buffer: BufferModel): DiredEntry | undefined {
 export function diredFontLock(buffer: BufferModel): TextSpan[] {
   const spans: TextSpan[] = []
   let offset = 0
+  const hideDetails = buffer.locals.get("dired-hide-details-mode") === true
+  const entries = diredEntryLines.get(buffer) ?? []
+  let lineNo = 0
   for (const line of buffer.text.split("\n")) {
     if (line.length > 0) {
       const mark = line[0]
       if (mark === "*") spans.push({ start: offset, end: offset + 1, face: "constant" })
       if (mark === "D") spans.push({ start: offset, end: offset + 1, face: "error" })
     }
-    if (line.length > 2 && line[2] === "d") {
+    if (hideDetails && lineNo >= HEADER_LINES) {
+      const entry = entries[lineNo - HEADER_LINES]
+      if (entry?.isDirectory && line.length > 2) spans.push({ start: offset + 2, end: offset + line.length, face: "directory" })
+    } else if (line.length > NAME_OFFSET && line[2] === "d") {
       spans.push({ start: offset + NAME_OFFSET, end: offset + line.length, face: "directory" })
     }
     offset += line.length + 1
+    lineNo++
   }
   return spans
 }
@@ -280,6 +295,34 @@ export function diredMarkFilesRegexp(buffer: BufferModel, regexp: string, mark: 
     if (diredSpecialEntry(entry)) continue
     if (!re.test(entry.name)) continue
     marks.set(entry.path, mark)
+    count++
+  }
+  diredMarks.set(buffer, marks)
+  renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
+  return count
+}
+
+export function diredMarkExtension(buffer: BufferModel, extension: string): number {
+  const trimmed = extension.trim()
+  if (!trimmed) return 0
+  const suffix = trimmed.startsWith(".") ? trimmed : `.${trimmed}`
+  return diredMarkByPredicate(buffer, entry => !entry.isDirectory && entry.name.endsWith(suffix))
+}
+
+export function diredMarkDirectories(buffer: BufferModel): number {
+  return diredMarkByPredicate(buffer, entry => entry.isDirectory)
+}
+
+export function diredMarkExecutables(buffer: BufferModel): number {
+  return diredMarkByPredicate(buffer, entry => !entry.isDirectory && ((entry.mode ?? 0) & 0o111) !== 0)
+}
+
+function diredMarkByPredicate(buffer: BufferModel, predicate: (entry: DiredEntry) => boolean): number {
+  const marks = diredMarks.get(buffer) ?? new Map()
+  let count = 0
+  for (const entry of diredEntryLines.get(buffer) ?? []) {
+    if (diredSpecialEntry(entry) || !predicate(entry)) continue
+    marks.set(entry.path, "marked")
     count++
   }
   diredMarks.set(buffer, marks)
@@ -480,6 +523,96 @@ export async function diredDoShellCommand(editor: Editor, buffer: BufferModel, p
   editor.message(output.code === 0 ? "Shell command finished" : `Shell command exited abnormally with code ${output.code ?? "?"}`)
 }
 
+export async function diredDoCompress(editor: Editor, buffer: BufferModel, prefixArgument: number | null): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message("No files to compress")
+    return
+  }
+  const cwd = buffer.path ?? dirname(entries[0]!.path)
+  const commands = entries.map(entry => {
+    const file = shellQuote(entry.name)
+    return entry.name.endsWith(".gz") || entry.name.endsWith(".tgz")
+      ? `gunzip -- ${file}`
+      : `gzip -- ${file}`
+  })
+  const output = await runShellCommand(commands.join(" && "), cwd)
+  await refreshDiredBuffer(buffer)
+  editor.message(output.code === 0 ? `Compressed ${entries.length} file(s)` : `Compress exited abnormally with code ${output.code ?? "?"}`)
+}
+
+export async function diredDoCompressTo(
+  editor: Editor,
+  buffer: BufferModel,
+  prefixArgument: number | null,
+  archiveArg?: string,
+): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument)
+  if (!entries.length) {
+    editor.message("No files to archive")
+    return
+  }
+  const archive = archiveArg ?? await editor.prompt("Compress to: ", "", "dired-compress-to")
+  if (!archive) return
+  const cwd = buffer.path ?? dirname(entries[0]!.path)
+  const files = entries.map(entry => shellQuote(entry.name)).join(" ")
+  const output = await runShellCommand(`tar -czf ${shellQuote(archive)} ${files}`, cwd)
+  await refreshDiredBuffer(buffer)
+  editor.message(output.code === 0 ? `Wrote ${archive}` : `Compress to exited abnormally with code ${output.code ?? "?"}`)
+}
+
+export function diredFindRegexpCommand(pattern: string, entries: DiredEntry[]): string {
+  return ["rg", "--line-number", "--column", "--no-heading", "--", shellQuote(pattern), ...entries.map(entry => shellQuote(entry.path))].join(" ")
+}
+
+export async function diredDoFindRegexp(
+  editor: Editor,
+  buffer: BufferModel,
+  prefixArgument: number | null,
+  regexpArg?: string,
+): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument).filter(entry => !entry.isDirectory)
+  if (!entries.length) {
+    editor.message("No files to search")
+    return
+  }
+  const regexp = regexpArg ?? await editor.prompt("Find regexp: ", "", "dired-find-regexp")
+  if (!regexp) return
+  await editor.run("grep", [diredFindRegexpCommand(regexp, entries)])
+}
+
+export async function diredDoQueryReplaceRegexp(
+  editor: Editor,
+  buffer: BufferModel,
+  prefixArgument: number | null,
+  fromArg?: string,
+  toArg?: string,
+): Promise<void> {
+  const entries = diredOperateEntries(buffer, "marked", prefixArgument).filter(entry => !entry.isDirectory)
+  if (!entries.length) {
+    editor.message("No files to query replace")
+    return
+  }
+  const from = fromArg ?? await editor.prompt("Query replace regexp: ", "", "query-replace")
+  if (!from) return
+  const to = toArg ?? await editor.prompt(`Query replace regexp ${from} with: `, "", "query-replace")
+  if (to == null) return
+  for (const [index, entry] of entries.entries()) {
+    const file = await editor.openFile(entry.path)
+    file.point = 0
+    editor.message(`Query replacing in ${entry.name} (${index + 1}/${entries.length})`)
+    await editor.run("query-replace-regexp", [from, to])
+  }
+  editor.message(`Query replace visited ${entries.length} file(s)`)
+}
+
+export function diredHideDetailsMode(buffer: BufferModel, enabled?: boolean): boolean {
+  const next = enabled ?? buffer.locals.get("dired-hide-details-mode") !== true
+  buffer.locals.set("dired-hide-details-mode", next)
+  renderDiredBuffer(buffer, diredEntryLines.get(buffer) ?? [])
+  return next
+}
+
 export async function diredSortToggleOrEdit(editor: Editor, buffer: BufferModel): Promise<void> {
   const next = diredSortOrders.get(buffer) === "date" ? "name" : "date"
   diredSortOrders.set(buffer, next)
@@ -527,7 +660,8 @@ export function diredUnmarkBackward(buffer: BufferModel): void {
 export function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): void {
   const marks = diredMarks.get(buffer) ?? new Map()
   const order = diredSortOrders.get(buffer) ?? "name"
-  const lines = [`  Directory ${buffer.path} (sort by ${order})`, "", ...entries.map(entry => formatEntry(entry, marks.get(entry.path)))]
+  const hideDetails = buffer.locals.get("dired-hide-details-mode") === true
+  const lines = [`  Directory ${buffer.path} (sort by ${order})`, "", ...entries.map(entry => formatEntry(entry, marks.get(entry.path), hideDetails))]
   const entryPath = diredEntryAtPoint(buffer)?.path
   const wasReadOnly = buffer.readOnly
   buffer.readOnly = false
@@ -535,33 +669,35 @@ export function renderDiredBuffer(buffer: BufferModel, entries: DiredEntry[]): v
   if (entryPath) {
     const index = entries.findIndex(entry => entry.path === entryPath)
     if (index >= 0) {
-      buffer.point = diredNamePoint(lines, index)
+      buffer.point = diredNamePoint(lines, index, hideDetails)
     }
   } else {
     const firstFile = entries.findIndex(entry => !diredSpecialEntry(entry))
-    if (firstFile >= 0) buffer.point = diredNamePoint(lines, firstFile)
+    if (firstFile >= 0) buffer.point = diredNamePoint(lines, firstFile, hideDetails)
     else buffer.point = Math.min(buffer.point, buffer.text.length)
   }
   buffer.dirty = false
   buffer.readOnly = wasReadOnly
 }
 
-function diredNamePoint(lines: string[], entryIndex: number): number {
+function diredNamePoint(lines: string[], entryIndex: number, hideDetails = false): number {
   let offset = 0
   for (let i = 0; i < HEADER_LINES + entryIndex; i++) offset += lines[i]!.length + 1
-  return offset + NAME_OFFSET
+  return offset + (hideDetails ? 2 : NAME_OFFSET)
 }
 
-function formatEntry(entry: DiredEntry, mark?: DiredMark): string {
+function formatEntry(entry: DiredEntry, mark?: DiredMark, hideDetails = false): string {
   const markChar = mark === "delete" ? "D" : mark === "marked" ? "*" : "-"
-  const mode = formatModeString(entry)
-  const size = entry.isDirectory ? "     " : entry.size.toString().padStart(5)
-  const date = entry.mtime.toISOString().slice(0, 10)
+  const name = diredDisplayName(entry)
+  if (hideDetails) return `${markChar} ${name}`
+  return `${markChar} ${formatModeString(entry)} ${entry.isDirectory ? "     " : entry.size.toString().padStart(5)} ${entry.mtime.toISOString().slice(0, 10)}  ${name}`
+}
+
+function diredDisplayName(entry: DiredEntry): string {
   const suffix = entry.isSymlink && entry.linkTarget != null
     ? ` -> ${entry.linkTarget}`
     : entry.isDirectory && !entry.name.endsWith("/") ? "/" : ""
-  const name = entry.name + suffix
-  return `${markChar} ${mode} ${size} ${date}  ${name}`
+  return entry.name + suffix
 }
 
 function formatModeString(entry: DiredEntry): string {

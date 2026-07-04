@@ -13,10 +13,14 @@ import {
   diredChangeMarks,
   diredCreateDirectory,
   diredDoChmod,
+  diredDoCompress,
+  diredDoCompressTo,
   diredDoCopy,
   diredDoDelete,
+  diredDoFindRegexp,
   diredDoFlaggedDelete,
   diredDoHardlink,
+  diredDoQueryReplaceRegexp,
   diredDoRename,
   diredDoShellCommand,
   diredDoSymlink,
@@ -25,7 +29,11 @@ import {
   diredEntryLines,
   diredEntryAtPoint,
   diredFlagFileDeletion,
+  diredHideDetailsMode,
+  diredMarkDirectories,
   diredMarkEntry,
+  diredMarkExecutables,
+  diredMarkExtension,
   diredMarkedFilesSummary,
   diredMarkFilesRegexp,
   diredSortToggleOrEdit,
@@ -357,6 +365,20 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const count = diredMarkFilesRegexp(buffer, regexp, "delete")
     editor.message(`Flagged ${count} file(s) for deletion`)
   }, "Flag files for deletion by regular expression.")
+  editor.command("dired-mark-extension", async ({ buffer, editor, args }) => {
+    const extension = args[0] ?? await editor.prompt("Mark extension: ", "", "dired-extension")
+    if (!extension) return
+    const count = diredMarkExtension(buffer, extension)
+    editor.message(`Marked ${count} file(s)`)
+  }, "Mark files whose names end in a given extension.")
+  editor.command("dired-mark-directories", ({ buffer, editor }) => {
+    const count = diredMarkDirectories(buffer)
+    editor.message(`Marked ${count} director${count === 1 ? "y" : "ies"}`)
+  }, "Mark all directories in Dired.")
+  editor.command("dired-mark-executables", ({ buffer, editor }) => {
+    const count = diredMarkExecutables(buffer)
+    editor.message(`Marked ${count} executable file(s)`)
+  }, "Mark all executable files in Dired.")
   editor.command("dired-flag-file-deletion", ({ buffer, prefixArgument }) => {
     for (const entry of diredEntriesForPrefix(buffer, prefixArgument)) {
       diredFlagFileDeletion(buffer, entry)
@@ -389,6 +411,23 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("dired-do-shell-command", async ({ buffer, editor, args, prefixArgument }) => {
     await diredDoShellCommand(editor, buffer, prefixArgument, args[0])
   }, "Run a shell command on marked files or the file on the current line.")
+  editor.command("dired-do-compress", async ({ buffer, editor, prefixArgument }) => {
+    await diredDoCompress(editor, buffer, prefixArgument)
+  }, "Compress or uncompress marked files or the file on the current line.")
+  editor.command("dired-do-compress-to", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoCompressTo(editor, buffer, prefixArgument, args[0])
+  }, "Compress marked files or the current file into a tar.gz archive.")
+  editor.command("dired-do-find-regexp", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoFindRegexp(editor, buffer, prefixArgument, args[0])
+  }, "Search marked files or the current file for a regular expression.")
+  editor.command("dired-do-query-replace-regexp", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoQueryReplaceRegexp(editor, buffer, prefixArgument, args[0], args[1])
+  }, "Query replace a regular expression through marked files or the current file.")
+  editor.command("dired-hide-details-mode", ({ buffer, editor, args }) => {
+    const enabled = args[0] == null ? undefined : args[0] !== "0" && args[0] !== "false"
+    const on = diredHideDetailsMode(buffer, enabled)
+    editor.message(`Dired Hide Details mode ${on ? "enabled" : "disabled"}`)
+  }, "Toggle hiding details in the current Dired buffer.")
   editor.command("dired-sort-toggle-or-edit", async ({ buffer, editor }) => {
     await diredSortToggleOrEdit(editor, buffer)
   }, "Toggle Dired sorting between name and date.")
