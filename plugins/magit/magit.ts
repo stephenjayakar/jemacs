@@ -10,6 +10,7 @@ import { nextWindowId } from "../../src/kernel/window"
 import { spawnProcess } from "../../src/platform/runtime"
 import { diffFontLockText } from "../../src/modes/diff"
 import { projectRoot } from "../project"
+import { BLAME_SHAS_LOCAL, blameChunkTarget, blameShaAtPoint, parseBlamePorcelain, renderBlame } from "./blame"
 
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
@@ -760,6 +761,84 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   revisionMap.bind("j", "magit-revision-jump")
   revisionMap.bind("q", "magit-bury-buffer")
   defineMode({ name: "magit-revision-mode", parent: "magit-diff-mode", keymap: revisionMap, fontLock: magitDiffFontLock })
+
+  const blameMap = new Keymap("magit-blame-mode-map")
+  blameMap.bind("return", "magit-blame-show-commit")
+  blameMap.bind("RET", "magit-blame-show-commit")
+  blameMap.bind("n", "magit-blame-next-chunk")
+  blameMap.bind("p", "magit-blame-previous-chunk")
+  blameMap.bind("q", "magit-blame-quit")
+  defineMode({ name: "magit-blame-mode", parent: "magit-mode", keymap: blameMap })
+
+  editor.command("magit-blame", async ({ buffer, editor }) => {
+    const path = buffer.path
+    if (!path || buffer.kind === "directory") {
+      editor.message("Buffer is not visiting a file")
+      return
+    }
+    const dir = path.slice(0, path.lastIndexOf("/")) || "/"
+    const rootResult = await git(["rev-parse", "--show-toplevel"], dir)
+    const root = rootResult.out.trim()
+    if (rootResult.code !== 0 || !root) {
+      editor.message("Not in a git repository")
+      return
+    }
+    const { out, err, code } = await git(["blame", "--line-porcelain", "--", path], root)
+    if (code !== 0) {
+      editor.message(`git blame failed: ${err.trim() || code}`)
+      return
+    }
+    const chunks = parseBlamePorcelain(out)
+    if (!chunks.length) {
+      editor.message("No blame information")
+      return
+    }
+    const { text, lineShas } = renderBlame(chunks)
+    const sourceLine = buffer.text.slice(0, buffer.point).split("\n").length - 1
+    const buf = editor.displayBufferInOtherWindow(
+      editor.scratch(`*magit-blame: ${path.split("/").pop()}*`, text, "magit-blame-mode").id,
+      { select: true },
+    )
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.locals.set(BLAME_SHAS_LOCAL, lineShas)
+    const lines = text.split("\n")
+    let offset = 0
+    for (let i = 0; i < Math.min(sourceLine, lines.length - 1); i++) offset += lines[i]!.length + 1
+    buf.point = offset
+  }, "Show git blame for the current file in a magit-blame buffer.")
+
+  editor.command("magit-blame-show-commit", async ({ buffer, editor }) => {
+    const sha = blameShaAtPoint(buffer)
+    const root = magitRoot(buffer)
+    if (!sha || !root) {
+      editor.message("No commit at point")
+      return
+    }
+    const { out } = await git(["show", "--stat", "-p", sha], root)
+    const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "magit-revision-mode")
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.locals.set("magit-diff-args", ["diff", `${sha}^!`])
+    buf.point = 0
+  }, "Show the commit blamed for the line at point.")
+
+  editor.command("magit-blame-next-chunk", ({ buffer, editor }) => {
+    const target = blameChunkTarget(buffer, 1)
+    if (target == null) editor.message("No next chunk")
+    else buffer.point = target
+  }, "Move to the next blame chunk.")
+
+  editor.command("magit-blame-previous-chunk", ({ buffer, editor }) => {
+    const target = blameChunkTarget(buffer, -1)
+    if (target == null) editor.message("No previous chunk")
+    else buffer.point = target
+  }, "Move to the previous blame chunk.")
+
+  editor.command("magit-blame-quit", ({ buffer, editor }) => {
+    if (buffer.mode === "magit-blame-mode") editor.killBuffer(buffer.id)
+    else editor.message("Not in a magit-blame buffer")
+  }, "Kill the magit-blame buffer.")
 
   editor.command("magit-undefined", ({ editor }) => {
     editor.message("Buffer is read-only")
