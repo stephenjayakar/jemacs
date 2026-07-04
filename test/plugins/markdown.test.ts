@@ -103,6 +103,7 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("C-c left")).toMatchObject({ status: "matched", command: "markdown-promote" })
   expect(editor.keymaps.lookup("C-c down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
   expect(editor.keymaps.lookup("C-c C-s t")).toMatchObject({ status: "matched", command: "markdown-insert-table" })
+  expect(editor.keymaps.lookup("C-c C-s f")).toMatchObject({ status: "matched", command: "markdown-insert-footnote" })
   expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
 })
@@ -747,6 +748,97 @@ describe("markdown-insert-link", () => {
     expect(prompts).toEqual(["URL or [reference]: "])
     expect(buffer.text).toBe("[read](https://example.com) more\n")
     expect(buffer.markActive).toBe(false)
+  })
+})
+
+describe("markdown footnotes", () => {
+  test("markdown-insert-footnote inserts marker, appends definition, and picks next number", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "alpha ", "markdown")
+    buffer.point = buffer.text.length
+
+    await editor.run("markdown-insert-footnote")
+
+    expect(buffer.text).toBe("alpha [^1]\n\n[^1]: ")
+    expect(buffer.point).toBe(buffer.text.length)
+
+    buffer.point = "alpha ".length
+    await editor.run("markdown-insert-footnote")
+
+    expect(buffer.text).toBe("alpha [^2][^1]\n\n[^1]: \n\n[^2]: ")
+    expect(buffer.point).toBe(buffer.text.length)
+  })
+
+  test("markdown-footnote-goto-text and markdown-footnote-return round trip", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "alpha [^1]\n\n[^1]: note\n", "markdown")
+    const marker = buffer.text.indexOf("[^1]")
+    buffer.point = marker + 1
+
+    await editor.run("markdown-footnote-goto-text")
+    expect(buffer.point).toBe(buffer.text.indexOf("note"))
+
+    await editor.run("markdown-footnote-return")
+    expect(buffer.point).toBe(marker)
+  })
+})
+
+describe("markdown reference links", () => {
+  test("markdown-insert-reference-link-dwim appends a new definition after the current paragraph", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "Para one.\n\nNext.\n", "markdown")
+    buffer.point = "Para".length
+    const prompts: string[] = []
+    const answers = ["Example", "ex", "https://example.com"]
+    editor.prompt = async (prompt, initial) => {
+      prompts.push(`${prompt}${initial ? `[${initial}]` : ""}`)
+      return answers.shift() ?? null
+    }
+
+    await editor.run("markdown-insert-reference-link-dwim")
+
+    expect(prompts).toEqual(["Link text: ", "Label: [Example]", "URL: "])
+    expect(buffer.text).toBe("Para[Example][ex] one.\n\n[ex]: https://example.com\n\nNext.\n")
+    expect(buffer.point).toBe("Para[Example][ex]".length)
+  })
+
+  test("markdown-insert-reference-link-dwim reuses an existing definition", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "Para \n\n[ex]: https://old.example\n", "markdown")
+    buffer.point = "Para ".length
+    const answers = ["Example", "ex", "https://new.example"]
+    editor.prompt = async () => answers.shift() ?? null
+
+    await editor.run("markdown-insert-reference-link-dwim")
+
+    expect(buffer.text).toBe("Para [Example][ex]\n\n[ex]: https://old.example\n")
+  })
+
+  test("markdown-next-link and follow-thing-at-point recognize reference links", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "start\n[Example][ex]\n\n[ex]: https://example.com\n", "markdown")
+    buffer.point = 0
+
+    await editor.run("markdown-next-link")
+    expect(buffer.point).toBe(buffer.text.indexOf("[Example][ex]"))
+
+    await editor.run("markdown-follow-thing-at-point")
+    expect(buffer.point).toBe(buffer.text.indexOf("[ex]: https://example.com"))
+  })
+
+  test("font-lock marks reference links with markdown-link face", () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "[Example][ex]\n\n[ex]: https://example.com\n", "markdown")
+
+    const spans = editor.fontLock(buffer)
+
+    expect(spans.some(span => String(span.face) === "markdown-link" && span.start === 0)).toBe(true)
   })
 })
 

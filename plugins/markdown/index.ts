@@ -24,6 +24,7 @@ const MARKDOWN_FILTER_CACHE = "markdown--display-filter-cache"
 const MARKDOWN_LAST_INDENT = "markdown-last-indent-command"
 const MARKDOWN_FILL_COLUMN = "markdown-fill-column"
 const MARKDOWN_VISUAL_FILL = "markdown-visual-fill-column-mode"
+const MARKDOWN_FOOTNOTE_RETURN_POINT = "markdown-footnote-return-point"
 
 defcustom("markdown-fill-column", "number", 100, "Soft-wrap width for markdown buffers (Stephen's Notion-style layout).")
 defcustom("markdown-visual-fill-column-center-text", "boolean", true, "Center body text within the fill column.")
@@ -406,6 +407,21 @@ function collectInlineMarkupHides(
       pushMarkupHide(ops, lineStart + urlStart, lineStart + urlEnd, protectedRanges, URL_COMPOSE_CHAR)
     }
     pushMarkupHide(ops, lineStart + urlEnd, lineStart + urlEnd + 1, protectedRanges)
+  }
+  for (const m of line.matchAll(/!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g)) {
+    if (m.index == null) continue
+    const i = m.index
+    const textEnd = i + 1 + (m[1]?.length ?? 0)
+    const labelStart = textEnd + 2
+    const labelEnd = labelStart + (m[2]?.length ?? 0)
+    pushMarkupHide(ops, lineStart + i, lineStart + i + 1, protectedRanges)
+    pushMarkupHide(ops, lineStart + textEnd, lineStart + labelStart, protectedRanges)
+    if (hideUrls && m[2]) {
+      pushMarkupHide(ops, lineStart + labelStart, lineStart + labelEnd, protectedRanges, URL_COMPOSE_CHAR)
+    } else {
+      pushMarkupHide(ops, lineStart + labelStart, lineStart + labelEnd, protectedRanges)
+    }
+    pushMarkupHide(ops, lineStart + labelEnd, lineStart + labelEnd + 1, protectedRanges)
   }
   for (const m of line.matchAll(/<((?:https?:\/\/|mailto:)[^>]+)>/g)) {
     if (m.index == null) continue
@@ -852,7 +868,16 @@ function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[
     }
   }
 
+  spans = overlayMarkdownLinkFaces(buffer.text, spans, range)
   return overlayMarkdownHeaderFaces(buffer.text, spans, range)
+}
+
+function overlayMarkdownLinkFaces(text: string, spans: TextSpan[], range?: FontLockRange): TextSpan[] {
+  const linkSpans = markdownLinks(text)
+    .filter(link => !range || (link.end >= range.start && link.start <= range.end))
+    .map(link => ({ start: link.start, end: link.end, face: "markdown-link" as FaceName }))
+  if (!linkSpans.length) return spans
+  return [...spans, ...linkSpans].sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
 function applyMarkdownFaceRemap(buffer: BufferModel): void {
@@ -962,6 +987,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-s i", "markdown-insert-italic")
   keymap.bind("C-c C-s c", "markdown-insert-code")
   keymap.bind("C-c C-s C", "markdown-insert-gfm-code-block")
+  keymap.bind("C-c C-s f", "markdown-insert-footnote")
   keymap.bind("C-c C-s q", "markdown-insert-blockquote")
   keymap.bind("C-c C-s -", "markdown-insert-hr")
   keymap.bind("C-c C-s 1", "markdown-insert-header-atx-1")
@@ -1124,6 +1150,53 @@ function installMarkdownCommands(editor: Editor): void {
     insertMarkdownLink(buffer, buffer.point, buffer.point, text || url, url)
     editor.message("Inserted link")
   }, "Insert a Markdown inline link.")
+
+  editor.command("markdown-insert-footnote", ({ buffer, editor }) => {
+    const label = nextFootnoteNumber(buffer.text)
+    const marker = `[^${label}]`
+    const markerStart = buffer.point
+    buffer.insert(marker)
+    const defPoint = appendFootnoteDefinition(buffer, label)
+    buffer.locals.set(MARKDOWN_FOOTNOTE_RETURN_POINT, markerStart)
+    buffer.point = defPoint
+    editor.message("Inserted footnote")
+  }, "Insert a Markdown footnote marker and definition.")
+
+  editor.command("markdown-footnote-goto-text", ({ buffer, editor }) => {
+    const footnote = footnoteMarkerAtPoint(buffer.text, buffer.point)
+    if (!footnote) { editor.message("No footnote at point"); return }
+    const def = findFootnoteDefinition(buffer.text, footnote.label)
+    if (!def) { editor.message("No footnote definition"); return }
+    buffer.locals.set(MARKDOWN_FOOTNOTE_RETURN_POINT, footnote.start)
+    buffer.point = def.textStart
+  }, "Jump from a Markdown footnote marker to its definition text.")
+
+  editor.command("markdown-footnote-return", ({ buffer, editor }) => {
+    const def = footnoteDefinitionAtPoint(buffer.text, buffer.point)
+    if (def) {
+      const marker = findFootnoteMarker(buffer.text, def.label)
+      if (!marker) { editor.message("No footnote marker"); return }
+      buffer.point = marker.start
+      return
+    }
+    const saved = buffer.locals.get(MARKDOWN_FOOTNOTE_RETURN_POINT)
+    if (typeof saved === "number") {
+      buffer.point = Math.max(0, Math.min(saved, buffer.text.length))
+      return
+    }
+    editor.message("No footnote return point")
+  }, "Return from a Markdown footnote definition to its marker.")
+
+  editor.command("markdown-insert-reference-link-dwim", async ({ buffer, editor }) => {
+    const text = await editor.prompt("Link text: ", "", "markdown-link-text")
+    if (text == null) return
+    const label = await editor.prompt("Label: ", text, "markdown-reference-label")
+    if (label == null) return
+    const url = await editor.prompt("URL: ", "", "markdown-url")
+    if (!url) return
+    insertMarkdownReferenceLink(buffer, text, label || text, url)
+    editor.message("Inserted reference link")
+  }, "Insert a Markdown reference link and definition.")
 
   editor.command("markdown-table-align", ({ buffer, editor }) => {
     const result = markdownTableAlign(buffer)
@@ -1349,7 +1422,15 @@ function installMarkdownCommands(editor: Editor): void {
   }, "Kill markup prefix at beginning of line.")
 
   editor.command("markdown-follow-thing-at-point", ({ buffer, editor }) => {
-    const url = linkUrlAtPoint(buffer.text, buffer.point)
+    const link = linkAtPoint(buffer.text, buffer.point)
+    if (!link) { editor.message("No link at point"); return }
+    if (link.kind === "reference") {
+      if (link.definitionStart == null) { editor.message("No reference definition"); return }
+      buffer.point = link.definitionStart
+      editor.message(`Followed [${link.label}]`)
+      return
+    }
+    const url = link.url
     if (!url) { editor.message("No link at point"); return }
     void spawnUrl(url)
     editor.message(`Followed ${url}`)
@@ -1424,6 +1505,7 @@ export function install(editor: Editor): void {
   for (const [name] of MARKDOWN_HEADER_FACES) defface(name, {}, "Markdown ATX/setext header face.")
   defface("markdown-emphasis", { italic: true }, "Markdown italic emphasis.")
   defface("markdown-strong", { bold: true }, "Markdown bold emphasis.")
+  defface("markdown-link", { underline: true }, "Markdown link face.")
   const keymap = new Keymap("markdown-map")
   bindMarkdownModeMap(keymap)
 
@@ -1487,6 +1569,36 @@ function insertMarkdownLink(buffer: BufferModel, start: number, end: number, tex
   const link = `[${text}](${url})`
   buffer.replaceRange(start, end, link)
   buffer.point = start + link.length
+}
+
+function insertMarkdownReferenceLink(buffer: BufferModel, text: string, label: string, url: string): void {
+  const insertPoint = buffer.point
+  const link = `[${text}][${label}]`
+  buffer.replaceRange(insertPoint, insertPoint, link)
+  buffer.point = insertPoint + link.length
+  if (findReferenceDefinition(buffer.text, label)) return
+
+  const def = `[${label}]: ${url}`
+  const paragraphEnd = findCurrentParagraphEnd(buffer.text, insertPoint)
+  const insertion = paragraphEnd >= buffer.text.length
+    ? `${appendBlockSeparator(buffer.text)}${def}`
+    : `\n\n${def}`
+  buffer.replaceRange(paragraphEnd, paragraphEnd, insertion)
+  buffer.point = insertPoint + link.length
+}
+
+function appendFootnoteDefinition(buffer: BufferModel, label: string): number {
+  const insertion = `${appendBlockSeparator(buffer.text)}[^${label}]: `
+  const at = buffer.text.length
+  buffer.replaceRange(at, at, insertion)
+  return at + insertion.length
+}
+
+function appendBlockSeparator(text: string): string {
+  if (!text) return ""
+  if (text.endsWith("\n\n")) return ""
+  if (text.endsWith("\n")) return "\n"
+  return "\n\n"
 }
 
 function insertMarkdownListItem(buffer: BufferModel): void {
@@ -2279,13 +2391,39 @@ function headingLevelAt(text: string, point: number): number {
   return markdownHeadingAtPoint(text, point)?.level ?? 1
 }
 
-const LINK_RE = /!?\[[^\]]*\]\(([^)]+)\)|<((?:https?:\/\/|mailto:)[^>]+)>/g
+type MarkdownLink = {
+  start: number
+  end: number
+  kind: "inline" | "auto" | "reference"
+  url: string | null
+  label?: string
+  definitionStart?: number
+}
+
+type ReferenceDefinition = {
+  label: string
+  normalized: string
+  url: string
+  start: number
+  textStart: number
+  end: number
+}
+
+type FootnotePosition = {
+  label: string
+  start: number
+  end: number
+}
+
+type FootnoteDefinition = FootnotePosition & {
+  textStart: number
+}
+
+const INLINE_OR_AUTO_LINK_RE = /!?\[[^\]]*\]\(([^)]+)\)|<((?:https?:\/\/|mailto:)[^>]+)>/g
+const REFERENCE_LINK_RE = /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g
 
 function findLink(text: string, point: number, direction: 1 | -1): number | null {
-  const matches: Array<{ index: number }> = []
-  for (const match of text.matchAll(LINK_RE)) {
-    if (match.index != null) matches.push({ index: match.index })
-  }
+  const matches = markdownLinks(text).map(link => ({ index: link.start }))
   if (direction === 1) {
     for (const m of matches) if (m.index > point) return m.index
     return null
@@ -2298,13 +2436,151 @@ function findLink(text: string, point: number, direction: 1 | -1): number | null
   return prev
 }
 
-function linkUrlAtPoint(text: string, point: number): string | null {
-  for (const match of text.matchAll(LINK_RE)) {
+function linkAtPoint(text: string, point: number): MarkdownLink | null {
+  return markdownLinks(text).find(link => point >= link.start && point <= link.end) ?? null
+}
+
+function markdownLinks(text: string): MarkdownLink[] {
+  const definitions = referenceDefinitionMap(text)
+  const links: MarkdownLink[] = []
+  for (const match of text.matchAll(INLINE_OR_AUTO_LINK_RE)) {
     if (match.index == null) continue
-    const end = match.index + match[0].length
-    if (point >= match.index && point <= end) return match[1] ?? match[2] ?? null
+    links.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      kind: match[2] ? "auto" : "inline",
+      url: match[1] ?? match[2] ?? null,
+    })
+  }
+  for (const match of text.matchAll(REFERENCE_LINK_RE)) {
+    if (match.index == null) continue
+    const textLabel = match[1] ?? ""
+    const rawLabel = match[2] || textLabel
+    if (!rawLabel || rawLabel.startsWith("^")) continue
+    const def = definitions.get(normalizeReferenceLabel(rawLabel))
+    links.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      kind: "reference",
+      label: rawLabel,
+      url: def?.url ?? null,
+      definitionStart: def?.start,
+    })
+  }
+  return links.sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
+function normalizeReferenceLabel(label: string): string {
+  return label.trim().replace(/\s+/g, " ").toLowerCase()
+}
+
+function referenceDefinitionMap(text: string): Map<string, ReferenceDefinition> {
+  const out = new Map<string, ReferenceDefinition>()
+  for (const def of referenceDefinitions(text)) {
+    if (!out.has(def.normalized)) out.set(def.normalized, def)
+  }
+  return out
+}
+
+function referenceDefinitions(text: string): ReferenceDefinition[] {
+  const out: ReferenceDefinition[] = []
+  const re = /^( {0,3})\[([^\]\n]+)\]:[ \t]*(\S.*)?$/gm
+  for (const match of text.matchAll(re)) {
+    if (match.index == null) continue
+    const label = match[2] ?? ""
+    if (label.startsWith("^")) continue
+    const prefixLength = (match[1]?.length ?? 0) + label.length + 3
+    const url = (match[3] ?? "").trim()
+    out.push({
+      label,
+      normalized: normalizeReferenceLabel(label),
+      url,
+      start: match.index,
+      textStart: match.index + prefixLength + ((match[0].slice(prefixLength).match(/^[ \t]*/)?.[0].length) ?? 0),
+      end: match.index + match[0].length,
+    })
+  }
+  return out
+}
+
+function findReferenceDefinition(text: string, label: string): ReferenceDefinition | null {
+  return referenceDefinitionMap(text).get(normalizeReferenceLabel(label)) ?? null
+}
+
+function nextFootnoteNumber(text: string): string {
+  const used = new Set<number>()
+  for (const match of text.matchAll(/\[\^(\d+)\]/g)) {
+    const n = Number.parseInt(match[1] ?? "", 10)
+    if (Number.isFinite(n)) used.add(n)
+  }
+  let next = 1
+  while (used.has(next)) next++
+  return String(next)
+}
+
+function footnoteMarkerAtPoint(text: string, point: number): FootnotePosition | null {
+  for (const match of text.matchAll(/\[\^([^\]\n]+)\]/g)) {
+    if (match.index == null) continue
+    const start = match.index
+    const end = start + match[0].length
+    if (point < start || point > end) continue
+    const line = text.slice(text.lastIndexOf("\n", Math.max(0, start - 1)) + 1, lineEnd(text, start))
+    if (/^\s*\[\^[^\]\n]+\]:/.test(line)) continue
+    return { label: match[1] ?? "", start, end }
   }
   return null
+}
+
+function findFootnoteMarker(text: string, label: string): FootnotePosition | null {
+  for (const match of text.matchAll(/\[\^([^\]\n]+)\]/g)) {
+    if (match.index == null || match[1] !== label) continue
+    const line = text.slice(text.lastIndexOf("\n", Math.max(0, match.index - 1)) + 1, lineEnd(text, match.index))
+    if (/^\s*\[\^[^\]\n]+\]:/.test(line)) continue
+    return { label, start: match.index, end: match.index + match[0].length }
+  }
+  return null
+}
+
+function findFootnoteDefinition(text: string, label: string): FootnoteDefinition | null {
+  return footnoteDefinitions(text).find(def => def.label === label) ?? null
+}
+
+function footnoteDefinitionAtPoint(text: string, point: number): FootnoteDefinition | null {
+  return footnoteDefinitions(text).find(def => point >= def.start && point <= def.end) ?? null
+}
+
+function footnoteDefinitions(text: string): FootnoteDefinition[] {
+  const out: FootnoteDefinition[] = []
+  const re = /^( {0,3})\[\^([^\]\n]+)\]:[ \t]*/gm
+  for (const match of text.matchAll(re)) {
+    if (match.index == null) continue
+    const start = match.index
+    const textStart = start + match[0].length
+    out.push({
+      label: match[2] ?? "",
+      start,
+      textStart,
+      end: lineEnd(text, start),
+    })
+  }
+  return out
+}
+
+function findCurrentParagraphEnd(text: string, point: number): number {
+  let start = point <= 0 ? 0 : text.lastIndexOf("\n", point - 1) + 1
+  if (isBlankLine(text, start)) return lineEnd(text, start)
+  while (start > 0) {
+    const prev = previousLineStart(text, start)
+    if (prev == null || isBlankLine(text, prev)) break
+    start = prev
+  }
+  let end = lineEnd(text, start)
+  while (end < text.length) {
+    const next = end + 1
+    if (next >= text.length || isBlankLine(text, next)) break
+    end = lineEnd(text, next)
+  }
+  return end
 }
 
 const SAFE_URL_SCHEME = /^(https?|mailto):/i
