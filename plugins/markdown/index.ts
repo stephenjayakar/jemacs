@@ -5,7 +5,7 @@ import { BufferModel, inferMode } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
 import { addHook } from "../../src/kernel/hooks"
 import { Keymap } from "../../src/kernel/keymap"
-import { defcustom, getCustom } from "../../src/runtime/custom"
+import { defcustom, getCustom, setCustom } from "../../src/runtime/custom"
 import { defface, faceRemapAddRelative, FIXED_PITCH_FAMILY, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
 import { defineMode, enterMode, getMode, modeFeature, type FaceName, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { registeredTreeSitterLanguages, treeSitterFontLock } from "../../src/modes/tree-sitter"
@@ -306,6 +306,8 @@ export type EditIndirectState = {
   detach: () => void
 }
 const EDIT_INDIRECT_KEY = "markdown-edit-indirect"
+const LIVE_PREVIEW_LOCAL = "markdown-live-preview"
+const LIVE_PREVIEW_PATH_LOCAL = "markdown-live-preview-path"
 
 /** Track the block body across source-buffer splices, edit-indirect style:
  *  edits before the body shift it, edits overlapping it invalidate the
@@ -1214,6 +1216,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-s 6", "markdown-insert-header-atx-6")
   keymap.bind("C-c C-x C-m", "markdown-toggle-markup-hiding")
   keymap.bind("C-c C-x C-l", "markdown-toggle-url-hiding")
+  keymap.bind("C-c C-x C-i", "markdown-toggle-inline-images")
   keymap.bind("C-c C-x C-f", "markdown-toggle-fontify-code-blocks-natively")
   // markdown-toc has no default binding upstream; "T" would collide with the
   // "t" insert-table binding since key lookup case-folds shifted letters.
@@ -1349,6 +1352,31 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       editor.message((error as Error).message)
     }
   }, "Export the current Markdown buffer to a temporary HTML file and open it.")
+
+  editor.command("markdown-toggle-inline-images", ({ editor, prefixArgument }) => {
+    const current = getCustom<boolean>("markdown-display-inline-images") ?? true
+    const next = prefixArgument == null ? !current : prefixArgument > 0
+    setCustom("markdown-display-inline-images", next)
+    editor.message(`markdown-mode inline images ${next ? "enabled" : "disabled"}`)
+    void editor.changed("markdown-toggle-inline-images")
+  }, "Toggle inline image display (`markdown-display-inline-images`).")
+
+  editor.command("markdown-live-preview-mode", async ({ editor, buffer, prefixArgument }) => {
+    const current = buffer.locals.get(LIVE_PREVIEW_LOCAL) === true
+    const next = prefixArgument == null ? !current : prefixArgument > 0
+    buffer.locals.set(LIVE_PREVIEW_LOCAL, next)
+    if (next) {
+      try {
+        const outputPath = await markdownExportBuffer(buffer, deps, markdownPreviewPath(buffer, deps))
+        buffer.locals.set(LIVE_PREVIEW_PATH_LOCAL, outputPath)
+        markdownOpenExternal(pathToFileURL(outputPath).href, deps, true)
+      } catch (error) {
+        editor.message((error as Error).message)
+        return
+      }
+    }
+    editor.message(`markdown-live-preview-mode ${next ? "enabled" : "disabled"}`)
+  }, "Re-export the buffer to its HTML preview on every save while enabled.")
 
   editor.command("markdown-open", ({ editor, buffer }) => {
     if (!buffer.path) {
@@ -1859,6 +1887,14 @@ export function install(editor: Editor, deps: MarkdownDeps = {}): void {
     name: "gfm-view-mode",
     parent: "gfm",
     onEnter: applyMarkdownViewModeEnter,
+  })
+
+  addHook("after-save-hook", async ({ buffer }) => {
+    if (buffer.locals.get(LIVE_PREVIEW_LOCAL) !== true) return
+    const target = buffer.locals.get(LIVE_PREVIEW_PATH_LOCAL) as string | undefined
+    try {
+      await markdownExportBuffer(buffer, deps, target ?? markdownPreviewPath(buffer, deps))
+    } catch { /* preview refresh is best-effort; the export command reports errors */ }
   })
 
   addHook("find-file-hook", ({ buffer }) => {

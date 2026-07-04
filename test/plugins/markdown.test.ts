@@ -6,6 +6,7 @@ import { findPaneInModel } from "../../src/display/find-pane"
 import { themedTextPlain } from "../../src/display/themed-text"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
+import { getCustom, setCustom } from "../../src/runtime/custom"
 import { FIXED_PITCH_FAMILY, getBufferFaceRemap, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
 import { enterMode } from "../../src/modes/mode"
 import {
@@ -1069,5 +1070,46 @@ describe("markdown-edit-code-block", () => {
     await editor.run("edit-indirect-commit")
     expect(source.text).toContain("changed()")
     expect(source.text).not.toContain("print(9)")
+  })
+})
+
+describe("markdown inline images and live preview", () => {
+  test("markdown-toggle-inline-images flips the display option", async () => {
+    const editor = makeEditor()
+    install(editor)
+    setCustom("markdown-display-inline-images", true)
+    await editor.run("markdown-toggle-inline-images")
+    expect(getCustom<boolean>("markdown-display-inline-images")).toBe(false)
+    await editor.run("markdown-toggle-inline-images")
+    expect(getCustom<boolean>("markdown-display-inline-images")).toBe(true)
+  })
+
+  test("markdown-live-preview-mode exports on enable and after saves", async () => {
+    const editor = makeEditor()
+    const { spawn } = fakeSpawn("<p>v1</p>")
+    const writes: Array<{ path: string; text: string }> = []
+    const opened: string[] = []
+    install(editor, {
+      spawn,
+      writeFile: async (path, text) => { writes.push({ path, text }) },
+      openExternal: url => { opened.push(url) },
+    })
+    const buffer = new BufferModel({ name: "doc.md", path: "/tmp/doc.md", text: "# v1\n", mode: "markdown" })
+    editor.addBuffer(buffer)
+    editor.currentBufferId = buffer.id
+
+    await editor.run("markdown-live-preview-mode")
+    expect(writes).toHaveLength(1)
+    expect(opened).toHaveLength(1)
+
+    await editor.runHook("after-save-hook", buffer)
+    expect(writes).toHaveLength(2)
+    expect(writes[1]!.path).toBe(writes[0]!.path)
+    // Opened only once; saves refresh the file in place.
+    expect(opened).toHaveLength(1)
+
+    await editor.run("markdown-live-preview-mode")
+    await editor.runHook("after-save-hook", buffer)
+    expect(writes).toHaveLength(2)
   })
 })
