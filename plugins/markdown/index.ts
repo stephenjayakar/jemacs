@@ -10,6 +10,7 @@ import { registerTreeSitterGrammars } from "../tree-sitter-grammars"
 
 const TAB_WIDTH = 4
 const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+/
+const ORDERED_LIST_RE = /^(\s*)(\d+)([.)])\s+/
 const ATX_HEADER_RE = /^(#{1,6})\s/
 const BLOCKQUOTE_RE = /^(\s*)>+\s?/
 const FENCED_CODE_RE = /^(`{3,}|~{3,})/
@@ -878,21 +879,27 @@ function applyMarkdownViewModeEnter(buffer: BufferModel): void {
 }
 
 function markdownToggleCheckboxAtPoint(buffer: BufferModel, point: number): boolean {
+  return markdownToggleCheckbox(buffer, point, true).changed
+}
+
+function markdownToggleCheckbox(buffer: BufferModel, point: number, requireCheckboxHit = false): MarkdownEditResult {
   const clamped = Math.max(0, Math.min(point, buffer.text.length))
   const lineStart = buffer.text.lastIndexOf("\n", Math.max(0, clamped - 1)) + 1
   const nextNewline = buffer.text.indexOf("\n", lineStart)
   const lineEnd = nextNewline === -1 ? buffer.text.length : nextNewline
   const line = buffer.text.slice(lineStart, lineEnd)
   const match = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/.exec(line)
-  if (!match) return false
+  if (!match) return { changed: false, message: "No checkbox at point" }
   const markerStart = lineStart + match[1]!.length - 1
   const markerEnd = markerStart + 3
-  if (clamped < markerStart || clamped > markerEnd) return false
+  if (requireCheckboxHit && (clamped < markerStart || clamped > markerEnd)) {
+    return { changed: false, message: "No checkbox at point" }
+  }
   const checkPoint = lineStart + match[1]!.length
   const next = match[2] === " " ? "x" : " "
   buffer.replaceRange(checkPoint, checkPoint + 1, next)
   buffer.point = checkPoint
-  return true
+  return { changed: true, message: next === "x" ? "Checked checkbox" : "Unchecked checkbox" }
 }
 
 function bindMarkdownModeMap(keymap: Keymap): void {
@@ -928,6 +935,8 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-u", "markdown-outline-up")
   keymap.bind("C-c C-j", "markdown-insert-list-item")
   keymap.bind("M-RET", "markdown-insert-list-item")
+  keymap.bind("C-c C-x [", "markdown-insert-gfm-checkbox")
+  keymap.bind("C-c C-x C-x", "markdown-toggle-gfm-checkbox")
   keymap.bind("C-c -", "markdown-insert-hr")
   keymap.bind("C-c C-o", "markdown-follow-thing-at-point")
   keymap.bind("C-c C-t 1", "markdown-insert-header-atx-1")
@@ -1136,13 +1145,24 @@ function installMarkdownCommands(editor: Editor): void {
   }, "Prefix the current line with a blockquote marker.")
 
   editor.command("markdown-insert-list-item", ({ buffer, editor }) => {
-    const line = buffer.lineBoundsAt()
-    const match = line.text.match(LIST_RE)
-    const indent = match?.[1] ?? ""
-    const marker = match?.[2]?.match(/^\d/) ? "1. " : "- "
-    buffer.insert(`\n${indent}${marker}`)
+    insertMarkdownListItem(buffer)
     editor.message("Inserted list item")
   }, "Start a new list item on the next line.")
+
+  editor.command("markdown-insert-gfm-checkbox", ({ buffer, editor }) => {
+    const result = insertMarkdownCheckbox(buffer)
+    editor.message(result.message)
+  }, "Insert a GFM task list checkbox.")
+
+  editor.command("markdown-toggle-gfm-checkbox", ({ buffer, editor }) => {
+    const result = markdownToggleCheckbox(buffer, buffer.point)
+    editor.message(result.message)
+  }, "Toggle the GFM task list checkbox at point.")
+
+  editor.command("markdown-cleanup-list-numbers", ({ buffer, editor }) => {
+    const result = markdownCleanupListNumbers(buffer)
+    editor.message(result.message)
+  }, "Renumber ordered Markdown lists in the buffer.")
 
   editor.command("markdown-insert-hr", ({ buffer, editor }) => {
     const line = buffer.lineBoundsAt()
@@ -1385,6 +1405,159 @@ function insertMarkdownLink(buffer: BufferModel, start: number, end: number, tex
   const link = `[${text}](${url})`
   buffer.replaceRange(start, end, link)
   buffer.point = start + link.length
+}
+
+function insertMarkdownListItem(buffer: BufferModel): void {
+  const line = buffer.lineBoundsAt()
+  const match = line.text.match(LIST_RE)
+  const indent = match?.[1] ?? ""
+  const ordered = match?.[2]?.match(/^(\d+)([.)])$/)
+  const marker = ordered ? `${Number(ordered[1]) + 1}${ordered[2]} ` : "- "
+  const insertPoint = buffer.point
+  buffer.insert(`\n${indent}${marker}`)
+  if (ordered) {
+    const insertedLine = buffer.text.slice(0, insertPoint).split("\n").length
+    renumberOrderedListContainingLine(buffer, insertedLine, indent.length)
+  }
+}
+
+function insertMarkdownCheckbox(buffer: BufferModel): MarkdownEditResult {
+  const line = buffer.lineBoundsAt()
+  const checkboxList = /^(\s*)(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s+/.exec(line.text)
+  if (checkboxList) {
+    buffer.insert(`\n${checkboxList[1]}- [ ] `)
+    return { changed: true, message: "Inserted checkbox" }
+  }
+
+  const list = line.text.match(LIST_RE)
+  if (list && line.text.slice(list[0]!.length).trim()) {
+    const markerEnd = line.start + list[0]!.length
+    buffer.replaceRange(markerEnd, markerEnd, "[ ] ")
+    buffer.point = markerEnd + "[ ] ".length
+    return { changed: true, message: "Inserted checkbox" }
+  }
+  if (list) {
+    buffer.insert(`\n${list[1]}- [ ] `)
+    return { changed: true, message: "Inserted checkbox" }
+  }
+
+  const indent = line.text.match(/^\s*/)?.[0] ?? ""
+  const content = line.text.slice(indent.length)
+  if (content.trim()) {
+    const replacement = `${indent}- [ ] ${content}`
+    buffer.replaceRange(line.start, line.end, replacement)
+    buffer.point = line.start + `${indent}- [ ] `.length
+    return { changed: true, message: "Inserted checkbox" }
+  }
+
+  buffer.replaceRange(line.start, line.end, `${indent}- [ ] `)
+  buffer.point = line.start + `${indent}- [ ] `.length
+  return { changed: true, message: "Inserted checkbox" }
+}
+
+function markdownCleanupListNumbers(buffer: BufferModel): MarkdownEditResult {
+  const lines = buffer.text.split("\n")
+  const counters = new Map<number, number>()
+  const activeIndents = new Set<number>()
+  let changed = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const list = line.match(LIST_RE)
+    if (list) {
+      const indent = list[1]!.length
+      for (const active of [...activeIndents]) {
+        if (active > indent) activeIndents.delete(active)
+      }
+      activeIndents.add(indent)
+      for (const key of [...counters.keys()]) {
+        if (key > indent) counters.delete(key)
+      }
+
+      const ordered = line.match(ORDERED_LIST_RE)
+      if (!ordered) {
+        counters.delete(indent)
+        continue
+      }
+
+      const next = (counters.get(indent) ?? 0) + 1
+      counters.set(indent, next)
+      if (Number(ordered[2]) !== next) {
+        lines[i] = `${ordered[1]}${next}${ordered[3]}${line.slice(ordered[0]!.length - 1)}`
+        changed = true
+      }
+      continue
+    }
+
+    if (!line.trim()) {
+      counters.clear()
+      activeIndents.clear()
+      continue
+    }
+
+    const indent = line.match(/^\s*/)?.[0].length ?? 0
+    if (![...activeIndents].some(active => indent > active)) {
+      counters.clear()
+      activeIndents.clear()
+    }
+  }
+
+  if (!changed) return { changed: false, message: "List numbers already clean" }
+  const point = buffer.point
+  buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+  buffer.point = Math.min(point, buffer.text.length)
+  return { changed: true, message: "Cleaned up list numbers" }
+}
+
+function renumberOrderedListContainingLine(buffer: BufferModel, lineNumber: number, targetIndent: number): void {
+  const lines = buffer.text.split("\n")
+  if (!lines[lineNumber]?.match(ORDERED_LIST_RE)) return
+
+  let start = lineNumber
+  for (let i = lineNumber - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (!line.trim()) break
+    const list = line.match(LIST_RE)
+    const indent = list?.[1]?.length
+    if (list && indent != null && indent < targetIndent) break
+    if (list && indent === targetIndent && !ORDERED_LIST_RE.test(line)) break
+    if (!list && (line.match(/^\s*/)?.[0].length ?? 0) <= targetIndent) break
+    start = i
+  }
+
+  let end = lineNumber
+  for (let i = lineNumber + 1; i < lines.length; i++) {
+    const line = lines[i]!
+    if (!line.trim()) break
+    const list = line.match(LIST_RE)
+    const indent = list?.[1]?.length
+    if (list && indent != null && indent < targetIndent) break
+    if (list && indent === targetIndent && !ORDERED_LIST_RE.test(line)) break
+    if (!list && (line.match(/^\s*/)?.[0].length ?? 0) <= targetIndent) break
+    end = i
+  }
+
+  const first = lines.slice(start, end + 1)
+    .map(line => line.match(ORDERED_LIST_RE))
+    .find(match => match && match[1]!.length === targetIndent)
+  if (!first) return
+
+  let next = Number(first[2])
+  let changed = false
+  for (let i = start; i <= end; i++) {
+    const ordered = lines[i]!.match(ORDERED_LIST_RE)
+    if (!ordered || ordered[1]!.length !== targetIndent) continue
+    if (Number(ordered[2]) !== next) {
+      lines[i] = `${ordered[1]}${next}${ordered[3]}${lines[i]!.slice(ordered[0]!.length - 1)}`
+      changed = true
+    }
+    next++
+  }
+  if (!changed) return
+
+  const point = buffer.point
+  buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+  buffer.point = Math.min(point, buffer.text.length)
 }
 
 function insertAtxHeader(buffer: BufferModel, level: number): void {

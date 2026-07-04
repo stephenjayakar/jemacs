@@ -102,6 +102,8 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("M-down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
   expect(editor.keymaps.lookup("C-c left")).toMatchObject({ status: "matched", command: "markdown-promote" })
   expect(editor.keymaps.lookup("C-c down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
+  expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
+  expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
 })
 
 test("markdown-mode onEnter applies proportional default face remap", () => {
@@ -268,6 +270,80 @@ describe("markdown subtree and list movement", () => {
     expect(buffer.text).toBe("- two\n- one\n")
     await editor.run("markdown-move-down")
     expect(buffer.text).toBe("- one\n- two\n")
+  })
+})
+
+describe("markdown list and checkbox commands", () => {
+  test("markdown-insert-gfm-checkbox adds a checkbox to a non-empty list item", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "- task\n", "markdown")
+    buffer.point = buffer.text.indexOf("task")
+
+    await editor.run("markdown-insert-gfm-checkbox")
+
+    expect(buffer.text).toBe("- [ ] task\n")
+  })
+
+  test("markdown-insert-gfm-checkbox makes a non-list line into a checkbox item", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "task\n", "markdown")
+    buffer.point = buffer.text.indexOf("task")
+
+    await editor.run("markdown-insert-gfm-checkbox")
+
+    expect(buffer.text).toBe("- [ ] task\n")
+  })
+
+  test("markdown-insert-gfm-checkbox inserts a new checkbox item from an existing checkbox", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "- [x] done\n", "markdown")
+    buffer.point = buffer.text.indexOf("\n")
+
+    await editor.run("markdown-insert-gfm-checkbox")
+
+    expect(buffer.text).toBe("- [x] done\n- [ ] \n")
+  })
+
+  test("markdown-toggle-gfm-checkbox toggles checked and unchecked boxes", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "- [ ] task\n- [x] done\n", "markdown")
+    buffer.point = buffer.text.indexOf("task")
+
+    await editor.run("markdown-toggle-gfm-checkbox")
+    expect(buffer.text).toBe("- [x] task\n- [x] done\n")
+
+    buffer.point = buffer.text.indexOf("done")
+    await editor.run("markdown-toggle-gfm-checkbox")
+    expect(buffer.text).toBe("- [x] task\n- [ ] done\n")
+  })
+
+  test("markdown-cleanup-list-numbers renumbers ordered lists by nesting level", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch(
+      "list.md",
+      "3. one\n    8. child\n    9. child\n4. two\n\n9. other\n    4. nested\n10. other\n",
+      "markdown",
+    )
+
+    await editor.run("markdown-cleanup-list-numbers")
+
+    expect(buffer.text).toBe("1. one\n    1. child\n    2. child\n2. two\n\n1. other\n    1. nested\n2. other\n")
+  })
+
+  test("markdown-insert-list-item continues and renumbers ordered list siblings", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("list.md", "1. one\n2. two\n3. three\n", "markdown")
+    buffer.point = buffer.text.indexOf("\n")
+
+    await editor.run("markdown-insert-list-item")
+
+    expect(buffer.text).toBe("1. one\n2. \n3. two\n4. three\n")
   })
 })
 
