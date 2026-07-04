@@ -1,12 +1,14 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
+import { BufferModel, inferMode } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
-import type { BufferModel } from "../../src/kernel/buffer"
 import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
-import { defineMode, enterMode } from "../../src/modes/mode"
+import { defineMode, enterMode, getMode } from "../../src/modes/mode"
 import { Keymap } from "../../src/kernel/keymap"
 import { defcustom, getCustom } from "../../src/runtime/custom"
+import { spawnProcess, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
+import { attachEditIndirect, editIndirectBuffer, finishEditIndirect } from "../markdown"
 
 export const ORG_FOLDED_LOCAL = "org-folded"
 
@@ -18,9 +20,21 @@ const SAFE_URL_SCHEME = /^(https?|mailto):/i
 const ORG_TIMESTAMP_RE = /([<[])(\d{4})-(\d{2})-(\d{2})\s+([A-Za-z]{3})([>\]])/g
 const ORG_PLANNING_RE = /^\s*(SCHEDULED|DEADLINE):\s+([<[]\d{4}-\d{2}-\d{2}\s+[A-Za-z]{3}[>\]])/
 const ORG_AGENDA_TARGETS_LOCAL = "org-agenda-targets"
+const ORG_BEGIN_SRC_RE = /^\s*#\+begin_src(?:\s+(\S+))?(?:\s+(.*?))?\s*$/i
+const ORG_END_SRC_RE = /^\s*#\+end_src\b/i
+const ORG_RESULTS_RE = /^\s*#\+RESULTS:\s*$/i
 
 defcustom("org-agenda-files", "sexp", [] as string | string[],
   "List of Org files or directories scanned by `org-agenda'.", "org")
+defcustom("org-babel-interpreters", "sexp", [
+  ["python", "python3"],
+  ["sh", "bash"],
+  ["bash", "bash"],
+  ["shell", "bash"],
+  ["js", "node"],
+  ["javascript", "node"],
+  ["ruby", "ruby"],
+] as Array<[string, string]>, "Alist mapping Org Babel source block languages to interpreters.", "org")
 
 export type OrgHeadline = {
   /** 0-based line index. */
@@ -55,6 +69,18 @@ export type OrgAgenda = {
   todos: OrgAgendaItem[]
 }
 export type OrgAgendaTarget = { file: string; line: number }
+export type OrgSrcBlock = {
+  openLine: number
+  closeLine: number
+  bodyStart: number
+  bodyEnd: number
+  lang: string
+  switches: string
+}
+export type OrgBabelInvocation = { cmd: string[]; stdin: string }
+export type OrgDeps = {
+  spawn?: (opts: SpawnOptions) => SpawnHandle
+}
 
 type OrgEditResult = { changed: boolean; message: string }
 type OrgTableCell = { text: string; start: number; end: number }
@@ -364,6 +390,99 @@ function lineStartAt(text: string, line: number): number {
   const lines = text.split("\n")
   for (let i = 0; i < line && i < lines.length; i++) offset += lines[i]!.length + 1
   return Math.min(offset, text.length)
+}
+
+export function orgParseSrcBlocks(text: string): OrgSrcBlock[] {
+  const lines = text.split("\n")
+  const blocks: OrgSrcBlock[] = []
+  let offset = 0
+  let open: { line: number; charEnd: number; lang: string; switches: string } | null = null
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const lineStart = offset
+    const lineEnd = lineStart + line.length
+    if (!open) {
+      const match = ORG_BEGIN_SRC_RE.exec(line)
+      if (match?.[1]) open = { line: i, charEnd: lineEnd, lang: match[1], switches: match[2] ?? "" }
+    } else if (ORG_END_SRC_RE.test(line)) {
+      blocks.push({
+        openLine: open.line,
+        closeLine: i,
+        bodyStart: Math.min(open.charEnd + 1, text.length),
+        bodyEnd: lineStart,
+        lang: open.lang,
+        switches: open.switches,
+      })
+      open = null
+    }
+    offset = lineEnd + 1
+  }
+  return blocks
+}
+
+export function orgSrcBlockAtPoint(text: string, point: number): OrgSrcBlock | null {
+  for (const block of orgParseSrcBlocks(text)) {
+    const openStart = lineStartAt(text, block.openLine)
+    const closeLineStart = lineStartAt(text, block.closeLine)
+    const closeNl = text.indexOf("\n", closeLineStart)
+    const closeEnd = closeNl < 0 ? text.length : closeNl
+    if (point >= openStart && point <= closeEnd) return block
+  }
+  return null
+}
+
+function normalizeOrgBabelInterpreters(interpreters: Array<[string, string]>): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const [lang, interpreter] of interpreters) {
+    if (lang?.trim() && interpreter?.trim()) out.set(lang.trim().toLowerCase(), interpreter.trim())
+  }
+  return out
+}
+
+export function orgBabelBuildInvocation(
+  lang: string,
+  body: string,
+  interpreters: Array<[string, string]> = getCustom<Array<[string, string]>>("org-babel-interpreters") ?? [],
+): OrgBabelInvocation | null {
+  const interpreter = normalizeOrgBabelInterpreters(interpreters).get(lang.trim().toLowerCase())
+  if (!interpreter) return null
+  const command = interpreter.split(/\s+/).filter(Boolean)
+  if (!command.length) return null
+  const exe = command[0]!
+  const lower = basename(exe).toLowerCase()
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(lower)) return { cmd: [...command, "-"], stdin: body }
+  if (lower === "bash" || lower === "sh") return { cmd: [...command, "-s"], stdin: body }
+  if (lower === "node") return { cmd: command, stdin: body }
+  if (lower === "ruby") return { cmd: command, stdin: body }
+  return { cmd: command, stdin: body }
+}
+
+export function orgBabelReplaceResultsText(text: string, block: OrgSrcBlock, output: string): { text: string; point: number } {
+  const normalized = output.replace(/\r\n/g, "\n").replace(/\n+$/, "")
+  const resultLines = normalized.length ? normalized.split("\n").map(line => `: ${line}`) : [": "]
+  const replacement = ["#+RESULTS:", ...resultLines].join("\n") + "\n"
+  const lines = text.split("\n")
+  const insertLine = Math.min(block.closeLine + 1, lines.length)
+  let start = lineStartAt(text, insertLine)
+  let end = start
+
+  if (ORG_RESULTS_RE.test(lines[insertLine] ?? "")) {
+    let endLine = insertLine + 1
+    while (endLine < lines.length) {
+      const line = lines[endLine] ?? ""
+      if (line.trim() === "" || HEADLINE_RE.test(line)) break
+      endLine++
+    }
+    end = lineStartAt(text, endLine)
+  } else {
+    const closeLineStart = lineStartAt(text, block.closeLine)
+    const closeLineEnd = closeLineStart + (lines[block.closeLine]?.length ?? 0)
+    start = closeLineEnd < text.length ? closeLineEnd + 1 : text.length
+    end = start
+  }
+
+  return { text: text.slice(0, start) + replacement + text.slice(end), point: start + replacement.length }
 }
 
 function replaceLines(buffer: BufferModel, startLine: number, endLine: number, replacement: string[]): void {
@@ -911,6 +1030,81 @@ async function readOrgAgendaDocs(files: string[]): Promise<OrgAgendaDoc[]> {
   return docs
 }
 
+async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!stream) return ""
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let out = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value?.length) out += decoder.decode(value, { stream: true })
+  }
+  return out + decoder.decode()
+}
+
+async function orgBabelExecuteSrcBlock(editor: Editor, buffer: BufferModel, deps: OrgDeps): Promise<boolean> {
+  const block = orgSrcBlockAtPoint(buffer.text, buffer.point)
+  if (!block) {
+    editor.message("No source block at point")
+    return false
+  }
+  const body = buffer.text.slice(block.bodyStart, block.bodyEnd)
+  const invocation = orgBabelBuildInvocation(block.lang, body)
+  if (!invocation) {
+    editor.message(`No Org Babel interpreter for ${block.lang}`)
+    return false
+  }
+  const spawn = deps.spawn ?? spawnProcess
+  let proc: SpawnHandle
+  try {
+    proc = spawn({ cmd: invocation.cmd, cwd: buffer.directory(), stdin: "pipe", stdout: "pipe", stderr: "pipe" })
+  } catch (error) {
+    editor.message((error as Error).message)
+    return false
+  }
+  proc.stdin?.write(invocation.stdin)
+  proc.stdin?.end()
+  const [stdout, stderr, code] = await Promise.all([readStream(proc.stdout), readStream(proc.stderr), proc.exited])
+  const output = stdout + stderr
+  const replaced = orgBabelReplaceResultsText(buffer.text, block, output)
+  buffer.replaceRange(0, buffer.text.length, replaced.text)
+  buffer.point = replaced.point
+  editor.message(code === 0 ? "Executed source block" : `Source block exited with code ${code ?? "?"}`)
+  return true
+}
+
+function orgLangMode(lang: string): string {
+  const candidates = [
+    inferMode(`block.${lang}`),
+    inferMode(`block.${lang}.txt`),
+    lang,
+    lang.toLowerCase(),
+  ]
+  for (const mode of candidates) if (mode !== "text" && getMode(mode)) return mode
+  return "text"
+}
+
+function orgEditSpecial(editor: Editor, buffer: BufferModel): void {
+  if (editIndirectBuffer(buffer)) {
+    finishEditIndirect(editor, buffer, true)
+    return
+  }
+  const block = orgSrcBlockAtPoint(buffer.text, buffer.point)
+  if (!block) {
+    editor.message("No source block at point")
+    return
+  }
+  const body = buffer.text.slice(block.bodyStart, block.bodyEnd)
+  const mode = orgLangMode(block.lang)
+  const edit = new BufferModel({ name: `*Org Src ${block.lang}*`, text: body, kind: "scratch", mode })
+  editor.addBuffer(edit)
+  editor.enterMode(edit, mode)
+  attachEditIndirect(edit, buffer, block.bodyStart, block.bodyEnd)
+  editor.displayBufferInOtherWindow(edit.id, { select: true })
+  editor.message("Edit, then C-c ' or C-c C-c to commit, C-c C-k to abort")
+}
+
 function agendaLine(item: OrgAgendaItem): string {
   const prefix = item.kind && item.date ? `${item.kind} ${item.date} ` : ""
   const todo = item.todo ? "TODO " : ""
@@ -953,7 +1147,13 @@ async function showOrgAgenda(editor: Editor): Promise<BufferModel | null> {
   return buffer
 }
 
-export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+function looksLikePluginContext(value: unknown): value is PluginContext {
+  return !!value && typeof value === "object" && "command" in value && "hook" in value && "dispose" in value
+}
+
+export function install(editor: Editor, depsOrCtx: OrgDeps | PluginContext = {}, maybeCtx?: PluginContext): void {
+  const deps: OrgDeps = looksLikePluginContext(depsOrCtx) ? {} : depsOrCtx
+  const ctx = looksLikePluginContext(depsOrCtx) ? depsOrCtx : maybeCtx ?? createPluginContext(editor)
   const agendaMap = new Keymap("org-agenda-mode-map")
   agendaMap.bind("enter", "org-agenda-goto")
   agendaMap.bind("return", "org-agenda-goto")
@@ -975,6 +1175,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   keymap.bind("C-c C-s", "org-schedule")
   keymap.bind("C-c C-d", "org-deadline")
   keymap.bind("C-c C-c", "org-ctrl-c-ctrl-c")
+  keymap.bind("C-c '", "org-edit-special")
   keymap.bind("C-c |", "org-table-create-or-convert-from-region")
   keymap.bind("C-c C-l", "org-insert-link")
   keymap.bind("C-c C-o", "org-open-at-point")
@@ -1122,7 +1323,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(result.message)
   }, "Toggle the checkbox at point.")
 
-  editor.command("org-ctrl-c-ctrl-c", ({ editor, buffer }) => {
+  editor.command("org-ctrl-c-ctrl-c", async ({ editor, buffer }) => {
+    if (orgSrcBlockAtPoint(buffer.text, buffer.point)) {
+      await orgBabelExecuteSrcBlock(editor, buffer, deps)
+      return
+    }
     const table = orgTableAtPoint(buffer.text, buffer.point)
     if (table) {
       const result = orgTableAlign(buffer)
@@ -1136,6 +1341,22 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     editor.message("C-c C-c has no effect here")
   }, "Org context command: align tables, toggle checkboxes, or report no action.")
+
+  editor.command("org-babel-execute-src-block", async ({ editor, buffer }) => {
+    await orgBabelExecuteSrcBlock(editor, buffer, deps)
+  }, "Execute the Org Babel source block at point and insert plain results.")
+
+  editor.command("org-edit-special", ({ editor, buffer }) => {
+    orgEditSpecial(editor, buffer)
+  }, "Edit the Org source block at point in a language-mode buffer.")
+
+  editor.command("edit-indirect-commit", ({ editor, buffer }) => {
+    finishEditIndirect(editor, buffer, true)
+  }, "Commit the edit-indirect buffer back to its source block.")
+
+  editor.command("edit-indirect-abort", ({ editor, buffer }) => {
+    finishEditIndirect(editor, buffer, false)
+  }, "Abort the edit-indirect buffer, discarding changes.")
 
   editor.command("org-todo", ({ buffer }) => todoCycle(buffer),
     "Cycle the TODO keyword of the current heading: TODO → DONE → (none).")
@@ -1173,6 +1394,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("org-mode", ({ editor, buffer }) => editor.enterMode(buffer, "org-mode"),
     "Major mode for editing Org files.")
+
+  editor.key("C-c '", "org-edit-special")
 
   // inferMode() doesn't know .org; pick it up at find-file time instead.
   ctx.hook("find-file-hook", ({ buffer }) => {

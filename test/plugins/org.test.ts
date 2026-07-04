@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { setPlatformRuntime } from "../../src/platform/runtime"
+import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
 import { setCustom } from "../../src/runtime/custom"
 import {
   install,
@@ -21,6 +22,9 @@ import {
   orgFontLock,
   orgVisibleSpans,
   orgDisplayFilter,
+  orgBabelBuildInvocation,
+  orgBabelReplaceResultsText,
+  orgSrcBlockAtPoint,
   ORG_FOLDED_LOCAL,
   type FoldRange,
 } from "../../plugins/org"
@@ -49,6 +53,32 @@ function setup(text: string, point = 0) {
 
 function folded(buffer: ReturnType<typeof setup>["buffer"]): FoldRange[] {
   return (buffer.locals.get(ORG_FOLDED_LOCAL) as FoldRange[] | undefined) ?? []
+}
+
+function streamOf(text: string): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder()
+  return new ReadableStream({
+    start(ctrl) {
+      ctrl.enqueue(enc.encode(text))
+      ctrl.close()
+    },
+  })
+}
+
+function fakeSpawn(stdout: string, stderr = "", code = 0) {
+  const calls: SpawnOptions[] = []
+  const stdin: string[] = []
+  const spawn = (opts: SpawnOptions): SpawnHandle => {
+    calls.push(opts)
+    return {
+      stdin: opts.stdin === "pipe" ? { write: chunk => stdin.push(chunk), end: () => {} } : null,
+      stdout: streamOf(stdout),
+      stderr: streamOf(stderr),
+      exited: Promise.resolve(code),
+      kill: () => {},
+    }
+  }
+  return { spawn, calls, stdin }
 }
 
 const tempDirs: string[] = []
@@ -89,6 +119,130 @@ describe("orgParseHeadlines", () => {
     expect(orgSubtreeEndLine(hs, top, lc)).toBe(7)
     expect(orgChildren(hs, top, lc).map(c => c.title)).toEqual(["Child A", "Child B"])
     expect(orgSubtreeEndLine(hs, hs[1]!, lc)).toBe(5) // Child A subtree ends before Child B
+  })
+})
+
+describe("org babel source blocks", () => {
+  const SRC = [
+    "* Code",
+    "#+BEGIN_SRC python -n",
+    "print(1)",
+    "#+END_SRC",
+    "",
+  ].join("\n")
+
+  test("orgSrcBlockAtPoint parses case-insensitive blocks, language, switches, and body range", () => {
+    const block = orgSrcBlockAtPoint(SRC, SRC.indexOf("print"))!
+    expect(block).toMatchObject({ openLine: 1, closeLine: 3, lang: "python", switches: "-n" })
+    expect(SRC.slice(block.bodyStart, block.bodyEnd)).toBe("print(1)\n")
+    expect(orgSrcBlockAtPoint(SRC, SRC.indexOf("* Code"))).toBeNull()
+  })
+
+  test("orgBabelBuildInvocation maps languages to interpreter argv", () => {
+    const alist: Array<[string, string]> = [
+      ["python", "python3"],
+      ["bash", "bash"],
+      ["js", "node"],
+      ["ruby", "ruby"],
+      ["lua", "lua"],
+    ]
+    expect(orgBabelBuildInvocation("python", "print(1)", alist)).toEqual({ cmd: ["python3", "-"], stdin: "print(1)" })
+    expect(orgBabelBuildInvocation("bash", "echo ok", alist)).toEqual({ cmd: ["bash", "-s"], stdin: "echo ok" })
+    expect(orgBabelBuildInvocation("js", "console.log(1)", alist)).toEqual({ cmd: ["node"], stdin: "console.log(1)" })
+    expect(orgBabelBuildInvocation("ruby", "puts 1", alist)).toEqual({ cmd: ["ruby"], stdin: "puts 1" })
+    expect(orgBabelBuildInvocation("lua", "print(1)", alist)).toEqual({ cmd: ["lua"], stdin: "print(1)" })
+    expect(orgBabelBuildInvocation("unknown", "", alist)).toBeNull()
+  })
+
+  test("result replacement inserts fresh plain results and replaces stale ones", () => {
+    const block = orgSrcBlockAtPoint(SRC, SRC.indexOf("print"))!
+    expect(orgBabelReplaceResultsText(SRC, block, "1\n").text).toBe([
+      "* Code",
+      "#+BEGIN_SRC python -n",
+      "print(1)",
+      "#+END_SRC",
+      "#+RESULTS:",
+      ": 1",
+      "",
+    ].join("\n"))
+
+    const stale = [
+      "* Code",
+      "#+begin_src sh",
+      "echo new",
+      "#+end_src",
+      "#+RESULTS:",
+      ": old",
+      ": output",
+      "",
+      "* Next",
+      "",
+    ].join("\n")
+    const staleBlock = orgSrcBlockAtPoint(stale, stale.indexOf("echo"))!
+    expect(orgBabelReplaceResultsText(stale, staleBlock, "new\n").text).toBe([
+      "* Code",
+      "#+begin_src sh",
+      "echo new",
+      "#+end_src",
+      "#+RESULTS:",
+      ": new",
+      "",
+      "* Next",
+      "",
+    ].join("\n"))
+  })
+
+  test("org-babel-execute-src-block uses injected spawn and inserts results", async () => {
+    const editor = makeEditor()
+    const { spawn, calls, stdin } = fakeSpawn("2\n")
+    install(editor, { spawn })
+    const buffer = editor.scratch("test.org", SRC, "org-mode")
+    buffer.point = SRC.indexOf("print")
+
+    await editor.run("org-babel-execute-src-block")
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.cmd).toEqual(["python3", "-"])
+    expect(calls[0]?.stdin).toBe("pipe")
+    expect(stdin).toEqual(["print(1)\n"])
+    expect(buffer.text).toContain("#+RESULTS:\n: 2\n")
+  })
+
+  test("C-c C-c dispatch executes source blocks before table or checkbox DWIM", async () => {
+    const editor = makeEditor()
+    const { spawn } = fakeSpawn("ok\n")
+    install(editor, { spawn })
+    const buffer = editor.scratch("test.org", "#+begin_src sh\necho ok\n#+end_src\n", "org-mode")
+    buffer.point = buffer.text.indexOf("echo")
+
+    await keySeq(editor, "C-c", "C-c")
+
+    expect(buffer.text).toBe("#+begin_src sh\necho ok\n#+end_src\n#+RESULTS:\n: ok\n")
+  })
+
+  test("org-edit-special commit replaces the source block body", async () => {
+    const { editor, buffer: source } = setup(SRC, SRC.indexOf("print"))
+
+    await editor.run("org-edit-special")
+    const edit = editor.currentBuffer
+    expect(edit.name).toBe("*Org Src python*")
+    expect(edit.text).toBe("print(1)\n")
+
+    edit.setText("print(2)")
+    await editor.run("edit-indirect-commit")
+    expect(source.text).toBe("* Code\n#+BEGIN_SRC python -n\nprint(2)\n#+END_SRC\n")
+    expect(editor.currentBuffer).toBe(source)
+  })
+
+  test("org-edit-special abort leaves the source block body unchanged", async () => {
+    const { editor, buffer: source } = setup(SRC, SRC.indexOf("print"))
+
+    await editor.run("org-edit-special")
+    editor.currentBuffer.setText("print(9)")
+    await editor.run("edit-indirect-abort")
+
+    expect(source.text).toBe(SRC)
+    expect(editor.currentBuffer).toBe(source)
   })
 })
 

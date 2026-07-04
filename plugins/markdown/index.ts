@@ -298,7 +298,7 @@ function markdownGetLangMode(lang: string | null): string | null {
   return fallback
 }
 
-type EditIndirectState = {
+export type EditIndirectState = {
   source: BufferModel
   bodyStart: number
   bodyEnd: number
@@ -307,21 +307,10 @@ type EditIndirectState = {
 }
 const EDIT_INDIRECT_KEY = "markdown-edit-indirect"
 
-export function markdownCodeBlockAtPoint(text: string, point: number): FencedCodeBlock | null {
-  for (const block of parseFencedCodeBlocks(text)) {
-    const openStart = lineStartAt(text, block.openLine)
-    const closeLineStart = lineStartAt(text, block.closeLine)
-    const closeNl = text.indexOf("\n", closeLineStart)
-    const closeEnd = closeNl < 0 ? text.length : closeNl
-    if (point >= openStart && point <= closeEnd) return block
-  }
-  return null
-}
-
 /** Track the block body across source-buffer splices, edit-indirect style:
  *  edits before the body shift it, edits overlapping it invalidate the
  *  pending commit (the safe failure mode — Emacs edit-indirect errors too). */
-function attachEditIndirect(edit: BufferModel, source: BufferModel, bodyStart: number, bodyEnd: number): EditIndirectState {
+export function attachEditIndirect(edit: BufferModel, source: BufferModel, bodyStart: number, bodyEnd: number): EditIndirectState {
   const prev = source.onTextChange
   const state: EditIndirectState = {
     source,
@@ -344,7 +333,7 @@ function attachEditIndirect(edit: BufferModel, source: BufferModel, bodyStart: n
   return state
 }
 
-function finishEditIndirect(editor: Editor, edit: BufferModel, commit: boolean): void {
+export function finishEditIndirect(editor: Editor, edit: BufferModel, commit: boolean): void {
   const state = edit.locals.get(EDIT_INDIRECT_KEY) as EditIndirectState | undefined
   if (!state) {
     editor.message("Not editing a code block")
@@ -366,6 +355,21 @@ function finishEditIndirect(editor: Editor, edit: BufferModel, commit: boolean):
   editor.killBuffer(edit.id)
   if (editor.buffers.has(state.source.id)) editor.switchToBuffer(state.source.id)
   editor.message(commit ? "Committed code block" : "Aborted code block edit")
+}
+
+export function editIndirectBuffer(edit: BufferModel): boolean {
+  return edit.locals.has(EDIT_INDIRECT_KEY)
+}
+
+export function markdownCodeBlockAtPoint(text: string, point: number): FencedCodeBlock | null {
+  for (const block of parseFencedCodeBlocks(text)) {
+    const openStart = lineStartAt(text, block.openLine)
+    const closeLineStart = lineStartAt(text, block.closeLine)
+    const closeNl = text.indexOf("\n", closeLineStart)
+    const closeEnd = closeNl < 0 ? text.length : closeNl
+    if (point >= openStart && point <= closeEnd) return block
+  }
+  return null
 }
 
 function spanInsideRegions(start: number, end: number, regions: ReadonlyArray<readonly [number, number]>): boolean {
