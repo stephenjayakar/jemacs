@@ -1,3 +1,6 @@
+import { join, parse } from "node:path"
+import { tmpdir } from "node:os"
+import { pathToFileURL } from "node:url"
 import { BufferModel, inferMode } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
 import { addHook } from "../../src/kernel/hooks"
@@ -6,6 +9,7 @@ import { defcustom, getCustom } from "../../src/runtime/custom"
 import { defface, faceRemapAddRelative, FIXED_PITCH_FAMILY, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
 import { defineMode, enterMode, getMode, modeFeature, type FaceName, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { registeredTreeSitterLanguages, treeSitterFontLock } from "../../src/modes/tree-sitter"
+import { spawnProcess, writeFileText, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
 import { registerTreeSitterGrammars } from "../tree-sitter-grammars"
 
 const TAB_WIDTH = 4
@@ -44,6 +48,8 @@ defcustom("markdown-display-remote-images", "boolean", true, "Allow remote image
 defcustom("markdown-hide-markup", "boolean", false, "Hide markup delimiters in the display layer (WYSIWYG-style editing).")
 defcustom("markdown-hide-urls", "boolean", false, "Compose link URLs to a single glyph when markup hiding is active.")
 defcustom("markdown-hide-markup-in-view-modes", "boolean", true, "Enable hidden markup in markdown-view-mode and gfm-view-mode.")
+defcustom("markdown-command", "string", "markdown", "External Markdown processor used by `markdown-export`.")
+defcustom("markdown-open-command", "string", process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open", "External command used by `markdown-open`.")
 defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries when soft wrapping.")
 
 const MARKDOWN_HIDE_MARKUP = "markdown-hide-markup"
@@ -103,6 +109,12 @@ type DisplayFilterCache = {
   hideUrls: boolean
   result: DisplayFilterResult
 }
+export type MarkdownDeps = {
+  spawn?: (opts: SpawnOptions) => SpawnHandle
+  writeFile?: (path: string, text: string) => Promise<void>
+  openExternal?: (target: string, opts?: { allowFile?: boolean }) => void
+  now?: () => number
+}
 
 function markdownHideMarkup(buffer: BufferModel): boolean {
   const local = buffer.locals.get(MARKDOWN_HIDE_MARKUP)
@@ -134,6 +146,100 @@ function markdownFontifyCodeBlocksNatively(buffer: BufferModel): boolean {
 
 function setMarkdownFontifyCodeBlocksNatively(buffer: BufferModel, value: boolean): void {
   buffer.locals.set(MARKDOWN_FONTIFY_CODE_BLOCKS, value)
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+export function markdownExportHtml(title: string, body: string): string {
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "  <meta charset=\"utf-8\">",
+    `  <title>${escapeHtml(title)}</title>`,
+    "</head>",
+    "<body>",
+    body,
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n")
+}
+
+function markdownOutputPath(buffer: BufferModel): string | null {
+  if (!buffer.path) return null
+  const parsed = parse(buffer.path)
+  return join(parsed.dir, `${parsed.name}.html`)
+}
+
+function markdownPreviewPath(buffer: BufferModel, deps: MarkdownDeps): string {
+  const stamp = deps.now?.() ?? Date.now()
+  const parsed = parse(buffer.name || "markdown")
+  const stem = (parsed.name || "markdown").replace(/[^A-Za-z0-9._-]/g, "-")
+  return join(tmpdir(), `jemacs-${stem}-${stamp}.html`)
+}
+
+function referenceLabelKey(label: string): string {
+  return label.trim().replace(/\s+/g, " ").toLowerCase()
+}
+
+export function markdownUndefinedReferenceLabels(text: string): string[] {
+  const definitions = new Set<string>()
+  for (const match of text.matchAll(/^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*/gm)) {
+    const label = match[1]
+    if (label && !label.startsWith("^")) definitions.add(referenceLabelKey(label))
+  }
+
+  const missing = new Map<string, string>()
+  for (const match of text.matchAll(/!?\[[^\]\n]*\]\[([^\]\n]+)\]/g)) {
+    const label = match[1]
+    if (!label || label.startsWith("^")) continue
+    const key = referenceLabelKey(label)
+    if (!definitions.has(key) && !missing.has(key)) missing.set(key, label)
+  }
+  return [...missing.values()]
+}
+
+async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!stream) return ""
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let out = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value?.length) out += decoder.decode(value, { stream: true })
+  }
+  return out + decoder.decode()
+}
+
+async function markdownRunProcessor(buffer: BufferModel, deps: MarkdownDeps): Promise<string> {
+  const command = getCustom<string>("markdown-command") ?? "markdown"
+  const spawn = deps.spawn ?? spawnProcess
+  const proc = spawn({ cmd: ["sh", "-c", command], cwd: buffer.directory(), stdin: "pipe", stdout: "pipe", stderr: "pipe" })
+  proc.stdin?.write(buffer.text)
+  proc.stdin?.end()
+  const [stdout, stderr, code] = await Promise.all([readStream(proc.stdout), readStream(proc.stderr), proc.exited])
+  if (code !== 0) throw new Error(stderr.trim() || `markdown-command exited with code ${code ?? "?"}`)
+  return stdout
+}
+
+export async function markdownExportBuffer(
+  buffer: BufferModel,
+  deps: MarkdownDeps = {},
+  outputPath = markdownOutputPath(buffer),
+): Promise<string> {
+  if (!outputPath) throw new Error("Buffer is not visiting a file")
+  const body = await markdownRunProcessor(buffer, deps)
+  const html = markdownExportHtml(buffer.name, body)
+  await (deps.writeFile ?? writeFileText)(outputPath, html)
+  return outputPath
 }
 
 export function parseFencedCodeBlocks(text: string): FencedCodeBlock[] {
@@ -939,6 +1045,10 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c <", "markdown-outdent-region")
   keymap.bind("C-c C-l", "markdown-insert-link")
   keymap.bind("C-c C-k", "markdown-kill-thing-at-point")
+  keymap.bind("C-c C-c e", "markdown-export")
+  keymap.bind("C-c C-c p", "markdown-preview")
+  keymap.bind("C-c C-c o", "markdown-open")
+  keymap.bind("C-c C-c c", "markdown-check-refs")
   keymap.bind("C-c C-s t", "markdown-insert-table")
   keymap.bind("C-c C--", "markdown-promote")
   keymap.bind("C-c C-=", "markdown-demote")
@@ -1001,7 +1111,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-x C-f", "markdown-toggle-fontify-code-blocks-natively")
 }
 
-function installMarkdownCommands(editor: Editor): void {
+function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   editor.command("markdown-enter-key", ({ buffer, editor }) => {
     trackIndentCommand(buffer, "markdown-enter-key")
     const line = buffer.lineBoundsAt()
@@ -1112,6 +1222,55 @@ function installMarkdownCommands(editor: Editor): void {
   editor.command("gfm-view-mode", ({ editor, buffer }) => {
     editor.enterMode(buffer, "gfm-view-mode")
   }, "Enter read-oriented GFM view mode with markup hiding.")
+
+  editor.command("markdown-export", async ({ editor, buffer }) => {
+    try {
+      const outputPath = await markdownExportBuffer(buffer, deps)
+      editor.message(`Wrote ${outputPath}`)
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Export the current Markdown buffer to an HTML file.")
+
+  editor.command("markdown-preview", async ({ editor, buffer }) => {
+    try {
+      const outputPath = await markdownExportBuffer(buffer, deps, markdownPreviewPath(buffer, deps))
+      markdownOpenExternal(pathToFileURL(outputPath).href, deps, true)
+      editor.message(`Previewing ${outputPath}`)
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Export the current Markdown buffer to a temporary HTML file and open it.")
+
+  editor.command("markdown-open", ({ editor, buffer }) => {
+    if (!buffer.path) {
+      editor.message("Buffer is not visiting a file")
+      return
+    }
+    const command = getCustom<string>("markdown-open-command") ?? ""
+    if (!command.trim()) {
+      editor.message("markdown-open-command is empty")
+      return
+    }
+    try {
+      const spawn = deps.spawn ?? spawnProcess
+      spawn({ cmd: ["sh", "-c", `${command} "$1"`, "markdown-open", buffer.path], cwd: buffer.directory() })
+      editor.message(`Opened ${buffer.path}`)
+    } catch (error) {
+      editor.message((error as Error).message)
+    }
+  }, "Run `markdown-open-command` on the current buffer file.")
+
+  editor.command("markdown-check-refs", ({ editor, buffer }) => {
+    const labels = markdownUndefinedReferenceLabels(buffer.text)
+    if (!labels.length) {
+      editor.message("No undefined reference labels")
+      return
+    }
+    const text = labels.map(label => `Undefined reference: [${label}]`).join("\n") + "\n"
+    editor.scratch("*Markdown Reference Check*", text, "text")
+    editor.message(`${labels.length} undefined reference label${labels.length === 1 ? "" : "s"}`)
+  }, "List undefined Markdown reference-link labels.")
 
   editor.command("markdown-outdent-or-delete", ({ buffer }) => {
     if (buffer.deleteActiveRegion()) return
@@ -1432,7 +1591,7 @@ function installMarkdownCommands(editor: Editor): void {
     }
     const url = link.url
     if (!url) { editor.message("No link at point"); return }
-    void spawnUrl(url)
+    markdownOpenExternal(url, deps)
     editor.message(`Followed ${url}`)
   }, "Follow link at point.")
 
@@ -1498,9 +1657,9 @@ function installMarkdownCommands(editor: Editor): void {
     "Major mode for editing Markdown files.")
 }
 
-export function install(editor: Editor): void {
+export function install(editor: Editor, deps: MarkdownDeps = {}): void {
   registerTreeSitterGrammars()
-  installMarkdownCommands(editor)
+  installMarkdownCommands(editor, deps)
 
   for (const [name] of MARKDOWN_HEADER_FACES) defface(name, {}, "Markdown ATX/setext header face.")
   defface("markdown-emphasis", { italic: true }, "Markdown italic emphasis.")
@@ -2585,20 +2744,22 @@ function findCurrentParagraphEnd(text: string, point: number): number {
 
 const SAFE_URL_SCHEME = /^(https?|mailto):/i
 
-function spawnUrl(url: string): void {
+function markdownOpenExternal(target: string, deps: MarkdownDeps = {}, allowFile = false): void {
   // The url comes from markdown link text — refuse anything that isn't a
   // browser-safe scheme so `[x](--flag)` or `[x](file:///etc/passwd)` can't
   // reach the OS opener, and `--` stops it being parsed as an option.
   let scheme: string
-  try { scheme = new URL(url).protocol } catch { return }
-  if (!SAFE_URL_SCHEME.test(scheme)) return
+  try { scheme = new URL(target).protocol } catch { return }
+  if (!SAFE_URL_SCHEME.test(scheme) && !(allowFile && scheme === "file:")) return
+  if (deps.openExternal) {
+    deps.openExternal(target, { allowFile })
+    return
+  }
   const platform = process.platform
-  const cmd = platform === "darwin" ? ["open", "--", url]
-    : platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", url]
-    : ["xdg-open", "--", url]
-  void import("../../src/platform/runtime").then(({ spawnProcess }) => {
-    try { spawnProcess({ cmd }) } catch { /* best effort */ }
-  })
+  const cmd = platform === "darwin" ? ["open", "--", target]
+    : platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", target]
+    : ["xdg-open", "--", target]
+  try { spawnProcess({ cmd }) } catch { /* best effort */ }
 }
 
 function isBlankLine(text: string, offset: number): boolean {

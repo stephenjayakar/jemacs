@@ -13,12 +13,16 @@ import {
   markdownCalcIndents,
   markdownDisplayFilter,
   markdownIndentLine,
+  markdownExportBuffer,
+  markdownExportHtml,
   markdownParseHeadings,
+  markdownUndefinedReferenceLabels,
   parseFencedCodeBlocks,
   MARKDOWN_FOLDED_LOCAL,
 } from "../../plugins/markdown"
 import { treeSitterFontLock } from "../../src/modes/tree-sitter"
 import { registerTreeSitterGrammars } from "../../plugins/tree-sitter-grammars"
+import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
 
 registerTreeSitterGrammars()
 
@@ -30,6 +34,32 @@ const DOC = [
   "### Grand",
   "deep",
 ].join("\n")
+
+function streamOf(text: string): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder()
+  return new ReadableStream({
+    start(ctrl) {
+      ctrl.enqueue(enc.encode(text))
+      ctrl.close()
+    },
+  })
+}
+
+function fakeSpawn(stdout: string, stderr = "", code = 0) {
+  const calls: SpawnOptions[] = []
+  const stdin: string[] = []
+  const spawn = (opts: SpawnOptions): SpawnHandle => {
+    calls.push(opts)
+    return {
+      stdin: opts.stdin === "pipe" ? { write: chunk => stdin.push(chunk), end: () => {} } : null,
+      stdout: streamOf(stdout),
+      stderr: streamOf(stderr),
+      exited: Promise.resolve(code),
+      kill: () => {},
+    }
+  }
+  return { spawn, calls, stdin }
+}
 
 test("inferMode selects markdown and gfm from file names", () => {
   expect(new BufferModel({ name: "x.md" }).mode).toBe("markdown")
@@ -106,6 +136,86 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("C-c C-s f")).toMatchObject({ status: "matched", command: "markdown-insert-footnote" })
   expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
+})
+
+test("markdown-mode keymap binds Emacs export preview and reference commands under C-c C-c", () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = new BufferModel({ name: "doc.md", text: "", mode: "markdown" })
+  editor.addBuffer(buffer)
+  editor.currentBufferId = buffer.id
+
+  expect(editor.keymaps.lookup("C-c C-c e")).toMatchObject({ status: "matched", command: "markdown-export" })
+  expect(editor.keymaps.lookup("C-c C-c p")).toMatchObject({ status: "matched", command: "markdown-preview" })
+  expect(editor.keymaps.lookup("C-c C-c o")).toMatchObject({ status: "matched", command: "markdown-open" })
+  expect(editor.keymaps.lookup("C-c C-c c")).toMatchObject({ status: "matched", command: "markdown-check-refs" })
+  expect(editor.keymaps.lookup("C-c C-o")).toMatchObject({ status: "matched", command: "markdown-follow-thing-at-point" })
+})
+
+test("markdown-check-refs finds undefined labels and ignores defined labels", () => {
+  const text = [
+    "[Defined][ok]",
+    "[Missing][nope]",
+    "[Also missing][other label]",
+    "[Duplicate][nope]",
+    "",
+    "[ok]: https://example.com",
+  ].join("\n")
+
+  expect(markdownUndefinedReferenceLabels(text)).toEqual(["nope", "other label"])
+})
+
+test("markdownExportHtml wraps processor output in a minimal escaped HTML skeleton", () => {
+  expect(markdownExportHtml("a < b.md", "<h1>Title</h1>")).toBe([
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "  <meta charset=\"utf-8\">",
+    "  <title>a &lt; b.md</title>",
+    "</head>",
+    "<body>",
+    "<h1>Title</h1>",
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n"))
+})
+
+test("markdown-export dispatches through C-c C-c e using injected processor and writer", async () => {
+  const editor = makeEditor()
+  const { spawn, calls, stdin } = fakeSpawn("<p>Hello</p>\n")
+  const writes: Array<{ path: string; text: string }> = []
+  install(editor, { spawn, writeFile: async (path, text) => { writes.push({ path, text }) } })
+  const buffer = new BufferModel({
+    name: "doc.md",
+    path: "/tmp/doc.md",
+    text: "# Hello\n",
+    mode: "markdown",
+  })
+  editor.addBuffer(buffer)
+  editor.currentBufferId = buffer.id
+
+  await keySeq(editor, "C-c", "C-c", "e")
+
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.cmd).toEqual(["sh", "-c", "markdown"])
+  expect(stdin).toEqual(["# Hello\n"])
+  expect(writes).toEqual([{
+    path: "/tmp/doc.html",
+    text: markdownExportHtml("doc.md", "<p>Hello</p>\n"),
+  }])
+})
+
+test("markdownExportBuffer writes wrapped HTML with fake processor output", async () => {
+  const { spawn, stdin } = fakeSpawn("<p>Body</p>")
+  const writes: Array<{ path: string; text: string }> = []
+  const buffer = new BufferModel({ name: "note.md", path: "/tmp/note.md", text: "Body", mode: "markdown" })
+
+  const outputPath = await markdownExportBuffer(buffer, { spawn, writeFile: async (path, text) => { writes.push({ path, text }) } })
+
+  expect(outputPath).toBe("/tmp/note.html")
+  expect(stdin).toEqual(["Body"])
+  expect(writes[0]?.text).toBe(markdownExportHtml("note.md", "<p>Body</p>"))
 })
 
 test("markdown-mode onEnter applies proportional default face remap", () => {
