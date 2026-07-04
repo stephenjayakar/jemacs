@@ -89,6 +89,21 @@ test("markdown-mode keymap binds RET to jemacs-clear-whitespace-and-newline-and-
   expect(result.status === "matched" ? result.command : "").toBe("jemacs-clear-whitespace-and-newline-and-indent")
 })
 
+test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = new BufferModel({ name: "doc.md", text: "", mode: "markdown" })
+  editor.addBuffer(buffer)
+  editor.currentBufferId = buffer.id
+
+  expect(editor.keymaps.lookup("M-left")).toMatchObject({ status: "matched", command: "markdown-promote" })
+  expect(editor.keymaps.lookup("M-right")).toMatchObject({ status: "matched", command: "markdown-demote" })
+  expect(editor.keymaps.lookup("M-up")).toMatchObject({ status: "matched", command: "markdown-move-up" })
+  expect(editor.keymaps.lookup("M-down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
+  expect(editor.keymaps.lookup("C-c left")).toMatchObject({ status: "matched", command: "markdown-promote" })
+  expect(editor.keymaps.lookup("C-c down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
+})
+
 test("markdown-mode onEnter applies proportional default face remap", () => {
   const editor = makeEditor()
   install(editor)
@@ -131,6 +146,128 @@ describe("markdownParseHeadings", () => {
       [2, "Title"],
       [2, "Two"],
     ])
+  })
+})
+
+describe("markdown promote/demote parity", () => {
+  test("promotes and demotes ATX headings without crossing level bounds", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "## Title\n", "markdown")
+    buffer.point = 0
+
+    await editor.run("markdown-promote")
+    expect(buffer.text).toBe("# Title\n")
+    await editor.run("markdown-promote")
+    expect(buffer.text).toBe("# Title\n")
+    await editor.run("markdown-demote")
+    expect(buffer.text).toBe("## Title\n")
+  })
+
+  test("promotes and demotes setext headings through setext and ATX forms", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "Title\n---\n", "markdown")
+    buffer.point = buffer.text.indexOf("---")
+
+    await editor.run("markdown-promote")
+    expect(buffer.text).toBe("Title\n===\n")
+    await editor.run("markdown-promote")
+    expect(buffer.text).toBe("Title\n===\n")
+    await editor.run("markdown-demote")
+    expect(buffer.text).toBe("Title\n---\n")
+    await editor.run("markdown-demote")
+    expect(buffer.text).toBe("### Title\n")
+  })
+
+  test("promotes and demotes list items by markdown list indent width", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- one\n- two\n", "markdown")
+    buffer.point = buffer.text.indexOf("- two")
+
+    await editor.run("markdown-demote")
+    expect(buffer.text).toBe("- one\n    - two\n")
+    await editor.run("markdown-promote")
+    expect(buffer.text).toBe("- one\n- two\n")
+  })
+
+  test("promotes and demotes heading subtrees", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "## A\n### B\ntext\n## C\n", "markdown")
+    buffer.point = 0
+
+    await editor.run("markdown-promote-subtree")
+    expect(buffer.text).toBe("# A\n## B\ntext\n## C\n")
+    // After promotion, "## C" is now inside "# A"'s subtree, so demoting
+    // the subtree at "# A" demotes it too.
+    await editor.run("markdown-demote-subtree")
+    expect(buffer.text).toBe("## A\n### B\ntext\n### C\n")
+  })
+
+  test("refuses subtree edits that would cross heading bounds", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const promote = editor.scratch("promote.md", "# A\n## B\n", "markdown")
+    promote.point = 0
+    await editor.run("markdown-promote-subtree")
+    expect(promote.text).toBe("# A\n## B\n")
+
+    const demote = editor.scratch("demote.md", "## A\n###### B\n", "markdown")
+    demote.point = 0
+    await editor.run("markdown-demote-subtree")
+    expect(demote.text).toBe("## A\n###### B\n")
+  })
+})
+
+describe("markdown subtree and list movement", () => {
+  test("moves heading subtrees up and down across same-level siblings", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "# A\na\n## A1\nx\n# B\nb\n# C\nc\n", "markdown")
+    buffer.point = buffer.text.indexOf("# B")
+
+    await editor.run("markdown-move-subtree-up")
+    expect(buffer.text).toBe("# B\nb\n# A\na\n## A1\nx\n# C\nc\n")
+    await editor.run("markdown-move-subtree-down")
+    expect(buffer.text).toBe("# A\na\n## A1\nx\n# B\nb\n# C\nc\n")
+  })
+
+  test("DWIM move commands move heading subtrees", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "# A\na\n# B\nb\n", "markdown")
+    buffer.point = buffer.text.indexOf("# B")
+
+    await editor.run("markdown-move-up")
+    expect(buffer.text).toBe("# B\nb\n# A\na\n")
+    await editor.run("markdown-move-down")
+    expect(buffer.text).toBe("# A\na\n# B\nb\n")
+  })
+
+  test("moves list items with nested children up and down", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- one\n    - one child\n- two\n    continued\n- three\n", "markdown")
+    buffer.point = buffer.text.indexOf("- two")
+
+    await editor.run("markdown-move-list-item-up")
+    expect(buffer.text).toBe("- two\n    continued\n- one\n    - one child\n- three\n")
+    await editor.run("markdown-move-list-item-down")
+    expect(buffer.text).toBe("- one\n    - one child\n- two\n    continued\n- three\n")
+  })
+
+  test("DWIM move commands move list items", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- one\n- two\n", "markdown")
+    buffer.point = buffer.text.indexOf("- two")
+
+    await editor.run("markdown-move-up")
+    expect(buffer.text).toBe("- two\n- one\n")
+    await editor.run("markdown-move-down")
+    expect(buffer.text).toBe("- one\n- two\n")
   })
 })
 

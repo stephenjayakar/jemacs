@@ -909,6 +909,18 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-k", "markdown-kill-thing-at-point")
   keymap.bind("C-c C--", "markdown-promote")
   keymap.bind("C-c C-=", "markdown-demote")
+  keymap.bind("M-left", "markdown-promote")
+  keymap.bind("M-right", "markdown-demote")
+  keymap.bind("M-up", "markdown-move-up")
+  keymap.bind("M-down", "markdown-move-down")
+  keymap.bind("C-c left", "markdown-promote")
+  keymap.bind("C-c right", "markdown-demote")
+  keymap.bind("C-c up", "markdown-move-up")
+  keymap.bind("C-c down", "markdown-move-down")
+  keymap.bind("S-M-left", "markdown-promote-subtree")
+  keymap.bind("M-S-left", "markdown-promote-subtree")
+  keymap.bind("S-M-right", "markdown-demote-subtree")
+  keymap.bind("M-S-right", "markdown-demote-subtree")
   keymap.bind("C-c C-n", "markdown-outline-next")
   keymap.bind("C-c C-p", "markdown-outline-previous")
   keymap.bind("C-c C-f", "markdown-outline-next-same-level")
@@ -1166,14 +1178,56 @@ function installMarkdownCommands(editor: Editor): void {
   }, "Insert or demote an ATX header at point.")
 
   editor.command("markdown-promote", ({ buffer, editor }) => {
-    changeHeaderLevel(buffer, -1)
-    editor.message("Promoted heading")
-  }, "Promote the heading at point.")
+    const result = markdownPromoteOrDemote(buffer, -1)
+    editor.message(result.message)
+  }, "Promote the heading or list item at point.")
 
   editor.command("markdown-demote", ({ buffer, editor }) => {
-    changeHeaderLevel(buffer, 1)
-    editor.message("Demoted heading")
-  }, "Demote the heading at point.")
+    const result = markdownPromoteOrDemote(buffer, 1)
+    editor.message(result.message)
+  }, "Demote the heading or list item at point.")
+
+  editor.command("markdown-promote-subtree", ({ buffer, editor }) => {
+    const result = markdownPromoteOrDemoteSubtree(buffer, -1)
+    editor.message(result.message)
+  }, "Promote the current heading subtree.")
+
+  editor.command("markdown-demote-subtree", ({ buffer, editor }) => {
+    const result = markdownPromoteOrDemoteSubtree(buffer, 1)
+    editor.message(result.message)
+  }, "Demote the current heading subtree.")
+
+  editor.command("markdown-move-subtree-up", ({ buffer, editor }) => {
+    const result = markdownMoveSubtree(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current heading subtree before its previous sibling.")
+
+  editor.command("markdown-move-subtree-down", ({ buffer, editor }) => {
+    const result = markdownMoveSubtree(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current heading subtree after its next sibling.")
+
+  editor.command("markdown-move-list-item-up", ({ buffer, editor }) => {
+    const result = markdownMoveListItem(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current Markdown list item before its previous sibling.")
+
+  editor.command("markdown-move-list-item-down", ({ buffer, editor }) => {
+    const result = markdownMoveListItem(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current Markdown list item after its next sibling.")
+
+  editor.command("markdown-move-up", ({ buffer, editor }) => {
+    const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
+    const result = heading ? markdownMoveSubtree(buffer, -1) : markdownMoveListItem(buffer, -1)
+    editor.message(result.message)
+  }, "Move the current heading subtree or list item up.")
+
+  editor.command("markdown-move-down", ({ buffer, editor }) => {
+    const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
+    const result = heading ? markdownMoveSubtree(buffer, 1) : markdownMoveListItem(buffer, 1)
+    editor.message(result.message)
+  }, "Move the current heading subtree or list item down.")
 
   editor.command("markdown-insert-strike-through", ({ buffer, editor }) => {
     wrapOrInsert(buffer, "~~", "~~", "text")
@@ -1362,6 +1416,191 @@ function changeHeaderLevel(buffer: BufferModel, delta: number): void {
   const level = Math.min(6, Math.max(1, match[2]!.length + delta))
   const replacement = `${match[1]}${"#".repeat(level)}${match[3]}${match[4]}`
   buffer.replaceRange(line.start, line.end, replacement)
+}
+
+type MarkdownEditResult = { changed: boolean; message: string }
+type MarkdownListItem = { line: number; endLine: number; indent: number }
+
+function markdownHeadingAtPointIncludingSetextUnderline(text: string, point: number): MarkdownHeading | null {
+  const line = text.slice(0, point).split("\n").length - 1
+  return markdownParseHeadings(text).find(h => h.line === line || (h.line + 1 === line && isSetextUnderlineLine(text, line))) ?? null
+}
+
+function isSetextUnderlineLine(text: string, line: number): boolean {
+  const lines = text.split("\n")
+  return line > 0 && line < lines.length && SETEXT_UNDERLINE_RE.test(lines[line]!) && !!lines[line - 1]!.trim()
+}
+
+function lineStartAt(text: string, line: number): number {
+  if (line <= 0) return 0
+  let offset = 0
+  const lines = text.split("\n")
+  for (let i = 0; i < line && i < lines.length; i++) offset += lines[i]!.length + 1
+  return Math.min(offset, text.length)
+}
+
+function replaceLines(buffer: BufferModel, startLine: number, endLine: number, replacement: string[]): void {
+  const lines = buffer.text.split("\n")
+  lines.splice(startLine, endLine - startLine + 1, ...replacement)
+  buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+}
+
+function markdownPromoteOrDemote(buffer: BufferModel, delta: -1 | 1): MarkdownEditResult {
+  const line = buffer.lineBoundsAt()
+  if (LIST_RE.test(line.text)) {
+    indentRegion(buffer, line.start, line.end, delta > 0 ? TAB_WIDTH : -TAB_WIDTH)
+    buffer.point = line.start
+    return { changed: true, message: delta > 0 ? "Demoted list item" : "Promoted list item" }
+  }
+
+  const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
+  if (!heading) return { changed: false, message: "No heading or list item at point" }
+  return changeMarkdownHeadingLevel(buffer, heading, delta)
+}
+
+function changeMarkdownHeadingLevel(buffer: BufferModel, heading: MarkdownHeading, delta: -1 | 1): MarkdownEditResult {
+  const lines = buffer.text.split("\n")
+  const line = lines[heading.line] ?? ""
+  const atx = line.match(/^(\s*)(#{1,6})(\s+)(.*)$/)
+  if (atx) {
+    const next = atx[2]!.length + delta
+    if (next < 1) return { changed: false, message: "Cannot promote further" }
+    if (next > 6) return { changed: false, message: "Cannot demote further" }
+    lines[heading.line] = `${atx[1]}${"#".repeat(next)}${atx[3]}${atx[4]}`
+    buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+    buffer.point = lineStartAt(buffer.text, heading.line)
+    return { changed: true, message: delta > 0 ? "Demoted heading" : "Promoted heading" }
+  }
+
+  const underline = lines[heading.line + 1] ?? ""
+  const setext = SETEXT_UNDERLINE_RE.exec(underline)
+  if (!setext) return { changed: false, message: "No heading at point" }
+  const underlineIndent = setext[1] ?? ""
+  const underlineText = setext[2] ?? ""
+  const width = Math.max(3, underlineText.length)
+  if (delta < 0) {
+    if (heading.level <= 1) return { changed: false, message: "Cannot promote further" }
+    lines[heading.line + 1] = `${underlineIndent}${"=".repeat(width)}`
+    buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+    buffer.point = lineStartAt(buffer.text, heading.line)
+    return { changed: true, message: "Promoted heading" }
+  }
+  if (heading.level === 1) {
+    lines[heading.line + 1] = `${underlineIndent}${"-".repeat(width)}`
+    buffer.replaceRange(0, buffer.text.length, lines.join("\n"))
+    buffer.point = lineStartAt(buffer.text, heading.line)
+    return { changed: true, message: "Demoted heading" }
+  }
+  replaceLines(buffer, heading.line, heading.line + 1, [`### ${line.trim()}`])
+  buffer.point = lineStartAt(buffer.text, heading.line)
+  return { changed: true, message: "Demoted heading" }
+}
+
+function markdownPromoteOrDemoteSubtree(buffer: BufferModel, delta: -1 | 1): MarkdownEditResult {
+  const root = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
+  if (!root) return { changed: false, message: "No heading at point" }
+  const headings = markdownParseHeadings(buffer.text)
+  const lineCount = buffer.text.split("\n").length
+  const endLine = markdownSubtreeEndLine(headings, root, lineCount)
+  const subtree = headings.filter(h => h.line >= root.line && h.line <= endLine)
+  if (delta < 0 && root.level <= 1) return { changed: false, message: "Cannot promote subtree further" }
+  if (delta > 0 && subtree.some(h => h.level >= 6)) return { changed: false, message: "Cannot demote subtree further" }
+  for (const heading of [...subtree].sort((a, b) => b.line - a.line)) {
+    changeMarkdownHeadingLevel(buffer, heading, delta)
+  }
+  buffer.point = lineStartAt(buffer.text, root.line)
+  return { changed: true, message: delta > 0 ? "Demoted subtree" : "Promoted subtree" }
+}
+
+function lineRangeTextBounds(buffer: BufferModel, startLine: number, endLine: number): { start: number; end: number } {
+  const [start] = buffer.lineBounds(startLine)
+  const [, endNoNewline] = buffer.lineBounds(endLine)
+  return { start, end: endNoNewline < buffer.text.length ? endNoNewline + 1 : endNoNewline }
+}
+
+function markdownMoveSubtree(buffer: BufferModel, direction: -1 | 1): MarkdownEditResult {
+  const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
+  if (!heading) return { changed: false, message: "No heading at point" }
+  const headings = markdownParseHeadings(buffer.text)
+  const lineCount = buffer.text.split("\n").length
+  const currentEnd = markdownSubtreeEndLine(headings, heading, lineCount)
+  const siblings = headings.filter(h => h.level === heading.level && h.line !== heading.line)
+  const blocksLowerLevel = (fromLine: number, toLine: number) =>
+    headings.some(h => h.line > fromLine && h.line < toLine && h.level < heading.level)
+  const sibling = direction < 0
+    ? [...siblings].reverse().find(h => h.line < heading.line && !blocksLowerLevel(h.line, heading.line))
+    : siblings.find(h => h.line > currentEnd && !blocksLowerLevel(heading.line, h.line))
+  if (!sibling) return { changed: false, message: direction < 0 ? "No previous subtree" : "No next subtree" }
+
+  const siblingEnd = markdownSubtreeEndLine(headings, sibling, lineCount)
+  if (direction < 0) {
+    swapLineRanges(buffer, sibling.line, siblingEnd, heading.line, currentEnd)
+    buffer.point = lineStartAt(buffer.text, sibling.line)
+  } else {
+    swapLineRanges(buffer, heading.line, currentEnd, sibling.line, siblingEnd)
+    const movedLine = sibling.line + (siblingEnd - sibling.line + 1)
+    buffer.point = lineStartAt(buffer.text, movedLine)
+  }
+  return { changed: true, message: direction < 0 ? "Moved subtree up" : "Moved subtree down" }
+}
+
+function parseMarkdownListItems(text: string): MarkdownListItem[] {
+  const lines = text.split("\n")
+  const starts: MarkdownListItem[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i]!.match(LIST_RE)
+    if (match) starts.push({ line: i, endLine: i, indent: match[1]!.length })
+  }
+  for (let i = 0; i < starts.length; i++) {
+    const item = starts[i]!
+    let end = lines.length - 1
+    for (let j = i + 1; j < starts.length; j++) {
+      if (starts[j]!.indent <= item.indent) {
+        end = starts[j]!.line - 1
+        break
+      }
+    }
+    item.endLine = end
+  }
+  return starts
+}
+
+function currentMarkdownListItem(text: string, point: number): MarkdownListItem | null {
+  const line = text.slice(0, point).split("\n").length - 1
+  return parseMarkdownListItems(text)
+    .filter(item => item.line <= line && item.endLine >= line)
+    .sort((a, b) => b.line - a.line)[0] ?? null
+}
+
+function markdownMoveListItem(buffer: BufferModel, direction: -1 | 1): MarkdownEditResult {
+  const current = currentMarkdownListItem(buffer.text, buffer.point)
+  if (!current) return { changed: false, message: "No list item at point" }
+  const items = parseMarkdownListItems(buffer.text)
+  const blocksAncestor = (fromLine: number, toLine: number) =>
+    items.some(item => item.line > fromLine && item.line < toLine && item.indent < current.indent)
+  const sibling = direction < 0
+    ? [...items].reverse().find(item => item.indent === current.indent && item.endLine < current.line && !blocksAncestor(item.line, current.line))
+    : items.find(item => item.indent === current.indent && item.line > current.endLine && !blocksAncestor(current.line, item.line))
+  if (!sibling) return { changed: false, message: direction < 0 ? "No previous list item" : "No next list item" }
+
+  if (direction < 0) {
+    swapLineRanges(buffer, sibling.line, sibling.endLine, current.line, current.endLine)
+    buffer.point = lineStartAt(buffer.text, sibling.line)
+  } else {
+    swapLineRanges(buffer, current.line, current.endLine, sibling.line, sibling.endLine)
+    const movedLine = sibling.line + (sibling.endLine - sibling.line + 1)
+    buffer.point = lineStartAt(buffer.text, movedLine)
+  }
+  return { changed: true, message: direction < 0 ? "Moved list item up" : "Moved list item down" }
+}
+
+function swapLineRanges(buffer: BufferModel, aStartLine: number, aEndLine: number, bStartLine: number, bEndLine: number): void {
+  const a = lineRangeTextBounds(buffer, aStartLine, aEndLine)
+  const b = lineRangeTextBounds(buffer, bStartLine, bEndLine)
+  const aText = buffer.text.slice(a.start, a.end)
+  const between = buffer.text.slice(a.end, b.start)
+  const bText = buffer.text.slice(b.start, b.end)
+  buffer.replaceRange(a.start, b.end, `${bText}${between}${aText}`)
 }
 
 function indentRegion(buffer: BufferModel, start: number, end: number, delta: number): void {
