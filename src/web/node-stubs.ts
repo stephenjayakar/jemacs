@@ -53,6 +53,10 @@ export const cp = stub("fs/promises.cp")
 export const unlink = stub("fs/promises.unlink")
 export const appendFile = stub("fs/promises.appendFile")
 export const mkdtemp = stub("fs/promises.mkdtemp")
+export const chmod = stub("fs/promises.chmod")
+export const utimes = stub("fs/promises.utimes")
+export const symlink = stub("fs/promises.symlink")
+export const link = stub("fs/promises.link")
 
 // node:child_process
 export const spawn = stub("child_process.spawn")
