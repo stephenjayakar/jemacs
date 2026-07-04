@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
+import { setPlatformRuntime } from "../../src/platform/runtime"
 import {
   install,
   orgParseHeadlines,
@@ -260,6 +261,163 @@ describe("heading navigation (C-c C-n / C-c C-p)", () => {
     expect(editor.commands.get("org-previous-heading")).toBeUndefined()
     expect(editor.commands.get("org-next-visible-heading")).toBeDefined()
     expect(editor.commands.get("org-previous-visible-heading")).toBeDefined()
+  })
+})
+
+describe("org tables", () => {
+  test("TAB aligns separator rows and moves to the next cell", async () => {
+    const text = "| Name | Age |\n|---+---|\n| Al | 9 |\n"
+    const { editor, buffer } = setup(text, text.indexOf("Name"))
+
+    await keySeq(editor, "TAB")
+
+    expect(buffer.text).toBe("| Name | Age |\n|------+-----|\n| Al   | 9   |\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("Age"))
+  })
+
+  test("RET aligns and moves below, creating a row at the end", async () => {
+    const text = "| Name | Age |\n|---+---|\n| Al | 9 |\n"
+    const { editor, buffer } = setup(text, text.indexOf("Age"))
+
+    await keySeq(editor, "RET")
+    expect(buffer.point).toBe(buffer.text.indexOf("9"))
+
+    await keySeq(editor, "RET")
+    expect(buffer.text).toBe("| Name | Age |\n|------+-----|\n| Al   | 9   |\n|      |     |\n")
+    expect(buffer.lineCol().line).toBe(4)
+  })
+
+  test("S-TAB aligns and moves to the previous cell", async () => {
+    const text = "| Name | Age |\n|---+---|\n| Al | 9 |\n"
+    const { editor, buffer } = setup(text, text.indexOf("Age"))
+
+    await keySeq(editor, "S-TAB")
+
+    expect(buffer.text).toBe("| Name | Age |\n|------+-----|\n| Al   | 9   |\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("Name"))
+  })
+
+  test("C-c | converts a whitespace region to an org table", async () => {
+    const { editor, buffer } = setup("Name Age\nAnn 9\n")
+    buffer.mark = 0
+    buffer.markActive = true
+    buffer.point = buffer.text.length
+
+    await keySeq(editor, "C-c", "|")
+
+    expect(buffer.text).toBe("| Name | Age |\n| Ann  | 9   |\n")
+    expect(buffer.point).toBe(2)
+  })
+})
+
+describe("org links", () => {
+  test("org-insert-link prompts for target and description", async () => {
+    const { editor, buffer } = setup("")
+    const prompts: string[] = []
+    const answers = ["https://example.com", "Example"]
+    editor.prompt = async prompt => {
+      prompts.push(prompt)
+      return answers.shift() ?? null
+    }
+
+    await editor.run("org-insert-link")
+
+    expect(prompts).toEqual(["Link: ", "Description: "])
+    expect(buffer.text).toBe("[[https://example.com][Example]]")
+  })
+
+  test("org-open-at-point opens http links with the platform opener", async () => {
+    const spawned: string[][] = []
+    setPlatformRuntime({
+      spawnProcess: options => {
+        spawned.push(options.cmd)
+        return { stdin: null, stdout: null, stderr: null, exited: Promise.resolve(0), kill() {} }
+      },
+    })
+    try {
+      const { editor, buffer } = setup("[[https://example.com][Example]]\n", 2)
+      await editor.run("org-open-at-point")
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(spawned[0]?.at(-1)).toBe("https://example.com")
+    } finally {
+      setPlatformRuntime(undefined)
+    }
+  })
+
+  test("org-open-at-point jumps to star headline links", async () => {
+    const text = "[[*Target][jump]]\n* Target\n"
+    const { editor, buffer } = setup(text, text.indexOf("[[*Target"))
+
+    await editor.run("org-open-at-point")
+
+    expect(buffer.point).toBe(text.indexOf("* Target"))
+  })
+
+  test("org-next-link and org-previous-link move between links", async () => {
+    const text = "a [[one]] b [[two]] c\n"
+    const { editor, buffer } = setup(text, 0)
+
+    await editor.run("org-next-link")
+    expect(buffer.point).toBe(text.indexOf("[[one]]"))
+    await editor.run("org-next-link")
+    expect(buffer.point).toBe(text.indexOf("[[two]]"))
+    await editor.run("org-previous-link")
+    expect(buffer.point).toBe(text.indexOf("[[one]]"))
+  })
+
+  test("font-lock marks org links", () => {
+    const { buffer } = setup("[[https://example.com][Example]]\n")
+    const spans = orgFontLock(buffer)
+    expect(spans.some(span => String(span.face) === "markdown-link" && span.start === 0)).toBe(true)
+  })
+})
+
+describe("org checkboxes", () => {
+  test("org-toggle-checkbox toggles and updates slash statistics", async () => {
+    const text = "* Tasks [0/2]\n- [ ] one\n- [X] two\n"
+    const { editor, buffer } = setup(text, text.indexOf("[ ]"))
+
+    await editor.run("org-toggle-checkbox")
+
+    expect(buffer.text).toBe("* Tasks [2/2]\n- [X] one\n- [X] two\n")
+  })
+
+  test("org-toggle-checkbox updates percent statistics", async () => {
+    const text = "- Parent [50%]\n  - [X] one\n  - [X] two\n"
+    const { editor, buffer } = setup(text, text.indexOf("[X] two"))
+
+    await editor.run("org-toggle-checkbox")
+
+    expect(buffer.text).toBe("- Parent [50%]\n  - [X] one\n  - [ ] two\n")
+  })
+})
+
+describe("org-ctrl-c-ctrl-c", () => {
+  test("aligns tables at point", async () => {
+    const text = "| A | Long |\n|---+---|\n| x | y |\n"
+    const { editor, buffer } = setup(text, text.indexOf("Long"))
+
+    await keySeq(editor, "C-c", "C-c")
+
+    expect(buffer.text).toBe("| A | Long |\n|---+------|\n| x | y    |\n")
+  })
+
+  test("toggles checkboxes at point", async () => {
+    const { editor, buffer } = setup("- [ ] todo\n", 0)
+
+    await keySeq(editor, "C-c", "C-c")
+
+    expect(buffer.text).toBe("- [X] todo\n")
+  })
+
+  test("reports when no org context handles it", async () => {
+    const { editor } = setup("plain\n", 0)
+    let msg = ""
+    editor.events.on("message", ({ text }) => { msg = text })
+
+    await keySeq(editor, "C-c", "C-c")
+
+    expect(msg).toContain("no effect")
   })
 })
 
