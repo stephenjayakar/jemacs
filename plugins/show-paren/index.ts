@@ -1,7 +1,9 @@
 import type { Editor } from "../../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { BufferModel } from "../../src/kernel/buffer"
+import type { TextSpan } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
+import { defface } from "../../src/runtime/faces"
 
 const OPENERS = "([{"
 const CLOSERS = ")]}"
@@ -94,6 +96,17 @@ export function showParenData(buffer: BufferModel): ShowParenData | null {
   return (buffer.locals.get(SHOW_PAREN_LOCAL) as ShowParenData | undefined) ?? null
 }
 
+export function showParenSpans(buffer: BufferModel): TextSpan[] {
+  const data = showParenData(buffer)
+  if (!data) return []
+  const face = data.mismatch ? "show-paren-mismatch" : "show-paren-match"
+  const spans: TextSpan[] = [{ start: data.hereBeg, end: data.hereEnd, face }]
+  if (data.thereBeg != null && data.thereEnd != null) {
+    spans.push({ start: data.thereBeg, end: data.thereEnd, face })
+  }
+  return spans
+}
+
 function refresh(editor: Editor): void {
   const buffer = editor.currentBuffer
   if (!editor.isMinorModeEnabled("show-paren-mode", buffer)) {
@@ -109,6 +122,9 @@ function refresh(editor: Editor): void {
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("show-paren-when-point-inside-paren", "boolean", false,
     "If non-nil, show parens when point is just inside one.")
+  defface("show-paren-match", { bg: "#2e5c78", bold: true }, "Face for a matching paren pair.")
+  defface("show-paren-mismatch", { bg: "#8b2e2e", bold: true }, "Face for a mismatched paren pair.")
+  editor.addOverlaySource(showParenSpans)
 
   ctx.minorMode({
     name: "show-paren-mode",
