@@ -150,6 +150,19 @@ describe("vertico-next-group / vertico-previous-group", () => {
 })
 
 describe("vertico-exit-input", () => {
+  test("RET submits literal file prompt text when there are zero candidates", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    const input = "/ssh:user@192.168.0.29:/"
+    const result = editor.prompt("Find: ", input, undefined, { completion: "file" })
+    await editor.refreshMinibufferCompletions()
+    expect(display(editor)).toContain("*/0")
+
+    await editor.handleKey({ name: "return" })
+    await expect(result).resolves.toBe(input)
+  })
+
   test("M-RET returns the raw input, not the highlighted candidate", async () => {
     const { editor, result } = await open(["alpha", "alphabet"])
     await editor.handleKey({ name: "a", sequence: "a" })

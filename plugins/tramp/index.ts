@@ -1,10 +1,13 @@
 import { dirname as posixDirname, basename as posixBasename, join as posixJoin } from "node:path/posix"
+import { existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join as pathJoin } from "node:path"
 import { Buffer } from "node:buffer"
 import type { Editor } from "../../src/kernel/editor"
 import { BufferModel, type SaveContext } from "../../src/kernel/buffer"
 import { Keymap } from "../../src/kernel/keymap"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
-import { spawnProcess } from "../../src/platform/runtime"
+import { homedir, spawnProcess } from "../../src/platform/runtime"
 import { defineMode } from "../../src/modes/mode"
 import { refreshDiredBuffer, type DiredEntry, type DiredFileOps } from "../../src/modes/dired"
 
@@ -65,6 +68,21 @@ export function formatTrampFileName(file: TrampFileName, localname = file.localn
   const user = file.user ? `${file.user}@` : ""
   const port = file.port ? `#${file.port}` : ""
   return `/${file.method}:${user}${file.host}${port}:${localname}`
+}
+
+export function buildSshArgv(file: TrampFileName, script: string, controlPathDir: string): string[] {
+  const target = `${file.user ? `${file.user}@` : ""}${file.host}`
+  const cmd = [
+    "ssh",
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=10",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=60",
+    "-o", `ControlPath=${pathJoin(controlPathDir, "jemacs-%r@%h-%p")}`,
+  ]
+  if (file.port) cmd.push("-p", String(file.port))
+  cmd.push("--", target, script)
+  return cmd
 }
 
 export class SshRemoteTransport implements RemoteTransport {
@@ -140,10 +158,7 @@ done
   }
 
   protected async ssh(file: TrampFileName, script: string, stdin?: string): Promise<{ stdout: string; stderr: string }> {
-    const target = `${file.user ? `${file.user}@` : ""}${file.host}`
-    const cmd = ["ssh"]
-    if (file.port) cmd.push("-p", String(file.port))
-    cmd.push("--", target, script)
+    const cmd = buildSshArgv(file, script, sshControlPathDirectory())
     const proc = spawnProcess({ cmd, stdin: stdin == null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" })
     if (stdin != null) {
       proc.stdin?.write(stdin)
@@ -154,7 +169,10 @@ done
       readStream(proc.stderr),
       proc.exited,
     ])
-    if (code !== 0) throw new Error(stderr.trim() || `ssh exited ${code}`)
+    if (code !== 0) {
+      const message = stderr.trim() || `ssh exited ${code}`
+      throw new Error(code === 255 ? `ssh failed (is key-based auth set up for this host?): ${message}` : message)
+    }
     return { stdout, stderr }
   }
 }
@@ -209,32 +227,44 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
 async function openTrampFile(editor: Editor, transport: RemoteTransport, file: TrampFileName): Promise<BufferModel> {
   const path = formatTrampFileName(file)
-  const kind = await transport.fileKind(file)
-  if (kind === "directory") return openTrampDirectory(editor, transport, file)
-  const buffer = await visitWithoutLsp(editor, path, async () => {
-    const text = kind === "missing" ? "" : await transport.readFile(file)
-    const b = new BufferModel({ name: posixBasename(file.localname), path, text, kind: "file" })
-    b.minorModes.add("tramp-mode")
-    patchTrampBuffer(b, transport, file)
-    b.markSaved(kind === "missing" ? undefined : await transport.statMtime(file))
-    return b
-  })
-  editor.message(`Opened ${path}`)
-  return buffer
+  try {
+    editor.message(`tramp: connecting to ${file.host ?? "localhost"}...`)
+    const kind = await transport.fileKind(file)
+    if (kind === "directory") return openTrampDirectory(editor, transport, file, false)
+    const buffer = await visitWithoutLsp(editor, path, async () => {
+      const text = kind === "missing" ? "" : await transport.readFile(file)
+      const b = new BufferModel({ name: posixBasename(file.localname), path, text, kind: "file" })
+      b.minorModes.add("tramp-mode")
+      patchTrampBuffer(b, transport, file)
+      b.markSaved(kind === "missing" ? undefined : await transport.statMtime(file))
+      return b
+    })
+    editor.message(`Opened ${path}`)
+    return buffer
+  } catch (error) {
+    // Rethrow so callers (find-file's "Opened ..." message) don't report success;
+    // the command runner surfaces the message exactly once.
+    throw new Error(`tramp: ${errorMessage(error)}`)
+  }
 }
 
-async function openTrampDirectory(editor: Editor, transport: RemoteTransport, file: TrampFileName): Promise<BufferModel> {
+async function openTrampDirectory(editor: Editor, transport: RemoteTransport, file: TrampFileName, announce = true): Promise<BufferModel> {
   const path = formatTrampFileName(file)
-  const buffer = await editor.visitPath(path, async () => {
-    const b = new BufferModel({ name: `${posixBasename(file.localname) || file.localname}/`, path, kind: "directory", mode: "dired" })
-    b.readOnly = true
-    b.minorModes.add("tramp-mode")
-    b.locals.set("dired-file-ops", trampDiredFileOps(transport))
-    await refreshDiredBuffer(b)
-    return b
-  }, "dired")
-  editor.message(`Opened ${path}`)
-  return buffer
+  try {
+    if (announce) editor.message(`tramp: connecting to ${file.host ?? "localhost"}...`)
+    const buffer = await editor.visitPath(path, async () => {
+      const b = new BufferModel({ name: `${posixBasename(file.localname) || file.localname}/`, path, kind: "directory", mode: "dired" })
+      b.readOnly = true
+      b.minorModes.add("tramp-mode")
+      b.locals.set("dired-file-ops", trampDiredFileOps(transport))
+      await refreshDiredBuffer(b)
+      return b
+    }, "dired")
+    editor.message(`Opened ${path}`)
+    return buffer
+  } catch (error) {
+    throw new Error(`tramp: ${errorMessage(error)}`)
+  }
 }
 
 function trampDiredFileOps(transport: RemoteTransport): DiredFileOps {
@@ -341,6 +371,15 @@ function patchTrampBuffer(buffer: BufferModel, transport: RemoteTransport, file:
 
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function sshControlPathDirectory(): string {
+  const sshDir = pathJoin(homedir(), ".ssh")
+  return existsSync(sshDir) ? sshDir : tmpdir()
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<string> {

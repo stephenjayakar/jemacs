@@ -2,7 +2,7 @@ import { test, expect } from "bun:test"
 import { makeEditor } from "./helper"
 import { createPluginContext } from "../../src/runtime/plugin-context"
 import { diredCreateDirectory, diredDoDelete, diredDoRename, diredEntryAtPoint } from "../../src/modes/dired"
-import { install, parseTrampFileName, formatTrampFileName, type RemoteTransport, type TrampFileName } from "../../plugins/tramp"
+import { buildSshArgv, install, parseTrampFileName, formatTrampFileName, type RemoteTransport, type TrampFileName } from "../../plugins/tramp"
 
 class FakeTransport implements RemoteTransport {
   files = new Map<string, { text: string; mtime: number }>()
@@ -178,6 +178,22 @@ test("tramp parser accepts Emacs sudo file names", () => {
   expect(formatTrampFileName(parsed!)).toBe("/sudo::/etc/hosts")
 })
 
+test("buildSshArgv includes noninteractive connection reuse options", () => {
+  const file = parseTrampFileName("/ssh:alice@example.com#2222:/home/alice/app.ts")!
+  expect(buildSshArgv(file, "printf ok", "/home/alice/.ssh")).toEqual([
+    "ssh",
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=10",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=60",
+    "-o", "ControlPath=/home/alice/.ssh/jemacs-%r@%h-%p",
+    "-p", "2222",
+    "--",
+    "alice@example.com",
+    "printf ok",
+  ])
+})
+
 test("find-file opens ssh tramp names as remote file buffers", async () => {
   const editor = makeEditor()
   const transport = new FakeTransport()
@@ -199,6 +215,22 @@ test("find-file opens ssh tramp names as remote file buffers", async () => {
   expect(transport.writes).toEqual(["/ssh:alice@box:/home/alice/app.ts"])
   expect(buffer.dirty).toBe(false)
   expect(await transport.readFile(parseTrampFileName(buffer.path!)!)).toContain("// remote")
+})
+
+test("openTrampFile failure rethrows a tramp-prefixed error after announcing", async () => {
+  const editor = makeEditor()
+  const messages: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) messages.push(text) })
+  const transport = new FakeTransport()
+  transport.fileKind = async () => { throw new Error("ssh failed (is key-based auth set up for this host?): Permission denied (publickey).") }
+  install(editor, createPluginContext(editor), { transport })
+
+  // Rethrown (not swallowed) so find-file's "Opened ..." success message never
+  // prints; the command runner surfaces the message exactly once.
+  await expect(editor.openFile("/ssh:alice@box:/home/alice/app.ts")).rejects.toThrow(
+    "tramp: ssh failed (is key-based auth set up for this host?): Permission denied (publickey).",
+  )
+  expect(messages).toContain("tramp: connecting to box...")
 })
 
 test("remote dired entries visit tramp files through dired-find-file", async () => {
