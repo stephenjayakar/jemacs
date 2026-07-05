@@ -54,6 +54,58 @@ test("redo after new edit clears redo stack", () => {
   expect(b.text).toBe("one three")
 })
 
+test("undo tree records timestamps", () => {
+  const originalNow = Date.now
+  try {
+    Date.now = () => 1000
+    const b = new BufferModel({ name: "x", text: "one" })
+    Date.now = () => 2000
+    b.point = 3
+    b.insert(" two")
+
+    const snapshot = b.undoTreeSnapshot()
+    expect(snapshot.root.at).toBe(1000)
+    expect(snapshot.root.children[0]!.at).toBe(2000)
+    expect(snapshot.current.at).toBe(2000)
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+test("edit after undo creates selected branch but older branch remains reachable", () => {
+  const b = new BufferModel({ name: "x", text: "one" })
+  b.point = 3
+  b.insert(" two")
+  b.undo()
+  b.point = 3
+  b.insert(" three")
+  expect(b.text).toBe("one three")
+
+  b.undo()
+  expect(b.undoBranchCount()).toBe(2)
+  expect(b.undoSetBranch(0, 0)).toBe(true)
+  b.redo()
+  expect(b.text).toBe("one two")
+})
+
+test("undoToNode can jump across undo branches", () => {
+  const b = new BufferModel({ name: "x", text: "one" })
+  b.point = 3
+  b.insert(" two")
+  const branchA = b.seq
+  b.undo()
+  b.point = 3
+  b.insert(" three")
+  const branchB = b.seq
+  expect(b.text).toBe("one three")
+
+  expect(b.undoToNode(branchA)).toBe(true)
+  expect(b.text).toBe("one two")
+
+  expect(b.undoToNode(branchB)).toBe(true)
+  expect(b.text).toBe("one three")
+})
+
 test("undo in read-only buffer is no-op", () => {
   const b = new BufferModel({ name: "x", text: "locked" })
   b.readOnly = true

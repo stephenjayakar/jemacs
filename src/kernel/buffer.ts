@@ -19,7 +19,23 @@ export type SaveContext = {
 }
 
 type Op = { from: number; to: number; removed: string; inserted: string; point: number }
-type UndoNode = { ops: Op[]; parent: UndoNode | null; children: UndoNode[]; seq: number }
+type UndoNode = {
+  ops: Op[]
+  parent: UndoNode | null
+  children: UndoNode[]
+  seq: number
+  at: number
+  activeChild?: number
+}
+
+export type UndoTreeNodeView = {
+  id: number
+  at: number
+  saved: boolean
+  current: boolean
+  activeChild: number
+  children: UndoTreeNodeView[]
+}
 
 export class BufferModel {
   readonly id: string
@@ -48,7 +64,7 @@ export class BufferModel {
    *  (snapshot:false) to keep the pending↔undo-node 1:1 the rebase rewind relies on. */
   onSplice?: (s: Splice, opts: { snapshot?: boolean; markDirty?: boolean }) => void
   private nextSeq = 0
-  private undoRoot: UndoNode = { ops: [], parent: null, children: [], seq: 0 }
+  private undoRoot: UndoNode = { ops: [], parent: null, children: [], seq: 0, at: Date.now() }
   private undoCur: UndoNode = this.undoRoot
   /** Tree node at which text matches disk. */
   private savedNode: UndoNode = this.undoRoot
@@ -328,6 +344,59 @@ export class BufferModel {
   /** Seq of the current undo-tree tip. Monotone over `record()`; root is 0. */
   get seq(): number { return this.undoCur.seq }
 
+  undoTreeSnapshot(): { root: UndoTreeNodeView; current: UndoTreeNodeView } {
+    let current!: UndoTreeNodeView
+    const visit = (node: UndoNode): UndoTreeNodeView => {
+      const view: UndoTreeNodeView = {
+        id: node.seq,
+        at: node.at,
+        saved: node === this.savedNode,
+        current: node === this.undoCur,
+        activeChild: node.activeChild ?? node.children.length - 1,
+        children: node.children.map(visit),
+      }
+      if (node === this.undoCur) current = view
+      return view
+    }
+    const root = visit(this.undoRoot)
+    return { root, current }
+  }
+
+  undoSetBranch(nodeId: number, childIndex: number): boolean {
+    const node = this.findUndoNode(nodeId)
+    if (!node) return false
+    node.activeChild = node.children.length ? clamp(Math.trunc(childIndex), 0, node.children.length - 1) : -1
+    return true
+  }
+
+  undoBranchCount(): number {
+    return this.undoCur.children.length
+  }
+
+  undoToNode(nodeId: number): boolean {
+    const target = this.findUndoNode(nodeId)
+    if (!target) return false
+    if (target === this.undoCur) return true
+
+    const currentPath = this.pathToRoot(this.undoCur)
+    const targetPath = this.pathToRoot(target)
+    let currentIndex = currentPath.length - 1
+    let targetIndex = targetPath.length - 1
+    while (currentIndex >= 0 && targetIndex >= 0 && currentPath[currentIndex] === targetPath[targetIndex]) {
+      currentIndex--
+      targetIndex--
+    }
+
+    for (let i = 0; i <= currentIndex; i++) this.undo()
+    for (let i = targetIndex; i >= 0; i--) {
+      const child = targetPath[i]!
+      const parent = child.parent!
+      parent.activeChild = parent.children.indexOf(child)
+      this.redo()
+    }
+    return true
+  }
+
   /** Walk parent pointers, undoing, until the tip is at `seq`. The target must lie
    *  on the current node's ancestor chain (shadow rebase: baseSeq is the last sync point). */
   rewindTo(seq: number): void {
@@ -359,12 +428,13 @@ export class BufferModel {
     const p = this.undoCur.parent
     if (!p?.parent) return
     this.undoCur.ops = [...p.ops, ...this.undoCur.ops]
+    this.undoCur.at = Math.max(this.undoCur.at, p.at)
     this.undoCur.parent = p.parent
     p.parent.children[p.parent.children.indexOf(p)] = this.undoCur
   }
 
   redo(): void {
-    const child = this.undoCur.children.at(-1)
+    const child = this.undoCur.children[this.undoCur.activeChild ?? this.undoCur.children.length - 1]
     if (!child) return
     for (const op of child.ops) {
       this._splice(op.from, op.from + op.removed.length, op.inserted, { snapshot: false })
@@ -406,9 +476,32 @@ export class BufferModel {
   }
 
   private record(from: number, to: number, removed: string, inserted: string): void {
-    const node: UndoNode = { ops: [{ from, to, removed, inserted, point: this._point }], parent: this.undoCur, children: [], seq: ++this.nextSeq }
+    const node: UndoNode = {
+      ops: [{ from, to, removed, inserted, point: this._point }],
+      parent: this.undoCur,
+      children: [],
+      seq: ++this.nextSeq,
+      at: Date.now(),
+    }
     this.undoCur.children.push(node)
+    this.undoCur.activeChild = this.undoCur.children.length - 1
     this.undoCur = node
+  }
+
+  private findUndoNode(seq: number): UndoNode | undefined {
+    const stack = [this.undoRoot]
+    while (stack.length) {
+      const node = stack.pop()!
+      if (node.seq === seq) return node
+      stack.push(...node.children)
+    }
+    return undefined
+  }
+
+  private pathToRoot(node: UndoNode): UndoNode[] {
+    const path: UndoNode[] = []
+    for (let n: UndoNode | null = node; n; n = n.parent) path.push(n)
+    return path
   }
 }
 
