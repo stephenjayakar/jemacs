@@ -131,7 +131,7 @@ test("markdown-indent-line keeps point before indentation when outdenting whites
   expect(buffer.point).toBe(lineStart)
 })
 
-test("markdown-mode keymap binds RET to jemacs-clear-whitespace-and-newline-and-indent", () => {
+test("markdown-mode keymap binds RET to markdown-enter-key", () => {
   const editor = makeEditor()
   install(editor)
   const buffer = new BufferModel({ name: "doc.md", text: "", mode: "markdown" })
@@ -139,7 +139,9 @@ test("markdown-mode keymap binds RET to jemacs-clear-whitespace-and-newline-and-
   editor.currentBufferId = buffer.id
   const result = editor.keymaps.lookup("return")
   expect(result.status).toBe("matched")
-  expect(result.status === "matched" ? result.command : "").toBe("jemacs-clear-whitespace-and-newline-and-indent")
+  expect(result.status === "matched" ? result.command : "").toBe("markdown-enter-key")
+  expect(editor.keymaps.lookup("enter")).toMatchObject({ status: "matched", command: "markdown-enter-key" })
+  expect(editor.keymaps.lookup("C-m")).toMatchObject({ status: "matched", command: "markdown-enter-key" })
 })
 
 test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
@@ -159,6 +161,7 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("C-c C-s f")).toMatchObject({ status: "matched", command: "markdown-insert-footnote" })
   expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
+  expect(editor.keymaps.lookup("C-c C-d")).toMatchObject({ status: "matched", command: "markdown-do" })
 })
 
 test("markdown-mode keymap binds Emacs export preview and reference commands under C-c C-c", () => {
@@ -173,6 +176,80 @@ test("markdown-mode keymap binds Emacs export preview and reference commands und
   expect(editor.keymaps.lookup("C-c C-c o")).toMatchObject({ status: "matched", command: "markdown-open" })
   expect(editor.keymaps.lookup("C-c C-c c")).toMatchObject({ status: "matched", command: "markdown-check-refs" })
   expect(editor.keymaps.lookup("C-c C-o")).toMatchObject({ status: "matched", command: "markdown-follow-thing-at-point" })
+})
+
+describe("markdown list item parity", () => {
+  test("markdown-insert-list-item reuses unordered markers verbatim", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "* foo", "markdown")
+    buffer.point = buffer.text.indexOf("foo")
+
+    await editor.run("markdown-insert-list-item")
+
+    expect(buffer.text).toBe("* foo\n* ")
+  })
+
+  test("markdown-insert-list-item continues GFM checkboxes unchecked", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- [x] done", "markdown")
+    buffer.point = buffer.text.indexOf("done")
+
+    await editor.run("markdown-insert-list-item")
+
+    expect(buffer.text).toBe("- [x] done\n- [ ] ")
+  })
+
+  test("C-u M-RET dedents the new list item one level", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "    - child", "markdown")
+    buffer.point = buffer.text.indexOf("child")
+
+    await keySeq(editor, "C-u", "M-RET")
+
+    expect(buffer.text).toBe("    - child\n- ")
+  })
+
+  test("markdown-insert-list-item inserts after current line when point is mid-item", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- alpha beta", "markdown")
+    buffer.point = buffer.text.indexOf("alpha") + 2
+
+    await editor.run("markdown-insert-list-item")
+
+    expect(buffer.text).toBe("- alpha beta\n- ")
+  })
+
+  test("RET continues non-empty lists when markdown-indent-on-enter is indent-and-new-item", async () => {
+    const before = getCustom<string>("markdown-indent-on-enter")
+    setCustom("markdown-indent-on-enter", "indent-and-new-item")
+    try {
+      const editor = makeEditor()
+      install(editor)
+      const buffer = editor.scratch("doc.md", "- one", "markdown")
+      buffer.point = buffer.text.indexOf("one")
+
+      await keySeq(editor, "RET")
+
+      expect(buffer.text).toBe("- one\n- ")
+    } finally {
+      setCustom("markdown-indent-on-enter", before ?? "indent")
+    }
+  })
+
+  test("RET on an empty checkbox item removes the marker", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- [ ] \n", "markdown")
+    buffer.point = buffer.text.indexOf("[ ]") + 2
+
+    await keySeq(editor, "RET")
+
+    expect(buffer.text).toBe("\n")
+  })
 })
 
 test("markdown-check-refs finds undefined labels and ignores defined labels", () => {
@@ -318,6 +395,30 @@ describe("markdown-cycle", () => {
     const buffer = editor.scratch("doc.md", "    parent\nchild\n", "markdown")
     buffer.point = buffer.text.indexOf("child")
 
+    await keySeq(editor, "TAB")
+
+    expect(buffer.text).toBe("    parent\n    child\n")
+  })
+
+  test("first TAB on a line already at previous indentation is a no-op", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "    parent\n    child\n", "markdown")
+    buffer.point = buffer.text.indexOf("child")
+
+    await keySeq(editor, "TAB")
+
+    expect(buffer.text).toBe("    parent\n    child\n")
+  })
+
+  test("TAB after moving point does not cycle", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "    parent\n    child\n", "markdown")
+    buffer.point = buffer.text.indexOf("child")
+
+    await keySeq(editor, "TAB")
+    await keySeq(editor, "C-f")
     await keySeq(editor, "TAB")
 
     expect(buffer.text).toBe("    parent\n    child\n")
@@ -526,6 +627,18 @@ describe("markdown promote/demote parity", () => {
     expect(buffer.text).toBe("- one\n    - two\n")
     await editor.run("markdown-promote")
     expect(buffer.text).toBe("- one\n- two\n")
+  })
+
+  test("promotes and demotes list items with child lines", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- one\n    continuation\n    - child\n- two\n", "markdown")
+    buffer.point = buffer.text.indexOf("- one")
+
+    await editor.run("markdown-demote")
+    expect(buffer.text).toBe("    - one\n        continuation\n        - child\n- two\n")
+    await editor.run("markdown-promote-list-item")
+    expect(buffer.text).toBe("- one\n    continuation\n    - child\n- two\n")
   })
 
   test("promotes and demotes heading subtrees", async () => {
@@ -1043,6 +1156,19 @@ describe("markdown reference links", () => {
     const spans = editor.fontLock(buffer)
 
     expect(spans.some(span => String(span.face) === "markdown-link" && span.start === 0)).toBe(true)
+  })
+})
+
+describe("markdown-do", () => {
+  test("toggles checkbox items", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- [ ] todo\n", "markdown")
+    buffer.point = buffer.text.indexOf("todo")
+
+    await editor.run("markdown-do")
+
+    expect(buffer.text).toBe("- [x] todo\n")
   })
 })
 

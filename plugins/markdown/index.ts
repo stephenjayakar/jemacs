@@ -26,6 +26,7 @@ export const MARKDOWN_SUBTREE_STATUS = "markdown-cycle-subtree-status"
 export const MARKDOWN_GLOBAL_STATUS = "markdown-cycle-global-status"
 const MARKDOWN_FILTER_CACHE = "markdown--display-filter-cache"
 const MARKDOWN_LAST_INDENT = "markdown-last-indent-command"
+const MARKDOWN_CYCLE_REPEAT = "markdown-cycle-repeat"
 const MARKDOWN_FILL_COLUMN = "markdown-fill-column"
 const MARKDOWN_VISUAL_FILL = "markdown-visual-fill-column-mode"
 const MARKDOWN_FOOTNOTE_RETURN_POINT = "markdown-footnote-return-point"
@@ -50,6 +51,7 @@ defcustom("markdown-hide-urls", "boolean", false, "Compose link URLs to a single
 defcustom("markdown-hide-markup-in-view-modes", "boolean", true, "Enable hidden markup in markdown-view-mode and gfm-view-mode.")
 defcustom("markdown-command", "string", "markdown", "External Markdown processor used by `markdown-export`.")
 defcustom("markdown-open-command", "string", process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open", "External command used by `markdown-open`.")
+defcustom("markdown-indent-on-enter", "string", "indent", "RET behavior in markdown buffers: `indent` or `indent-and-new-item`.")
 defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries when soft wrapping.")
 
 const MARKDOWN_HIDE_MARKUP = "markdown-hide-markup"
@@ -905,11 +907,20 @@ function cycleGlobalVisibility(editor: Editor, buffer: BufferModel): void {
 }
 
 function trackIndentCommand(buffer: BufferModel, name: string): void {
-  buffer.locals.set(MARKDOWN_LAST_INDENT, name)
+  buffer.locals.set(MARKDOWN_LAST_INDENT, { name, point: buffer.point })
 }
 
 function lastIndentCommand(buffer: BufferModel): string | null {
-  return (buffer.locals.get(MARKDOWN_LAST_INDENT) as string | undefined) ?? null
+  const last = buffer.locals.get(MARKDOWN_LAST_INDENT) as { name: string; point: number } | undefined
+  return last?.name ?? null
+}
+
+// Emacs cycles only when `last-command` was also markdown-cycle; any other
+// command resets it. The kernel has no last-command, so approximate: the
+// previous TAB must have been markdown-cycle AND point must not have moved.
+function repeatedMarkdownCycle(buffer: BufferModel): boolean {
+  const last = buffer.locals.get(MARKDOWN_LAST_INDENT) as { name: string; point: number } | undefined
+  return last?.name === "markdown-cycle" && last.point === buffer.point
 }
 
 export function markdownCalcIndents(text: string, lineStart: number): number[] {
@@ -971,7 +982,7 @@ export function markdownIndentLine(buffer: BufferModel, cycle = false): void {
       if (listMatch) desired = listMatch[0]?.length ?? desired
     }
   }
-  if (cycle || lastIndentCommand(buffer) === "markdown-cycle") {
+  if (cycle || buffer.locals.get(MARKDOWN_CYCLE_REPEAT) === true) {
     const cyclePositions = sortedUniquePositions(positions)
     desired = cyclePositions.find(pos => pos > currentIndent) ?? cyclePositions[0] ?? desired
   }
@@ -1146,9 +1157,9 @@ function markdownToggleCheckbox(buffer: BufferModel, point: number, requireCheck
 }
 
 function bindMarkdownModeMap(keymap: Keymap): void {
-  keymap.bind("return", "jemacs-clear-whitespace-and-newline-and-indent")
-  keymap.bind("enter", "jemacs-clear-whitespace-and-newline-and-indent")
-  keymap.bind("C-m", "jemacs-clear-whitespace-and-newline-and-indent")
+  keymap.bind("return", "markdown-enter-key")
+  keymap.bind("enter", "markdown-enter-key")
+  keymap.bind("C-m", "markdown-enter-key")
   keymap.bind("tab", "markdown-cycle")
   keymap.bind("C-i", "markdown-cycle")
   keymap.bind("S-tab", "markdown-shifttab")
@@ -1157,6 +1168,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c <", "markdown-outdent-region")
   keymap.bind("C-c C-l", "markdown-insert-link")
   keymap.bind("C-c C-k", "markdown-kill-thing-at-point")
+  keymap.bind("C-c C-d", "markdown-do")
   keymap.bind("C-c C-c e", "markdown-export")
   keymap.bind("C-c C-c p", "markdown-preview")
   keymap.bind("C-c C-c o", "markdown-open")
@@ -1231,12 +1243,17 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   editor.command("markdown-enter-key", ({ buffer, editor }) => {
     trackIndentCommand(buffer, "markdown-enter-key")
     const line = buffer.lineBoundsAt()
-    const trimmed = line.text.trim()
-    if (LIST_RE.test(trimmed) && trimmed.replace(LIST_RE, "").trim() === "") {
+    const emptyList = markdownEmptyListItem(line.text)
+    if (emptyList) {
+      const hasLineBreak = line.end < buffer.text.length && buffer.text[line.end] === "\n"
       buffer.replaceRange(line.start, line.end, "")
       buffer.point = line.start
-      buffer.insert("\n")
-      markdownIndentLine(buffer)
+      if (!hasLineBreak) buffer.insert("\n")
+      return
+    }
+    if ((getCustom<string>("markdown-indent-on-enter") ?? "indent") === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
+      insertMarkdownListItem(buffer)
+      editor.message("Inserted list item")
       return
     }
     buffer.insert("\n")
@@ -1298,8 +1315,13 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       return
     }
 
+    buffer.locals.set(MARKDOWN_CYCLE_REPEAT, repeatedMarkdownCycle(buffer))
+    try {
+      await editor.run("indent-for-tab-command")
+    } finally {
+      buffer.locals.delete(MARKDOWN_CYCLE_REPEAT)
+    }
     trackIndentCommand(buffer, "markdown-cycle")
-    await editor.run("indent-for-tab-command")
   }, "Cycle heading visibility, or indent when not on a heading.")
 
   editor.command("markdown-shifttab", ({ editor, buffer }) => {
@@ -1648,8 +1670,8 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message("Inserted blockquote")
   }, "Prefix the current line with a blockquote marker.")
 
-  editor.command("markdown-insert-list-item", ({ buffer, editor }) => {
-    insertMarkdownListItem(buffer)
+  editor.command("markdown-insert-list-item", ({ buffer, editor, prefixArgument }) => {
+    insertMarkdownListItem(buffer, prefixArgument)
     editor.message("Inserted list item")
   }, "Start a new list item on the next line.")
 
@@ -1710,6 +1732,16 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     const result = markdownInTable(buffer) ? markdownTableMoveColumn(buffer, 1) : markdownPromoteOrDemote(buffer, 1)
     editor.message(result.message)
   }, "Demote the heading or list item at point.")
+
+  editor.command("markdown-promote-list-item", ({ buffer, editor }) => {
+    const result = markdownPromoteOrDemoteListItem(buffer, -1)
+    editor.message(result.message)
+  }, "Promote the Markdown list item at point.")
+
+  editor.command("markdown-demote-list-item", ({ buffer, editor }) => {
+    const result = markdownPromoteOrDemoteListItem(buffer, 1)
+    editor.message(result.message)
+  }, "Demote the Markdown list item at point.")
 
   editor.command("markdown-promote-subtree", ({ buffer, editor }) => {
     const result = markdownPromoteOrDemoteSubtree(buffer, -1)
@@ -1784,6 +1816,33 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     markdownOpenExternal(url, deps)
     editor.message(`Followed ${url}`)
   }, "Follow link at point.")
+
+  editor.command("markdown-do", ({ buffer, editor }) => {
+    const checkbox = markdownToggleCheckbox(buffer, buffer.point)
+    if (checkbox.changed) {
+      editor.message(checkbox.message)
+      return
+    }
+    if (markdownInTable(buffer)) {
+      const result = markdownTableAlign(buffer)
+      editor.message(result.message)
+      return
+    }
+    const link = linkAtPoint(buffer.text, buffer.point)
+    if (link) {
+      if (link.kind === "reference") {
+        if (link.definitionStart == null) { editor.message("No reference definition"); return }
+        buffer.point = link.definitionStart
+        editor.message(`Followed [${link.label}]`)
+        return
+      }
+      if (!link.url) { editor.message("No link at point"); return }
+      markdownOpenExternal(link.url, deps)
+      editor.message(`Followed ${link.url}`)
+      return
+    }
+    editor.message("Nothing to do at point")
+  }, "Do what is sensible at point in Markdown.")
 
   editor.command("markdown-next-link", ({ buffer, editor }) => {
     const next = findLink(buffer.text, buffer.point, 1)
@@ -1961,16 +2020,52 @@ function appendBlockSeparator(text: string): string {
   return "\n\n"
 }
 
-function insertMarkdownListItem(buffer: BufferModel): void {
-  const line = buffer.lineBoundsAt()
-  const match = line.text.match(LIST_RE)
-  const indent = match?.[1] ?? ""
-  const ordered = match?.[2]?.match(/^(\d+)([.)])$/)
-  const marker = ordered ? `${Number(ordered[1]) + 1}${ordered[2]} ` : "- "
-  const insertPoint = buffer.point
-  buffer.insert(`\n${indent}${marker}`)
+function markdownListPrefix(lineText: string): { indent: string; marker: string; orderedLine: number | null } | null {
+  const checkbox = /^(\s*)([-*+]|\d+[.)])(\s+)\[[ xX]\]\s*/.exec(lineText)
+  if (checkbox) {
+    return { indent: checkbox[1] ?? "", marker: `${checkbox[2]}${checkbox[3]}[ ] `, orderedLine: null }
+  }
+  const ordered = /^(\s*)(\d+)([.)])(\s+)/.exec(lineText)
   if (ordered) {
-    const insertedLine = buffer.text.slice(0, insertPoint).split("\n").length
+    return {
+      indent: ordered[1] ?? "",
+      marker: `${Number(ordered[2]) + 1}${ordered[3]}${ordered[4]}`,
+      orderedLine: Number(ordered[2]) + 1,
+    }
+  }
+  const unordered = /^(\s*)([-*+])(\s+)/.exec(lineText)
+  if (unordered) return { indent: unordered[1] ?? "", marker: `${unordered[2]}${unordered[3]}`, orderedLine: null }
+  return null
+}
+
+function markdownAdjustedIndent(indent: string, prefixArgument: number | null | undefined): string {
+  if (prefixArgument === 4) return indent.slice(0, Math.max(0, indent.length - TAB_WIDTH))
+  if (prefixArgument === 16) return `${indent}${" ".repeat(TAB_WIDTH)}`
+  return indent
+}
+
+function markdownEmptyListItem(lineText: string): boolean {
+  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/)
+  return !!match && (match[3] ?? "").trim() === ""
+}
+
+function markdownNonEmptyListItem(lineText: string): boolean {
+  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/)
+  return !!match && (match[3] ?? "").trim() !== ""
+}
+
+function insertMarkdownListItem(buffer: BufferModel, prefixArgument?: number | null): void {
+  const line = buffer.lineBoundsAt()
+  const current = markdownListPrefix(line.text)
+  const fallbackIndent = line.text.match(/^\s*/)?.[0] ?? ""
+  const indent = markdownAdjustedIndent(current?.indent ?? fallbackIndent, prefixArgument)
+  const marker = current?.marker ?? "- "
+  const insertPoint = line.text.trim() ? line.end : buffer.point
+  const insertion = line.text.trim() ? `\n${indent}${marker}` : `${indent}${marker}`
+  buffer.replaceRange(insertPoint, insertPoint, insertion)
+  buffer.point = insertPoint + insertion.length
+  if (current?.orderedLine != null) {
+    const insertedLine = buffer.text.slice(0, insertPoint).split("\n").length - (line.text.trim() ? 0 : 1)
     renumberOrderedListContainingLine(buffer, insertedLine, indent.length)
   }
 }
@@ -2526,16 +2621,22 @@ function tableLineStart(table: MarkdownTable, line: number): number {
 }
 
 function markdownPromoteOrDemote(buffer: BufferModel, delta: -1 | 1): MarkdownEditResult {
-  const line = buffer.lineBoundsAt()
-  if (LIST_RE.test(line.text)) {
-    indentRegion(buffer, line.start, line.end, delta > 0 ? TAB_WIDTH : -TAB_WIDTH)
-    buffer.point = line.start
-    return { changed: true, message: delta > 0 ? "Demoted list item" : "Promoted list item" }
+  if (currentMarkdownListItem(buffer.text, buffer.point)) {
+    return markdownPromoteOrDemoteListItem(buffer, delta)
   }
 
   const heading = markdownHeadingAtPointIncludingSetextUnderline(buffer.text, buffer.point)
   if (!heading) return { changed: false, message: "No heading or list item at point" }
   return changeMarkdownHeadingLevel(buffer, heading, delta)
+}
+
+function markdownPromoteOrDemoteListItem(buffer: BufferModel, delta: -1 | 1): MarkdownEditResult {
+  const item = currentMarkdownListItem(buffer.text, buffer.point)
+  if (!item) return { changed: false, message: "No list item at point" }
+  const range = lineRangeTextBounds(buffer, item.line, item.endLine)
+  indentRegion(buffer, range.start, Math.max(range.start, range.end - 1), delta > 0 ? TAB_WIDTH : -TAB_WIDTH)
+  buffer.point = lineStartAt(buffer.text, item.line)
+  return { changed: true, message: delta > 0 ? "Demoted list item" : "Promoted list item" }
 }
 
 function changeMarkdownHeadingLevel(buffer: BufferModel, heading: MarkdownHeading, delta: -1 | 1): MarkdownEditResult {
