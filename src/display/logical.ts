@@ -88,6 +88,7 @@ export type LogicalMinibuffer = {
   text: string
   point: number
   prompt: string
+  mask?: boolean
 }
 
 export type LogicalModel = {
@@ -370,6 +371,7 @@ function logicalMinibuffer(editor: Editor, depth: string): LogicalMinibuffer | n
       prompt: `${depth} ${editor.minibuffer.prompt}`,
       text: editor.activeBuffer.text,
       point: editor.activeBuffer.point,
+      mask: editor.minibuffer.mask,
     }
   }
   if (editor.isearch) {

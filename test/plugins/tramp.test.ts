@@ -178,11 +178,10 @@ test("tramp parser accepts Emacs sudo file names", () => {
   expect(formatTrampFileName(parsed!)).toBe("/sudo::/etc/hosts")
 })
 
-test("buildSshArgv includes noninteractive connection reuse options", () => {
+test("buildSshArgv includes connection reuse options", () => {
   const file = parseTrampFileName("/ssh:alice@example.com#2222:/home/alice/app.ts")!
   expect(buildSshArgv(file, "printf ok", "/home/alice/.ssh")).toEqual([
     "ssh",
-    "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     "-o", "ControlMaster=auto",
     "-o", "ControlPersist=60",

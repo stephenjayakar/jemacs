@@ -383,7 +383,8 @@ function themedCompletions(display: MinibufferCompletionDisplay | null, theme: T
 function themedMinibuffer(logical: LogicalModel, theme: Theme): ThemedText {
   const mb = logical.minibuffer
   if (!mb) return applyTheme(" ", [], theme)
-  const input = textWithCursor(mb.text, mb.point)
+  const text = mb.mask ? mb.text.replace(/[^\n]/g, "•") : mb.text
+  const input = textWithCursor(text, mb.point)
   const minibufferText = mb.prompt + input
   return applyTheme(minibufferText, [
     { start: 0, end: mb.prompt.length, face: "minibufferPrompt" },

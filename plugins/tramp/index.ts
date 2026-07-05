@@ -10,6 +10,7 @@ import { createPluginContext, type PluginContext } from "../../src/runtime/plugi
 import { homedir, spawnProcess } from "../../src/platform/runtime"
 import { defineMode } from "../../src/modes/mode"
 import { refreshDiredBuffer, type DiredEntry, type DiredFileOps } from "../../src/modes/dired"
+import { createAskpassBroker, type AskpassBroker, type AskpassInteraction } from "./askpass"
 
 export type TrampFileName = {
   method: "ssh" | "scp" | "sudo"
@@ -32,6 +33,7 @@ export type RemoteTransport = {
   rename(from: TrampFileName, to: TrampFileName): Promise<void>
   mkdir(file: TrampFileName): Promise<void>
   touch(file: TrampFileName): Promise<void>
+  close?(): Promise<void>
 }
 
 export type TrampOptions = {
@@ -74,7 +76,6 @@ export function buildSshArgv(file: TrampFileName, script: string, controlPathDir
   const target = `${file.user ? `${file.user}@` : ""}${file.host}`
   const cmd = [
     "ssh",
-    "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     "-o", "ControlMaster=auto",
     "-o", "ControlPersist=60",
@@ -85,7 +86,21 @@ export function buildSshArgv(file: TrampFileName, script: string, controlPathDir
   return cmd
 }
 
+export function buildSshEnv(broker: AskpassBroker, baseEnv: Record<string, string | undefined> = process.env): Record<string, string> {
+  const env: Record<string, string> = {
+    SSH_ASKPASS: broker.script,
+    SSH_ASKPASS_REQUIRE: "force",
+    JEMACS_ASKPASS_DIR: broker.dir,
+  }
+  if (!baseEnv.DISPLAY) env.DISPLAY = ":0"
+  return env
+}
+
 export class SshRemoteTransport implements RemoteTransport {
+  private broker: AskpassBroker | null = null
+
+  constructor(private readonly interaction: AskpassInteraction = { ask: async () => null }) {}
+
   async fileKind(file: TrampFileName): Promise<RemoteFileKind> {
     const result = await this.ssh(file, `if [ -d ${shQuote(file.localname)} ]; then printf directory; elif [ -e ${shQuote(file.localname)} ]; then printf file; else printf missing; fi`)
     const kind = result.stdout.trim()
@@ -158,8 +173,9 @@ done
   }
 
   protected async ssh(file: TrampFileName, script: string, stdin?: string): Promise<{ stdout: string; stderr: string }> {
+    const broker = await this.askpassBroker()
     const cmd = buildSshArgv(file, script, sshControlPathDirectory())
-    const proc = spawnProcess({ cmd, stdin: stdin == null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" })
+    const proc = spawnProcess({ cmd, env: buildSshEnv(broker), stdin: stdin == null ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" })
     if (stdin != null) {
       proc.stdin?.write(stdin)
       proc.stdin?.end()
@@ -171,9 +187,19 @@ done
     ])
     if (code !== 0) {
       const message = stderr.trim() || `ssh exited ${code}`
-      throw new Error(code === 255 ? `ssh failed (is key-based auth set up for this host?): ${message}` : message)
+      throw new Error(code === 255 ? `ssh failed: ${message} (an askpass prompt may have been dismissed)` : message)
     }
     return { stdout, stderr }
+  }
+
+  async close(): Promise<void> {
+    await this.broker?.close()
+    this.broker = null
+  }
+
+  private async askpassBroker(): Promise<AskpassBroker> {
+    this.broker ??= await createAskpassBroker(this.interaction)
+    return this.broker
   }
 }
 
@@ -198,7 +224,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   defineMode({ name: "tramp", parent: "text", keymap: new Keymap("tramp-map") })
   ctx.minorMode({ name: "tramp-mode", lighter: " Tramp" })
 
-  const transport = options.transport ?? new SshRemoteTransport()
+  const interaction: AskpassInteraction = {
+    ask: (prompt, promptOptions) => editor.prompt(prompt, "", undefined, promptOptions),
+  }
+  const transport = options.transport ?? new SshRemoteTransport(interaction)
   const sudoTransport = options.transport ?? new SudoRemoteTransport()
   const previousOpenFile = editor.openFile.bind(editor)
   const previousOpenDirectory = editor.openDirectory.bind(editor)
@@ -222,6 +251,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.openFile = previousOpenFile
     editor.openDirectory = previousOpenDirectory
     editor.autoSavePath = previousAutoSavePath
+    if (!options.transport) {
+      void transport.close?.()
+      void sudoTransport.close?.()
+    }
   })
 }
 

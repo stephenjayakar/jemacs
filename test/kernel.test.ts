@@ -1008,9 +1008,16 @@ test("yank-pop does not replace a stale yank after another command", async () =>
   expect(buffer.text).toBe("new")
 
   await editor.run("backward-char")
+  // Emacs 28+: a stale yank is still never replaced, but M-y now falls back
+  // to browsing the kill ring instead of erroring. Cancel the browse.
+  const prompts: string[] = []
+  editor.completingReadFunction = async (_editor, prompt) => {
+    prompts.push(prompt)
+    return null
+  }
   await editor.run("yank-pop")
   expect(buffer.text).toBe("new")
-  expect(messages.at(-1)).toBe("Previous command was not a yank")
+  expect(prompts).toEqual(["Yank from kill-ring: "])
 })
 
 test("downcase-region converts region text and preserves point and mark", async () => {

@@ -62,6 +62,7 @@ type MinibufferRequest = {
   bufferId: string
   historyName?: string
   historyIndex: number | null
+  mask?: boolean
   collection?: string[]
   completion?: "file"
   fileCompletionDirectory?: string
@@ -969,7 +970,7 @@ export class Editor {
     prompt: string,
     initialValue = "",
     historyName?: string,
-    options: { collection?: string[]; completion?: "file"; defaultDirectory?: string } = {},
+    options: { collection?: string[]; completion?: "file"; defaultDirectory?: string; mask?: boolean } = {},
   ): Promise<string | null> {
     const previous = this.minibuffer
     return await new Promise((resolve, reject) => {
@@ -990,6 +991,7 @@ export class Editor {
           bufferId: buffer.id,
           historyName,
           historyIndex: null,
+          mask: options.mask,
           collection: options.collection,
           completion: options.completion,
           fileCompletionDirectory: options.completion === "file"
