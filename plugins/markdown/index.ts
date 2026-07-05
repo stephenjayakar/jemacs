@@ -913,28 +913,28 @@ function lastIndentCommand(buffer: BufferModel): string | null {
 }
 
 export function markdownCalcIndents(text: string, lineStart: number): number[] {
-  const positions = new Set<number>([0])
+  const positions: number[] = []
   const prev = previousLineStart(text, lineStart)
   const prevIndent = prev == null ? 0 : lineIndent(text, prev)
-  positions.add(prevIndent)
-  positions.add(prevIndent + TAB_WIDTH)
-  if (prevIndent >= TAB_WIDTH) positions.add(prevIndent - TAB_WIDTH)
+  positions.push(prevIndent)
 
   if (prev != null) {
     const prevLine = text.slice(prev, lineEnd(text, prev))
     const listMatch = prevLine.match(LIST_RE)
     if (listMatch) {
       const markerEnd = prev + (listMatch[0]?.length ?? 0)
-      positions.add(markerEnd - prev)
+      positions.push(markerEnd - prev)
     }
   }
 
   const line = text.slice(lineStart, lineEnd(text, lineStart))
   if (BLOCKQUOTE_RE.test(line)) {
     const match = line.match(BLOCKQUOTE_RE)
-    if (match) positions.add((match[1]?.length ?? 0) + 2)
+    if (match) positions.push((match[1]?.length ?? 0) + 2)
   }
-  if (FENCED_CODE_RE.test(line.trim())) positions.add(prevIndent + TAB_WIDTH)
+  if (FENCED_CODE_RE.test(line.trim())) positions.push(prevIndent + TAB_WIDTH)
+  positions.push(prevIndent + TAB_WIDTH)
+  if (prevIndent > TAB_WIDTH) positions.push(prevIndent - TAB_WIDTH)
 
   let cursor = lineStart
   while (cursor > 0) {
@@ -942,12 +942,17 @@ export function markdownCalcIndents(text: string, lineStart: number): number[] {
     if (start == null) break
     const body = text.slice(start, lineEnd(text, start))
     const list = body.match(LIST_RE)
-    if (list) positions.add(lineIndent(text, start))
+    if (list) positions.push(lineIndent(text, start))
     if (ATX_HEADER_RE.test(body.trim())) break
     cursor = start
   }
 
-  return [...positions].sort((a, b) => a - b)
+  positions.push(0)
+  return positions
+}
+
+function sortedUniquePositions(positions: number[]): number[] {
+  return [...new Set(positions)].sort((a, b) => a - b)
 }
 
 export function markdownIndentLine(buffer: BufferModel, cycle = false): void {
@@ -955,7 +960,7 @@ export function markdownIndentLine(buffer: BufferModel, cycle = false): void {
   const positions = markdownCalcIndents(buffer.text, line.start)
   const content = line.text.replace(/^\s*/, "")
   const currentIndent = line.text.length - content.length
-  const column = buffer.point - line.start
+  const oldPoint = buffer.point
 
   let desired = positions[0] ?? 0
   if (content.length === 0) {
@@ -967,26 +972,26 @@ export function markdownIndentLine(buffer: BufferModel, cycle = false): void {
     }
   }
   if (cycle || lastIndentCommand(buffer) === "markdown-cycle") {
-    const idx = positions.indexOf(currentIndent)
-    desired = positions[(idx + 1) % positions.length] ?? desired
+    const cyclePositions = sortedUniquePositions(positions)
+    desired = cyclePositions.find(pos => pos > currentIndent) ?? cyclePositions[0] ?? desired
   }
 
   buffer.replaceRange(line.start, line.end, " ".repeat(desired) + content)
-  buffer.point = line.start + Math.max(desired, column + (desired - currentIndent))
+  buffer.point = Math.max(oldPoint + desired - currentIndent, line.start)
 }
 
 function markdownOutdentLine(buffer: BufferModel): void {
   const line = buffer.lineBoundsAt()
-  const positions = markdownCalcIndents(buffer.text, line.start).sort((a, b) => a - b)
+  const positions = sortedUniquePositions(markdownCalcIndents(buffer.text, line.start))
   const content = line.text.replace(/^\s*/, "")
   const currentIndent = line.text.length - content.length
-  const column = buffer.point - line.start
+  const oldPoint = buffer.point
   let desired = 0
   for (const pos of positions) {
     if (pos < currentIndent) desired = pos
   }
   buffer.replaceRange(line.start, line.end, " ".repeat(desired) + content)
-  buffer.point = line.start + Math.max(desired, column + (desired - currentIndent))
+  buffer.point = Math.max(oldPoint + desired - currentIndent, line.start)
 }
 
 function markdownHeaderFace(level: number): FaceName {
@@ -1293,6 +1298,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       return
     }
 
+    trackIndentCommand(buffer, "markdown-cycle")
     await editor.run("indent-for-tab-command")
   }, "Cycle heading visibility, or indent when not on a heading.")
 

@@ -112,6 +112,25 @@ test("markdownCalcIndents includes previous line indent", () => {
   expect(indents).toContain(4)
 })
 
+test("markdownCalcIndents keeps previous line indent as the default candidate", () => {
+  const text = "    parent\nchild\n"
+  const lineStart = text.indexOf("child")
+  expect(markdownCalcIndents(text, lineStart)[0]).toBe(4)
+})
+
+test("markdown-indent-line keeps point before indentation when outdenting whitespace", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "    parent\n        \n", "markdown")
+  const lineStart = buffer.text.indexOf("        ")
+  buffer.point = lineStart
+
+  await editor.run("markdown-outdent-or-delete")
+
+  expect(buffer.text).toBe("    parent\n    \n")
+  expect(buffer.point).toBe(lineStart)
+})
+
 test("markdown-mode keymap binds RET to jemacs-clear-whitespace-and-newline-and-indent", () => {
   const editor = makeEditor()
   install(editor)
@@ -274,6 +293,36 @@ test("markdown-mode onEnter applies proportional default face remap", () => {
 })
 
 describe("markdown-cycle", () => {
+  test("TAB cycles through sorted unique indent positions on plain lines", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "    parent\nchild\n", "markdown")
+    buffer.point = buffer.text.indexOf("child")
+
+    await keySeq(editor, "TAB")
+    expect(buffer.text).toBe("    parent\n    child\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("child"))
+
+    await keySeq(editor, "TAB")
+    expect(buffer.text).toBe("    parent\n        child\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("child"))
+
+    await keySeq(editor, "TAB")
+    expect(buffer.text).toBe("    parent\nchild\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("child"))
+  })
+
+  test("first TAB on a plain child line defaults to previous line indentation", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "    parent\nchild\n", "markdown")
+    buffer.point = buffer.text.indexOf("child")
+
+    await keySeq(editor, "TAB")
+
+    expect(buffer.text).toBe("    parent\n    child\n")
+  })
+
   test("TAB on heading folds subtree instead of indenting", async () => {
     const editor = makeEditor()
     install(editor)
