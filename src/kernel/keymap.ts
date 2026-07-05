@@ -167,9 +167,6 @@ export function normalizeToken(token: string): string {
 }
 
 export function keyToken(key: KeyEventLike): string {
-  const macOptionMeta = macOptionMetaKey(canonicalizeKeyEvent(key))
-  if (macOptionMeta) return `M-${macOptionMeta}`
-
   // OpenTUI delivers ESC-prefixed punctuation as {name:"", sequence:"\x1b<char>", meta:false}.
   if (key.name === "" && key.sequence?.length === 2 && key.sequence[0] === "\x1b") {
     return keyToken({ ...key, name: key.sequence[1]!, sequence: key.sequence[1], meta: true })
@@ -188,7 +185,7 @@ export function keyToken(key: KeyEventLike): string {
 }
 
 export function isMetaKey(key: KeyEventLike): boolean {
-  return key.meta === true || macOptionMetaKey(key) != null
+  return key.meta === true
 }
 
 export function isPrintable(key: KeyEventLike): boolean {
@@ -277,25 +274,5 @@ export function canonicalizeKeyEvent(key: KeyEventLike): KeyEventLike {
     name,
     ctrl: ctrl || undefined,
     shift: shift || undefined,
-  }
-}
-
-function macOptionMetaKey(key: KeyEventLike): string | null {
-  const value = key.sequence ?? key.name
-  switch (value) {
-    case "∫":
-      return "b"
-    case "ƒ":
-      return "f"
-    case "≈":
-      return "x"
-    case "≥":
-      return "."
-    case "≤":
-      return ","
-    case "√":
-      return "v"
-    default:
-      return null
   }
 }

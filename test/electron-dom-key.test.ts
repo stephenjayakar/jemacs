@@ -47,8 +47,11 @@ test("mac Option+v uses physical KeyV despite √ in event.key", () => {
   expect(keyToken(key)).toBe("M-v")
 })
 
-test("macOptionMeta maps √ for terminal-style payloads", () => {
-  expect(keyToken({ name: "√", sequence: "√" })).toBe("M-v")
+test("raw composed glyphs stay literal in the kernel; hosts translate them", () => {
+  // The old kernel-level mac-Option shim is gone: the DOM host uses the
+  // physical key code and the terminal host uses the Option table in
+  // src/ui/opentui-key.ts, so a bare glyph reaching keyToken is just itself.
+  expect(keyToken({ name: "√", sequence: "√" })).toBe("√")
 })
 
 test("GUI special keys carry terminal bytes, not DOM key names", () => {

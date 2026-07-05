@@ -74,14 +74,11 @@ test("key descriptions use Emacs spellings", () => {
   expect(emacsKeyDescription("C-x C-f")).toBe("C-x C-f")
 })
 
-test("mac option key sequences map to meta bindings", () => {
-  expect(keyToken({ name: "≈", sequence: "≈" })).toBe("M-x")
-  expect(keyToken({ name: "ƒ", sequence: "ƒ" })).toBe("M-f")
-  expect(keyToken({ name: "∫", sequence: "∫" })).toBe("M-b")
-  expect(keyToken({ name: "≥", sequence: "≥" })).toBe("M-.")
-  expect(keyToken({ name: "≤", sequence: "≤" })).toBe("M-,")
-  expect(isPrintable({ name: "≈", sequence: "≈" })).toBe(false)
-  expect(isPrintable({ name: "≥", sequence: "≥" })).toBe(false)
+test("literal mac option glyphs are printable outside the OpenTUI decoder", () => {
+  expect(keyToken({ name: "≈", sequence: "≈" })).toBe("≈")
+  expect(keyToken({ name: "ƒ", sequence: "ƒ" })).toBe("ƒ")
+  expect(isPrintable({ name: "≈", sequence: "≈" })).toBe(true)
+  expect(isPrintable({ name: "≥", sequence: "≥" })).toBe(true)
 })
 
 test("visible text cursor does not shift the character under point", () => {
@@ -248,7 +245,10 @@ test("default emacs keybindings are registered and runnable", async () => {
 
   expect(editor.keymaps.feed({ name: "x", ctrl: true }).status).toBe("pending")
   expect(editor.keymaps.feed({ name: "c", ctrl: true })).toMatchObject({ status: "matched", command: "save-buffers-kill-terminal" })
-  expect(editor.keymaps.feed({ name: "≈", sequence: "≈" })).toMatchObject({ status: "matched", command: "execute-extended-command" })
+  // Option-composed chars are translated in the terminal host layer now
+  // (keyEventFromOpentui), so a raw ≈ reaching the kernel stays literal.
+  expect(editor.keymaps.feed({ name: "≈", sequence: "≈" }).status).toBe("unmatched")
+  expect(editor.keymaps.feed({ name: "x", meta: true })).toMatchObject({ status: "matched", command: "execute-extended-command" })
   expect(editor.keymaps.feed({ name: "escape" }).status).toBe("pending")
   expect(editor.keymaps.feed({ name: "x" })).toMatchObject({ status: "matched", command: "execute-extended-command" })
 })
