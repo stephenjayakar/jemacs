@@ -242,3 +242,32 @@ test("shell-command-on-region can replace the region with command output", async
   await editor.run("shell-command-on-region", ["tr a-z A-Z"])
   expect(buffer.text).toBe("ABC\nkeep")
 })
+
+test("M-y outside a yank sequence browses the kill ring (Emacs 28 behavior)", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const buffer = editor.currentBuffer
+  for (const w of ["alpha", "beta"]) {
+    buffer.setText(w, false)
+    buffer.point = 0
+    buffer.setMark()
+    buffer.point = w.length
+    await editor.run("kill-region")
+  }
+  buffer.setText("", false)
+  buffer.point = 0
+
+  const reads: string[] = []
+  editor.completingReadFunction = async (_editor, prompt, options) => {
+    reads.push(prompt)
+    return ((options.collection ?? []) as string[])[1] ?? null
+  }
+
+  await editor.run("yank-pop")
+  expect(reads).toEqual(["Yank from kill-ring: "])
+  expect(buffer.text).toBe("alpha")
+
+  // Immediately after, M-y cycles as usual.
+  await editor.run("yank-pop")
+  expect(buffer.text).toBe("beta")
+})

@@ -519,13 +519,40 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     recordYank(buffer, text)
   }, "Insert the clipboard contents, or the last stretch of killed text.")
 
-  editor.command("yank-pop", ({ buffer, editor, prefixArgument }) => {
+  // Emacs 28+: M-y outside a yank sequence browses the kill ring instead of
+  // erroring, so yank-pop falls back to yank-from-kill-ring.
+  const yankFromKillRing = async (buffer: BufferModel): Promise<void> => {
+    if (!killRing.length) {
+      editor.message("Kill ring is empty")
+      return
+    }
+    const seen = new Set<string>()
+    const candidates: string[] = []
+    for (const text of killRing) {
+      const label = text.replace(/\s+/g, " ").trim() || JSON.stringify(text)
+      if (!seen.has(label)) { seen.add(label); candidates.push(label) }
+    }
+    const choice = await editor.completingRead("Yank from kill-ring: ", {
+      collection: candidates,
+      history: "yank-from-kill-ring",
+    })
+    if (!choice) return
+    const text = killRing.find(item => (item.replace(/\s+/g, " ").trim() || JSON.stringify(item)) === choice) ?? choice
+    buffer.insert(text)
+    recordYank(buffer, text, killRing.indexOf(text) >= 0 ? killRing.indexOf(text) : 0)
+  }
+
+  editor.command("yank-from-kill-ring", async ({ buffer }) => {
+    await yankFromKillRing(buffer)
+  }, "Select a kill-ring entry with completion and insert it at point.")
+
+  editor.command("yank-pop", async ({ buffer, editor, prefixArgument }) => {
     if (!yankPop(buffer, prefixArgument ?? 1)) {
-      editor.message("Previous command was not a yank")
+      await yankFromKillRing(buffer)
       return
     }
     editor.message("Yank pop")
-  }, "Replace the last yank with the next item on the kill ring.")
+  }, "Replace the last yank with the next kill; outside a yank, browse the kill ring.")
 
   editor.command("kill-rectangle", ({ buffer, editor }) => {
     if (buffer.mark == null) {
