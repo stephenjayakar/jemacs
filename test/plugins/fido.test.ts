@@ -164,3 +164,26 @@ describe("file completion", () => {
     await expect(result).resolves.toBe(join(dir, "top.txt"))
   })
 })
+
+test("literal '/' inserts when the path tail is empty (tramp '//' restart)", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const result = editor.completingRead("Find file: ", { completion: "file", initialValue: "/tmp/" })
+  await new Promise(r => setTimeout(r, 0))
+  await editor.run("icomplete-fido-slash")
+  // The minibuffer applies the '//' restart live, like Emacs C-x C-f.
+  expect(editor.minibufferInput()).toBe("/")
+  editor.minibufferCancel()
+  await result
+})
+
+test("RET on a file prompt with no match submits the literal input", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const result = editor.completingRead("Find file: ", { completion: "file", initialValue: "/tmp/" })
+  await new Promise(r => setTimeout(r, 0))
+  for (const ch of "/ssh:box:/etc") await editor.run("self-insert-command", [ch])
+  await editor.run("icomplete-fido-ret")
+  // The leading '/' restarted the input, so the tramp path survives intact.
+  expect(await result).toBe("/ssh:box:/etc")
+})

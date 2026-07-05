@@ -116,7 +116,9 @@ async function fidoRet(editor: Editor): Promise<void> {
   const state = fidoState(editor)
   const choice = state.candidates[state.selected]
   if (choice == null) {
-    const completing = editor.minibuffer.completion === "file" || (editor.minibuffer.collection?.length ?? 0) > 0
+    // File prompts must accept nonexistent input (new files, /ssh: remote
+    // paths) like Emacs C-x C-f; only require a match for real collections.
+    const completing = editor.minibuffer.completion !== "file" && (editor.minibuffer.collection?.length ?? 0) > 0
     if (completing) {
       editor.message("[No match]")
       return
@@ -138,7 +140,11 @@ async function fidoSlash(editor: Editor): Promise<void> {
   }
   const state = fidoState(editor)
   const choice = state.candidates[state.selected]
-  if (editor.minibuffer?.completion === "file" && choice?.endsWith("/")) {
+  const input = editor.minibufferInput()
+  const tail = input.slice(input.lastIndexOf("/") + 1)
+  // Only descend when the user typed a partial name; with an empty tail a
+  // literal '/' must insert so '//' (restart at root, tramp paths) works.
+  if (tail && editor.minibuffer?.completion === "file" && choice?.endsWith("/")) {
     await fidoDescend(editor, choice)
     return
   }
