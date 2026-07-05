@@ -1,4 +1,7 @@
-import { BufferModel, type UndoTreeNodeView } from "../../src/kernel/buffer"
+import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { dirname, join, resolve } from "node:path"
+import { BufferModel, type SerializedUndoTree, type UndoTreeNodeView } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
 import { Keymap } from "../../src/kernel/keymap"
 import { defineMode, type FaceName, type TextSpan } from "../../src/modes/mode"
@@ -36,6 +39,10 @@ const FACE_ACTIVE = "undo-tree-visualizer-active-branch-face" as FaceName
 
 defcustom("undo-tree-visualizer-timestamps", "boolean", false,
   "When non-nil, undo-tree visualizer nodes display timestamps.")
+defcustom("undo-tree-auto-save-history", "boolean", true,
+  "When non-nil, save undo-tree history for file buffers after saving.")
+defcustom("undo-tree-history-directory", "string", join(homedir(), ".jemacs", "undo-tree-history"),
+  "Directory where undo-tree history files are stored.")
 
 defface("undo-tree-visualizer-default-face", { inherit: ["default"] }, "Face for undo-tree visualizer nodes.")
 defface("undo-tree-visualizer-current-face", { fg: "#ff5f5f", bold: true }, "Face for the current undo-tree node.")
@@ -285,6 +292,40 @@ function switchBranch(parent: BufferModel, delta: number): boolean {
   return true
 }
 
+function undoTreeEnabled(editor: Editor, buffer: BufferModel): boolean {
+  return buffer.minorModes.has("undo-tree-mode") || editor.isMinorModeEnabled("global-undo-tree-mode", buffer)
+}
+
+function historyDirectory(): string {
+  return getCustom<string>("undo-tree-history-directory") ?? join(homedir(), ".jemacs", "undo-tree-history")
+}
+
+function historyPath(buffer: BufferModel): string | null {
+  if (buffer.kind !== "file" || !buffer.path) return null
+  return join(historyDirectory(), resolve(buffer.path).replaceAll("/", "!") + ".json")
+}
+
+function historyEligible(editor: Editor, buffer: BufferModel): string | null {
+  if (!undoTreeEnabled(editor, buffer)) return null
+  return historyPath(buffer)
+}
+
+async function saveHistory(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const file = historyEligible(editor, buffer)
+  if (!file) return false
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, JSON.stringify(buffer.undoTreeSerialize()), "utf8")
+  return true
+}
+
+async function loadHistory(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const file = historyEligible(editor, buffer)
+  if (!file) return false
+  await access(file)
+  const parsed = JSON.parse(await readFile(file, "utf8")) as unknown
+  return buffer.undoTreeRestore(parsed as SerializedUndoTree)
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const undoTreeMap = new Keymap("undo-tree-mode-map")
   undoTreeMap.bind("C-/", "undo-tree-undo")
@@ -317,6 +358,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   visualizerMap.bind("t", "undo-tree-visualizer-toggle-timestamps")
   visualizerMap.bind("d", "undo-tree-visualizer-toggle-diff")
   defineMode({ name: "undo-tree-visualizer-mode", parent: "text", keymap: visualizerMap, fontLock: undoTreeFontLock })
+
+  ctx.hook("after-save-hook", async ({ editor: ed, buffer }) => {
+    if (!(getCustom<boolean>("undo-tree-auto-save-history") ?? true)) return
+    try { await saveHistory(ed, buffer) } catch { /* history persistence must not break save */ }
+  })
+
+  ctx.hook("find-file-hook", async ({ editor: ed, buffer }) => {
+    if (ed.globalMinorModes.has("global-undo-tree-mode")) buffer.minorModes.add("undo-tree-mode")
+    if (!(getCustom<boolean>("undo-tree-auto-save-history") ?? true)) return
+    try { await loadHistory(ed, buffer) } catch { /* stale or invalid history is ignored */ }
+  })
 
   ctx.command("undo-tree-mode", ({ editor, buffer, prefixArgument }) => {
     if (prefixArgument != null && prefixArgument <= 0) editor.disableMinorMode("undo-tree-mode", { buffer })
@@ -358,6 +410,24 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     buffer.undoSetBranch(node.id, branch)
     editor.message(`Using branch ${branch} of ${count}`)
   }, "Switch the active redo branch at the current undo-tree node.")
+
+  ctx.command("undo-tree-save-history", async ({ editor, buffer }) => {
+    try {
+      if (await saveHistory(editor, buffer)) editor.message("Wrote undo-tree history")
+      else editor.message("No undo-tree history file for this buffer")
+    } catch {
+      editor.message("Could not write undo-tree history")
+    }
+  }, "Save undo-tree history for the current buffer.")
+
+  ctx.command("undo-tree-load-history", async ({ editor, buffer }) => {
+    try {
+      if (await loadHistory(editor, buffer)) editor.message("Loaded undo-tree history")
+      else editor.message("No matching undo-tree history")
+    } catch {
+      editor.message("No matching undo-tree history")
+    }
+  }, "Load undo-tree history for the current buffer.")
 
   ctx.command("undo-tree-visualize", ({ editor, buffer }) => {
     const name = visualizerName(buffer)

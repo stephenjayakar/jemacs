@@ -18,7 +18,8 @@ export type SaveContext = {
   backupDirectoryAlist?: BackupDirectoryAlist
 }
 
-type Op = { from: number; to: number; removed: string; inserted: string; point: number }
+export type UndoOp = { from: number; to: number; removed: string; inserted: string; point: number }
+type Op = UndoOp
 type UndoNode = {
   ops: Op[]
   parent: UndoNode | null
@@ -26,6 +27,14 @@ type UndoNode = {
   seq: number
   at: number
   activeChild?: number
+}
+
+export type SerializedUndoTree = {
+  version: 1
+  textHash: string
+  nodes: Array<{ id: number; parentId: number | null; ops: UndoOp[]; at: number; activeChild?: number }>
+  currentId: number
+  nextSeq: number
 }
 
 export type UndoTreeNodeView = {
@@ -362,6 +371,83 @@ export class BufferModel {
     return { root, current }
   }
 
+  undoTreeSerialize(): SerializedUndoTree {
+    const nodes: SerializedUndoTree["nodes"] = []
+    const visit = (node: UndoNode): void => {
+      nodes.push({
+        id: node.seq,
+        parentId: node.parent?.seq ?? null,
+        ops: node.ops.map(op => ({ ...op })),
+        at: node.at,
+        ...(node.activeChild === undefined ? {} : { activeChild: node.activeChild }),
+      })
+      for (const child of node.children) visit(child)
+    }
+    visit(this.undoRoot)
+    return {
+      version: 1,
+      textHash: textHash(this._text),
+      nodes,
+      currentId: this.undoCur.seq,
+      nextSeq: this.nextSeq,
+    }
+  }
+
+  undoTreeRestore(data: SerializedUndoTree): boolean {
+    if (this.link || !isSerializedUndoTree(data)) return false
+    if (data.version !== 1 || data.textHash !== textHash(this._text)) return false
+
+    const roots = data.nodes.filter(node => node.parentId === null)
+    if (roots.length !== 1 || roots[0]!.id !== 0) return false
+    if (data.nextSeq < Math.max(...data.nodes.map(node => node.id))) return false
+
+    const byId = new Map<number, UndoNode>()
+    for (const raw of data.nodes) {
+      if (byId.has(raw.id)) return false
+      byId.set(raw.id, {
+        ops: raw.ops.map(op => ({ ...op })),
+        parent: null,
+        children: [],
+        seq: raw.id,
+        at: raw.at,
+        ...(raw.activeChild === undefined ? {} : { activeChild: raw.activeChild }),
+      })
+    }
+
+    for (const raw of data.nodes) {
+      const node = byId.get(raw.id)!
+      if (raw.parentId === null) continue
+      const parent = byId.get(raw.parentId)
+      if (!parent) return false
+      node.parent = parent
+      parent.children.push(node)
+    }
+
+    const root = byId.get(0)
+    const current = byId.get(data.currentId)
+    if (!root || !current) return false
+    for (const node of byId.values()) {
+      if (node.activeChild === undefined) continue
+      if (node.children.length === 0 ? node.activeChild !== -1 : node.activeChild < 0 || node.activeChild >= node.children.length) return false
+    }
+    const reachable = new Set<UndoNode>()
+    const stack = [root]
+    while (stack.length) {
+      const node = stack.pop()!
+      if (reachable.has(node)) return false
+      reachable.add(node)
+      stack.push(...node.children)
+    }
+    if (reachable.size !== byId.size) return false
+
+    this.undoRoot = root
+    this.undoCur = current
+    this.nextSeq = data.nextSeq
+    this.savedNode = current
+    this.dirty = false
+    return true
+  }
+
   undoSetBranch(nodeId: number, childIndex: number): boolean {
     const node = this.findUndoNode(nodeId)
     if (!node) return false
@@ -544,6 +630,40 @@ function isShellScriptPath(path: string): boolean {
 function isShellShebang(text: string): boolean {
   const firstLine = text.slice(0, text.indexOf("\n") === -1 ? undefined : text.indexOf("\n"))
   return /^#!\s*(?:\/usr\/bin\/env\s+(?:-\S+\s+)*|\/(?:usr\/)?bin\/)(?:ba|z|k)?sh(?:\s|$)/.test(firstLine)
+}
+
+function textHash(text: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, "0")
+}
+
+function isSerializedUndoTree(data: unknown): data is SerializedUndoTree {
+  if (!data || typeof data !== "object") return false
+  const t = data as SerializedUndoTree
+  if (t.version !== 1 || typeof t.textHash !== "string" || !Array.isArray(t.nodes)) return false
+  if (!isNonnegativeInteger(t.currentId) || !isNonnegativeInteger(t.nextSeq)) return false
+  for (const node of t.nodes) {
+    if (!node || typeof node !== "object") return false
+    const n = node as SerializedUndoTree["nodes"][number]
+    if (!isNonnegativeInteger(n.id) || (n.parentId !== null && !isNonnegativeInteger(n.parentId))) return false
+    if (!Array.isArray(n.ops) || typeof n.at !== "number") return false
+    if (n.activeChild !== undefined && !Number.isInteger(n.activeChild)) return false
+    for (const op of n.ops) {
+      if (!op || typeof op !== "object") return false
+      const o = op as UndoOp
+      if (![o.from, o.to, o.point].every(isNonnegativeInteger)) return false
+      if (typeof o.removed !== "string" || typeof o.inserted !== "string") return false
+    }
+  }
+  return true
+}
+
+function isNonnegativeInteger(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n >= 0
 }
 
 function clamp(n: number, min: number, max: number): number {

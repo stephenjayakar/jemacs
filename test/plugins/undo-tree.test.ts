@@ -1,6 +1,10 @@
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { install } from "../../plugins/undo-tree"
 import type { Editor } from "../../src/kernel/editor"
+import { resetCustom, setCustom } from "../../src/runtime/custom"
 import { makeEditor } from "./helper"
 
 function messages(editor: Editor): string[] {
@@ -22,6 +26,10 @@ function visualizer(editor: Editor) {
   const buf = [...editor.buffers.values()].find(b => b.name.startsWith("*undo-tree: "))
   if (!buf) throw new Error("missing undo-tree visualizer")
   return buf
+}
+
+function historyFile(dir: string, path: string): string {
+  return join(dir, resolve(path).replaceAll("/", "!") + ".json")
 }
 
 describe("undo-tree plugin", () => {
@@ -182,5 +190,57 @@ describe("undo-tree plugin", () => {
     expect(diff!.mode).toBe("diff-mode")
     expect(diff!.text).toContain("-old")
     expect(diff!.text).toContain("+new")
+  })
+
+  test("global-undo-tree-mode applies to files visited after enabling", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-undo-tree-"))
+    try {
+      const path = join(dir, "late.txt")
+      await writeFile(path, "hi", "utf8")
+      const editor = makeEditor()
+      install(editor)
+      editor.enableMinorMode("global-undo-tree-mode")
+      const buffer = await editor.openFile(path)
+      expect(buffer.minorModes.has("undo-tree-mode")).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("saves and reloads undo-tree history for file buffers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jemacs-undo-tree-"))
+    try {
+      setCustom("undo-tree-history-directory", dir)
+
+      const path = join(dir, "note.txt")
+      await writeFile(path, "one", "utf8")
+      const editor = makeEditor()
+      install(editor)
+      editor.enableMinorMode("global-undo-tree-mode")
+      const buffer = await editor.openFile(path)
+      buffer.point = 3
+      buffer.insert(" two")
+      const abandoned = buffer.seq
+      buffer.undo()
+      buffer.point = 3
+      buffer.insert(" three")
+      const current = buffer.seq
+
+      await buffer.save({ runHook: (name, b) => editor.runHook(name, b) })
+      await expect(access(historyFile(dir, path))).resolves.toBeNull()
+      expect(JSON.parse(await readFile(historyFile(dir, path), "utf8")).currentId).toBe(current)
+
+      const fresh = makeEditor()
+      install(fresh)
+      fresh.enableMinorMode("global-undo-tree-mode")
+      const restored = await fresh.openFile(path)
+
+      expect(restored.undoTreeSnapshot().current.id).toBe(current)
+      expect(restored.undoToNode(abandoned)).toBe(true)
+      expect(restored.text).toBe("one two")
+    } finally {
+      resetCustom("undo-tree-history-directory")
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BufferModel } from "../src/kernel/buffer"
+import { BufferModel, type SerializedUndoTree } from "../src/kernel/buffer"
 
 type ChangeEvent = { start: number; end: number; text: string }
 
@@ -104,6 +104,53 @@ test("undoToNode can jump across undo branches", () => {
 
   expect(b.undoToNode(branchB)).toBe(true)
   expect(b.text).toBe("one three")
+})
+
+test("undo tree serialization round-trips branches", () => {
+  const b = new BufferModel({ name: "x", text: "one" })
+  b.point = 3
+  b.insert(" two")
+  const abandoned = b.seq
+  b.undo()
+  b.point = 3
+  b.insert(" three")
+  const current = b.seq
+  b.markSaved()
+
+  const serialized = b.undoTreeSerialize()
+  const restored = new BufferModel({ name: "x", text: b.text })
+  expect(restored.undoTreeRestore(serialized)).toBe(true)
+  expect(restored.undoTreeSnapshot()).toEqual(b.undoTreeSnapshot())
+  expect(restored.dirty).toBe(false)
+
+  restored.undo()
+  expect(restored.text).toBe("one")
+  expect(restored.undoBranchCount()).toBe(2)
+  expect(restored.undoSetBranch(0, 0)).toBe(true)
+  restored.redo()
+  expect(restored.text).toBe("one two")
+
+  expect(restored.undoToNode(current)).toBe(true)
+  expect(restored.text).toBe("one three")
+  expect(restored.undoToNode(abandoned)).toBe(true)
+  expect(restored.text).toBe("one two")
+})
+
+test("undo tree restore rejects text mismatch", () => {
+  const b = new BufferModel({ name: "x", text: "one" })
+  b.insert("!")
+  const serialized = b.undoTreeSerialize()
+  const restored = new BufferModel({ name: "x", text: "different" })
+
+  expect(restored.undoTreeRestore(serialized)).toBe(false)
+  expect(restored.undoTreeSnapshot().root.children).toEqual([])
+})
+
+test("undo tree restore rejects wrong version", () => {
+  const b = new BufferModel({ name: "x", text: "one" })
+  const serialized = { ...b.undoTreeSerialize(), version: 2 } as unknown as SerializedUndoTree
+
+  expect(b.undoTreeRestore(serialized)).toBe(false)
 })
 
 test("undo in read-only buffer is no-op", () => {
