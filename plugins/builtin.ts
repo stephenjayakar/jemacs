@@ -49,6 +49,7 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["jterm", () => import("./jterm")],
   ["avy", () => import("./avy")],
   ["register-text", () => import("./register-text")],
+  ["undo-tree", () => import("./undo-tree")],
   ["org", () => import("./org")],
   ["markdown", () => import("./markdown")],
   ["lean4", () => import("./lean4")],
