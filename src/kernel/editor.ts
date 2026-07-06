@@ -12,7 +12,7 @@ import type {
   TextSpan,
   Theme,
 } from "./extension-points"
-import { displaySystem, modeSystem } from "./extension-points"
+import { displaySystem, modeSystem, pointKeymaps } from "./extension-points"
 import type { HostCapabilities } from "../display/protocol"
 import type { TerminalData } from "../display/protocol"
 import type { ViewportSize } from "../display/viewport"
@@ -42,7 +42,7 @@ import {
   type WindowNode,
 } from "./window"
 import type { RegisterContents } from "./register"
-import { modeHookName, runHooks } from "./hooks"
+import { modeHookName, runHooks, runHooksMaybeAsync } from "./hooks"
 import type { LspManager } from "../lsp/manager"
 import { fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
@@ -916,8 +916,11 @@ export class Editor {
     }
     const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, keyEvent }
     this.clearMessage()
+    const preCommandHooks = runHooksMaybeAsync("pre-command-hook", { editor: this, buffer: this.activeBuffer })
+    if (preCommandHooks) await preCommandHooks
     const result = await invokeWithAdvice(name, spec.fn, ctx)
-    await this.runHook("post-command-hook", this.activeBuffer)
+    const postCommandHooks = runHooksMaybeAsync("post-command-hook", { editor: this, buffer: this.activeBuffer })
+    if (postCommandHooks) await postCommandHooks
     await this.changed(`command:${name}`)
     return result
   }
@@ -1935,6 +1938,9 @@ export class Editor {
     }
     for (const mode of this.activeMinorModes()) {
       if (mode.keymap) maps.push({ name: `${mode.name}-map`, keymap: mode.keymap })
+    }
+    for (const keymap of pointKeymaps(this.currentBuffer, this.currentBuffer.point)) {
+      maps.push({ name: keymap.name, keymap })
     }
     for (const mode of modeSystem.modeLineage(this.currentBuffer.mode)) {
       if (mode.keymap) maps.push({ name: `${mode.name}-map`, keymap: mode.keymap })

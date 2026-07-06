@@ -6,7 +6,7 @@ import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { spawnProcess } from "../../src/platform/runtime"
 import { getMode } from "../../src/modes/mode"
-import { install, logShaAtPoint, entryAtPoint, magitDiffFontLock } from "../../plugins/magit"
+import { install, logShaAtPoint, entryAtPoint, magitDiffFontLock, magitSectionDisplayFilter, visibilityCache } from "../../plugins/magit"
 import { listWindowLeaves } from "../../src/kernel/window"
 
 let repo: string
@@ -58,9 +58,17 @@ test("install registers v2 commands, modes and bindings", () => {
     "magit-reset", "magit-toggle-fold", "magit-commit-abort",
     "magit-diff-more-context", "magit-diff-less-context", "magit-diff-default-context",
     "magit-diff-refresh", "magit-diff-while-committing", "magit-patch-save",
+    "magit-section-forward", "magit-section-backward", "magit-section-cycle-global",
+    "magit-section-show-level-1", "magit-section-show-level-4-all",
   ]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
+  expect(getMode("magit-section-mode")?.keymap?.get("tab")).toBe("magit-section-toggle")
+  expect(getMode("magit-section-mode")?.keymap?.get("n")).toBe("magit-section-forward")
+  expect(getMode("magit-section-mode")?.keymap?.get("M-n")).toBe("magit-section-forward-sibling")
+  expect(getMode("magit-section-mode")?.keymap?.get("S-tab")).toBe("magit-section-cycle-global")
+  expect(getMode("magit-section-mode")?.keymap?.get("1")).toBe("magit-section-show-level-1")
+  expect(getMode("magit-section-mode")?.keymap?.get("M-4")).toBe("magit-section-show-level-4-all")
   expect(getMode("magit-mode")?.keymap?.get("d")).toBe("magit-diff-popup")
   expect(getMode("magit-mode")?.keymap?.get("S-d")).toBe("magit-diff-refresh")
   const status = getMode("magit-status")
@@ -390,16 +398,19 @@ test("tab folds the diff body for the entry at point and toggles back", async ()
   await editor.handleKey({ name: "tab" })
   buf = editor.currentBuffer
   expect(buf.text).toContain("modified   a.txt")
-  expect(buf.text).not.toContain("@@")
-  expect(buf.text).not.toContain("+changed")
+  expect(buf.text).toContain("@@")
+  expect(buf.text).toContain("+changed")
+  expect(magitSectionDisplayFilter(buf)?.text).not.toContain("@@")
+  expect(magitSectionDisplayFilter(buf)?.text).not.toContain("+changed")
   expect(entryAtPoint(buf)?.file).toBe("a.txt")
-  expect((buf.locals.get("magit-folded") as Set<string>).has("U:a.txt")).toBe(true)
+  expect([...visibilityCache(buf).values()]).toContain("hide")
 
   await editor.handleKey({ name: "tab" })
   buf = editor.currentBuffer
   expect(buf.text).toContain("@@")
   expect(buf.text).toContain("+changed")
-  expect((buf.locals.get("magit-folded") as Set<string>).size).toBe(0)
+  expect(magitSectionDisplayFilter(buf)).toBeNull()
+  expect([...visibilityCache(buf).values()]).toContain("show")
 })
 
 test("fold state survives g refresh", async () => {
@@ -409,11 +420,13 @@ test("fold state survives g refresh", async () => {
   let buf = editor.currentBuffer
   buf.point = pointAtLine(buf.text, "modified   a.txt")
   await editor.handleKey({ name: "tab" })
-  expect(editor.currentBuffer.text).not.toContain("@@")
+  expect(editor.currentBuffer.text).toContain("@@")
+  expect(magitSectionDisplayFilter(editor.currentBuffer)?.text).not.toContain("@@")
 
   await keySeq(editor, "g")
   expect(editor.currentBuffer.text).toContain("modified   a.txt")
-  expect(editor.currentBuffer.text).not.toContain("@@")
+  expect(editor.currentBuffer.text).toContain("@@")
+  expect(magitSectionDisplayFilter(editor.currentBuffer)?.text).not.toContain("@@")
 })
 
 test("C-c C-k aborts the commit message buffer without committing", async () => {

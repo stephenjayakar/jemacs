@@ -20,6 +20,16 @@ import {
   runInteractiveRebaseTodo,
   type RebaseTodoAction,
 } from "./rebase-todo"
+import {
+  MAGIT_SECTION_VISIBILITY_CACHE_LOCAL,
+  MagitSectionBuilder,
+  currentSection,
+  installMagitSection,
+  setRootSection,
+  visibilityCache,
+  type MagitSection,
+  type MagitSectionVisibility,
+} from "./section"
 
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
@@ -147,15 +157,16 @@ export type MagitStatus = {
   text: string
   entries: MagitEntry[]
   hunks: MagitHunk[]
+  rootSection: MagitSection
 }
 
 const DEFAULT_DIFF_CONTEXT = 3
 
-function foldKey(file: string, staged: boolean): string {
-  return `${staged ? "S" : "U"}:${file}`
-}
-
-export async function buildStatus(root: string, folded: ReadonlySet<string> = new Set(), context = DEFAULT_DIFF_CONTEXT): Promise<MagitStatus> {
+export async function buildStatus(
+  root: string,
+  cacheOrFolded: Map<string, MagitSectionVisibility> | ReadonlySet<string> = new Map(),
+  context = DEFAULT_DIFF_CONTEXT,
+): Promise<MagitStatus> {
   const diffContextArgs = magitDiffContextArgs(context)
   const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, bisectPath] = await Promise.all([
     git(["status", "--porcelain=v2", "--branch"], root),
@@ -170,66 +181,107 @@ export async function buildStatus(root: string, folded: ReadonlySet<string> = ne
   const unstagedDiffs = new Map(parseDiff(unstagedDiff.out).map(d => [d.file, d]))
   const stagedDiffs = new Map(parseDiff(stagedDiff.out).map(d => [d.file, d]))
 
-  const unstaged = files.filter(f => f.xy[1] !== "." && f.xy[1] !== undefined)
+  const untracked = files.filter(f => f.xy === "??")
+  const unstaged = files.filter(f => f.xy !== "??" && f.xy[1] !== "." && f.xy[1] !== undefined)
   const staged = files.filter(f => f.xy[0] !== "." && f.xy[0] !== "?")
 
-  const lines: string[] = []
   const entries: MagitEntry[] = []
   const hunks: MagitHunk[] = []
-  const push = (s: string) => lines.push(s)
+  const visibility = cacheOrFolded instanceof Map ? cacheOrFolded : new Map<string, MagitSectionVisibility>()
+  const builder = new MagitSectionBuilder({ visibilityCache: visibility })
 
-  push(`Head:     ${branch ?? "(detached)"} ${headMsg.out.trim()}`)
-  if (upstream) push(`Merge:    ${upstream}`)
-  const bisectLog = bisectPath.out.trim()
-  if (bisectPath.code === 0 && bisectLog && existsSync(isAbsolute(bisectLog) ? bisectLog : join(root, bisectLog))) {
-    push("Bisect:   in progress")
-  }
-  push("")
-
-  const section = (title: string, items: FileChange[], isStaged: boolean, diffs: Map<string, FileDiff>) => {
-    if (!items.length) return
-    push(`${title} (${items.length})`)
-    for (const f of items) {
-      const code = isStaged ? f.xy[0]! : f.xy[1]!
-      const start = lines.length
-      push(`${changeLabel(code)} ${f.file}`)
-      const fd = diffs.get(f.file)
-      if (!folded.has(foldKey(f.file, isStaged))) {
-        for (const h of fd?.hunks ?? []) {
-          const hStart = lines.length
-          push(h.header)
-          for (const l of h.lines) push(l)
-          hunks.push({
-            file: f.file,
-            staged: isStaged,
-            startLine: hStart,
-            endLine: lines.length - 1,
-            patch: hunkPatch(fd!, h),
-          })
-        }
-      }
-      entries.push({ file: f.file, staged: isStaged, untracked: code === "?", startLine: start, endLine: lines.length - 1 })
+  builder.insertSection({ type: "status", value: root }, () => {
+    builder.insertHeading(`Head:     ${branch ?? "(detached)"} ${headMsg.out.trim()}`)
+    if (upstream) builder.insert(`Merge:    ${upstream}\n`)
+    const bisectLog = bisectPath.out.trim()
+    if (bisectPath.code === 0 && bisectLog && existsSync(isAbsolute(bisectLog) ? bisectLog : join(root, bisectLog))) {
+      builder.insert("Bisect:   in progress\n")
     }
-    push("")
+    builder.insert("\n")
+  })
+
+  if (upstream) {
+    const aheadBehind = await git(["rev-list", "--count", "--left-right", "HEAD...@{upstream}"], root)
+    if (aheadBehind.code === 0) {
+      const [aheadRaw, behindRaw] = aheadBehind.out.trim().split(/\s+/)
+      const ahead = Number(aheadRaw)
+      const behind = Number(behindRaw)
+      if (Number.isFinite(ahead) && ahead > 0) {
+        const commits = (await git(["log", "--oneline", "@{upstream}..HEAD"], root)).out.split("\n").filter(Boolean)
+        builder.insertSection({ type: "unpushed", value: upstream }, () => {
+          builder.insertHeading(`Unpushed to ${upstream} (${ahead})`)
+          for (const commit of commits) builder.insert(`${commit}\n`)
+          builder.insert("\n")
+        })
+      }
+      if (Number.isFinite(behind) && behind > 0) {
+        const commits = (await git(["log", "--oneline", "HEAD..@{upstream}"], root)).out.split("\n").filter(Boolean)
+        builder.insertSection({ type: "unpulled", value: upstream }, () => {
+          builder.insertHeading(`Unpulled from ${upstream} (${behind})`)
+          for (const commit of commits) builder.insert(`${commit}\n`)
+          builder.insert("\n")
+        })
+      }
+    }
   }
-  section("Unstaged changes", unstaged, false, unstagedDiffs)
-  section("Staged changes", staged, true, stagedDiffs)
+
+  const insertFileSection = (f: FileChange, isStaged: boolean, diffs: Map<string, FileDiff>) => {
+    const code = isStaged ? f.xy[0]! : f.xy[1]!
+    const entry: MagitEntry = { file: f.file, staged: isStaged, untracked: code === "?", startLine: 0, endLine: 0 }
+    entries.push(entry)
+    builder.insertSection({ type: "file", value: entry }, section => {
+      entry.startLine = lineNumberAtTextPoint(builder.toString(), section.start)
+      builder.insertHeading(`${changeLabel(code)} ${f.file}`)
+      const fd = diffs.get(f.file)
+      for (const h of fd?.hunks ?? []) {
+        const patch = hunkPatch(fd!, h)
+        const hunk: MagitHunk = { file: f.file, staged: isStaged, startLine: 0, endLine: 0, patch }
+        hunks.push(hunk)
+        builder.insertSection({ type: "hunk", value: hunk }, hunkSection => {
+          hunk.startLine = lineNumberAtTextPoint(builder.toString(), hunkSection.start)
+          builder.insertHeading(h.header)
+          for (const line of h.lines) builder.insert(`${line}\n`)
+        })
+        hunk.endLine = lineNumberAtTextPoint(builder.toString(), builder.length)
+      }
+    })
+    entry.endLine = lineNumberAtTextPoint(builder.toString(), builder.length)
+  }
+
+  const insertChangeSection = (type: string, title: string, items: FileChange[], isStaged: boolean, diffs: Map<string, FileDiff>) => {
+    if (!items.length) return
+    builder.insertSection({ type, value: items.length }, () => {
+      builder.insertHeading(`${title} (${items.length})`)
+      for (const f of items) insertFileSection(f, isStaged, diffs)
+      builder.insert("\n")
+    })
+  }
+
+  insertChangeSection("untracked", "Untracked files", untracked, false, unstagedDiffs)
+  insertChangeSection("unstaged", "Unstaged changes", unstaged, false, unstagedDiffs)
+  insertChangeSection("staged", "Staged changes", staged, true, stagedDiffs)
 
   const stashes = stashList.out.split("\n").filter(Boolean)
   if (stashes.length) {
-    push(`Stashes (${stashes.length})`)
-    for (const s of stashes) push(s)
-    push("")
+    builder.insertSection({ type: "stashes", value: stashes.length }, () => {
+      builder.insertHeading(`Stashes (${stashes.length})`)
+      for (const s of stashes) builder.insert(`${s}\n`)
+      builder.insert("\n")
+    })
   }
 
   const commits = log.out.split("\n").filter(Boolean)
   if (commits.length) {
-    push("Recent commits")
-    for (const c of commits) push(c)
-    push("")
+    builder.insertSection({ type: "recent", value: commits.length }, () => {
+      builder.insertHeading("Recent commits")
+      for (const c of commits) builder.insert(`${c}\n`)
+      builder.insert("\n")
+    })
   }
 
-  return { root, text: lines.join("\n"), entries, hunks }
+  const text = builder.toString()
+  builder.root.end = text.length
+  return { root, text, entries, hunks, rootSection: builder.root }
 }
 
 function lineAt(buffer: BufferModel): number {
@@ -237,6 +289,8 @@ function lineAt(buffer: BufferModel): number {
 }
 
 export function entryAtPoint(buffer: BufferModel): MagitEntry | null {
+  const section = sectionOfType(buffer, "file")
+  if (section) return section.value as MagitEntry
   const entries = buffer.locals.get("magit-entries") as MagitEntry[] | undefined
   if (!entries) return null
   const line = lineAt(buffer)
@@ -244,18 +298,27 @@ export function entryAtPoint(buffer: BufferModel): MagitEntry | null {
 }
 
 export function hunkAtPoint(buffer: BufferModel): MagitHunk | null {
+  const section = sectionOfType(buffer, "hunk")
+  if (section) return section.value as MagitHunk
   const hunks = buffer.locals.get("magit-hunks") as MagitHunk[] | undefined
   if (!hunks) return null
   const line = lineAt(buffer)
   return hunks.find(h => line >= h.startLine && line <= h.endLine) ?? null
 }
 
+function sectionOfType(buffer: BufferModel, type: string): MagitSection | null {
+  for (let section = currentSection(buffer); section; section = section.parent) {
+    if (section.type === type) return section
+  }
+  return null
+}
+
 async function refresh(editor: Editor, root: string, point?: number): Promise<BufferModel> {
   const name = `*magit: ${basename(root)}*`
   const prev = [...editor.buffers.values()].find(b => b.name === name)
-  const folded = (prev?.locals.get("magit-folded") as Set<string> | undefined) ?? new Set<string>()
+  const cache = (prev?.locals.get(MAGIT_SECTION_VISIBILITY_CACHE_LOCAL) as Map<string, MagitSectionVisibility> | undefined) ?? new Map<string, MagitSectionVisibility>()
   const context = magitDiffContext(prev)
-  const status = await buildStatus(root, folded, context)
+  const status = await buildStatus(root, cache, context)
   // Preserving the byte offset is only sound when the section layout is stable
   // (g/s/u). Callers that reshape the buffer — commit drops the whole Staged
   // section — pass an explicit point so we don't land mid-word (t-6bbb608e).
@@ -266,8 +329,9 @@ async function refresh(editor: Editor, root: string, point?: number): Promise<Bu
   buf.locals.set("magit-root", root)
   buf.locals.set("magit-entries", status.entries)
   buf.locals.set("magit-hunks", status.hunks)
-  buf.locals.set("magit-folded", folded)
+  buf.locals.set(MAGIT_SECTION_VISIBILITY_CACHE_LOCAL, cache)
   buf.locals.set("magit-diff-context", context)
+  setRootSection(buf, status.rootSection)
   buf.point = Math.min(keepPoint, buf.text.length)
   return buf
 }
@@ -331,13 +395,13 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   const root = magitRoot(buffer)
   if (!root) return false
   if (buffer.mode === "magit-status") {
-    const folded = (buffer.locals.get("magit-folded") as Set<string> | undefined) ?? new Set<string>()
     const point = buffer.point
-    const status = await buildStatus(root, folded, context)
+    const status = await buildStatus(root, visibilityCache(buffer), context)
     buffer.setText(status.text, false)
     buffer.locals.set("magit-entries", status.entries)
     buffer.locals.set("magit-hunks", status.hunks)
     buffer.locals.set("magit-diff-context", context)
+    setRootSection(buffer, status.rootSection)
     buffer.point = Math.min(point, buffer.text.length)
     editor.message(`Diff context is ${context}`)
     return true
@@ -400,7 +464,9 @@ export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): T
   let offset = base
   for (const line of text.split("\n")) {
     const end = offset + line.length
-    if (/^(Head|Merge|Bisect|Unstaged|Staged|Stashes|Recent)\b/.test(line)) sectionSpans.push({ start: offset, end, face: "keyword" })
+    if (/^(Head|Merge|Bisect|Untracked|Unstaged|Staged|Stashes|Recent|Unpushed|Unpulled)\b/.test(line)) {
+      sectionSpans.push({ start: offset, end, face: "keyword" })
+    }
     offset = end + 1
   }
   return [...sectionSpans, ...diffFontLockText(text, base)]
@@ -731,18 +797,7 @@ function defineTransientCommand(editor: Editor, command: string, definition: Tra
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
-  // Read-only magit buffers must not fall through to self-insert on stray
-  // printables (t-e061bdb3). The kernel's self-insert fallback is unconditional,
-  // so the only mode-level lever is to claim those keys first. Binding them in a
-  // *parent* mode keeps prefix sequences in the child maps (c c, l l, S-p p, …)
-  // reachable — KeymapStack.lookup checks the child's hasPrefix before
-  // descending. This is the moral equivalent of Emacs special-mode's
-  // suppress-keymap.
-  const suppressMap = new Keymap("magit-section-mode-map")
-  suppressMap.bind("space", "magit-undefined")
-  for (let c = 0x21; c <= 0x7e; c++) suppressMap.bind(String.fromCharCode(c), "magit-undefined")
-  for (let c = 0x61; c <= 0x7a; c++) suppressMap.bind(`S-${String.fromCharCode(c)}`, "magit-undefined")
-  defineMode({ name: "magit-section-mode", keymap: suppressMap })
+  installMagitSection(editor)
 
   const magitModeMap = new Keymap("magit-mode-map")
   magitModeMap.bind("return", "magit-visit-thing")
@@ -837,8 +892,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("d d", "magit-diff-working")
   statusMap.bind("d u", "magit-diff-unstaged")
   statusMap.bind("d s", "magit-diff-staged")
-  statusMap.bind("n", "next-line")
-  statusMap.bind("p", "previous-line")
+  statusMap.bind("n", "magit-section-forward")
+  statusMap.bind("p", "magit-section-backward")
   statusMap.bind("f p", "magit-fetch-from-pushremote")
   statusMap.bind("f u", "magit-fetch-from-upstream")
   statusMap.bind("f a", "magit-fetch-all")
@@ -1629,26 +1684,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(code === 0 ? "Command finished" : `Command failed (${code})`)
   }, "Run an arbitrary git/shell command.")
 
-  editor.command("magit-section-toggle", async ({ editor, buffer }) => {
-    const root = magitRoot(buffer)
-    const entry = entryAtPoint(buffer)
-    if (!root || !entry) {
-      editor.message("Nothing to fold at point")
-      return
-    }
-    const folded = (buffer.locals.get("magit-folded") as Set<string> | undefined) ?? new Set<string>()
-    const key = foldKey(entry.file, entry.staged)
-    if (folded.has(key)) folded.delete(key)
-    else folded.add(key)
-    buffer.locals.set("magit-folded", folded)
-    // Re-render with the new fold set; place point on the entry's header so a
-    // second TAB on the same key toggles back regardless of the diff body length.
-    // Match the buffer's diff context so line offsets agree with what refresh() shows.
-    const status = await buildStatus(root, folded, magitDiffContext(buffer))
-    const next = status.entries.find(e => e.file === entry.file && e.staged === entry.staged)
-    await refresh(editor, root, next ? lineToPoint(status.text, next.startLine) : buffer.point)
-  }, "Toggle section at point (fold/unfold diff).")
-
   editor.command("magit-toggle-fold", async ({ editor, buffer }) => {
     await editor.run("magit-section-toggle")
   }, "Alias for magit-section-toggle.")
@@ -2043,14 +2078,4 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.key("C-x g", "magit-status")
   editor.key("C-c g", "magit-dispatch")
-}
-
-function lineToPoint(text: string, line: number): number {
-  let pos = 0
-  for (let i = 0; i < line; i++) {
-    const nl = text.indexOf("\n", pos)
-    if (nl < 0) return text.length
-    pos = nl + 1
-  }
-  return pos
 }

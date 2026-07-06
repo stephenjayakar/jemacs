@@ -48,6 +48,12 @@ export type FaceName =
   | "diffRefineChanged"
   | "diffRefineRemoved"
   | "diffRefineAdded"
+  | "magit-section-highlight"
+  | "magit-section-heading"
+  | "magit-section-secondary-heading"
+  | "magit-section-heading-selection"
+  | "magit-section-child-count"
+  | "magit-left-margin"
 
 export type TextSpan = {
   start: number
@@ -174,6 +180,27 @@ export type ModeSpec = {
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void
   imenuIndex?: (buffer: BufferModel) => ImenuIndexEntry[]
+}
+
+export type PointKeymapSource = (buffer: BufferModel, point: number) => Keymap | null
+
+const pointKeymapSources: PointKeymapSource[] = []
+
+export function addPointKeymapSource(source: PointKeymapSource): () => void {
+  pointKeymapSources.push(source)
+  return () => {
+    const index = pointKeymapSources.indexOf(source)
+    if (index >= 0) pointKeymapSources.splice(index, 1)
+  }
+}
+
+export function pointKeymaps(buffer: BufferModel, point: number): Keymap[] {
+  const maps: Keymap[] = []
+  for (const source of pointKeymapSources) {
+    const keymap = source(buffer, point)
+    if (keymap) maps.push(keymap)
+  }
+  return maps
 }
 
 export type MinorModeSpec = {

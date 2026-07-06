@@ -63,8 +63,8 @@ test("install registers parity commands and bindings", () => {
   expect(status?.keymap?.get("z a")).toBe("magit-stash-apply")
   expect(status?.keymap?.get("c e")).toBe("magit-commit-extend")
   expect(status?.keymap?.get("d d")).toBe("magit-diff-working")
-  expect(status?.keymap?.get("n")).toBe("next-line")
-  expect(status?.keymap?.get("p")).toBe("previous-line")
+  expect(status?.keymap?.get("n")).toBe("magit-section-forward")
+  expect(status?.keymap?.get("p")).toBe("magit-section-backward")
 })
 
 test("m m merges a branch into the current branch", async () => {

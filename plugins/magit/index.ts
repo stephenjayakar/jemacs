@@ -1,4 +1,5 @@
 export * from "./magit"
+export * from "./section"
 export * from "./bisect"
 export * from "./rebase-todo"
 export { install } from "./magit"
