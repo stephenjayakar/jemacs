@@ -1,4 +1,4 @@
-import { realpath, unlink, writeFile } from "node:fs/promises"
+import { readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { basename, isAbsolute, join, relative } from "node:path"
 import { tmpdir } from "node:os"
@@ -47,8 +47,10 @@ import {
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
   file: string
+  oldFile?: string
   staged: boolean
   untracked: boolean
+  conflicted?: boolean
   startLine: number
   endLine: number
 }
@@ -56,6 +58,7 @@ export type MagitEntry = {
 /** One @@-hunk's range in the status buffer plus a self-contained patch for `git apply --cached`. */
 export type MagitHunk = {
   file: string
+  oldFile?: string
   staged: boolean
   startLine: number
   endLine: number
@@ -96,7 +99,7 @@ async function git(
   return runGitLogged(args, cwd, { stdin, env, editor })
 }
 
-type FileChange = { file: string; xy: string }
+type FileChange = { file: string; xy: string; oldFile?: string; unmerged?: boolean }
 
 /** Minimal porcelain=v2 reader: just the XY state and path of ordinary/renamed/untracked entries. */
 export function parsePorcelain(out: string): { branch: string | null; upstream: string | null; files: FileChange[] } {
@@ -107,13 +110,24 @@ export function parsePorcelain(out: string): { branch: string | null; upstream: 
     if (!line) continue
     if (line.startsWith("# branch.head ")) branch = line.slice("# branch.head ".length)
     else if (line.startsWith("# branch.upstream ")) upstream = line.slice("# branch.upstream ".length)
-    else if (line.startsWith("1 ") || line.startsWith("2 ")) {
+    else if (line.startsWith("1 ")) {
       const parts = line.split(" ")
       const xy = parts[1] ?? ".."
-      const file = line.startsWith("2 ")
-        ? (parts.slice(9).join(" ").split("\t")[0] ?? "")
-        : parts.slice(8).join(" ")
+      const file = parts.slice(8).join(" ")
       if (file) files.push({ file, xy })
+    } else if (line.startsWith("2 ")) {
+      const tab = line.indexOf("\t")
+      const beforeTab = tab >= 0 ? line.slice(0, tab) : line
+      const parts = beforeTab.split(" ")
+      const xy = parts[1] ?? ".."
+      const file = parts.slice(9).join(" ")
+      const oldFile = tab >= 0 ? line.slice(tab + 1) : undefined
+      if (file) files.push(oldFile ? { file, oldFile, xy } : { file, xy })
+    } else if (line.startsWith("u ")) {
+      const parts = line.split(" ")
+      const xy = parts[1] ?? "UU"
+      const file = parts.slice(10).join(" ")
+      if (file) files.push({ file, xy, unmerged: true })
     } else if (line.startsWith("? ")) {
       files.push({ file: line.slice(2), xy: "??" })
     }
@@ -126,8 +140,9 @@ function changeLabel(code: string): string {
     case "M": return "modified  "
     case "A": return "new file  "
     case "D": return "deleted   "
-    case "R": return "renamed   "
+    case "R": return "renamed  "
     case "?": return "untracked "
+    case "U": return "unmerged  "
     default: return "modified  "
   }
 }
@@ -165,6 +180,294 @@ function hunkPatch(fd: FileDiff, h: DiffHunk): string {
   return [...fd.header, h.header, ...h.lines, ""].join("\n")
 }
 
+function statusHeader(label: string, value: string): string {
+  return `${label.padEnd(10)}${value}\n`
+}
+
+function trimOrNull(value: string): string | null {
+  const trimmed = value.trim()
+  return trimmed ? trimmed : null
+}
+
+async function gitString(args: string[], root: string, editor?: Editor): Promise<string | null> {
+  const { out, code } = await git(args, root, undefined, undefined, editor)
+  return code === 0 ? trimOrNull(out) : null
+}
+
+async function gitConfig(root: string, key: string, editor?: Editor): Promise<string | null> {
+  return gitString(["config", "--get", key], root, editor)
+}
+
+async function revisionSummary(root: string, rev: string, editor?: Editor): Promise<string | null> {
+  const summary = await gitString(["log", "-1", "--pretty=%s", rev], root, editor)
+  return summary ?? null
+}
+
+async function revisionLine(root: string, rev: string, editor?: Editor): Promise<string | null> {
+  return gitString(["log", "-1", "--pretty=%h %s", rev], root, editor)
+}
+
+async function shortRevision(root: string, rev: string, editor?: Editor): Promise<string> {
+  return (await gitString(["rev-parse", "--short", rev], root, editor)) ?? rev.slice(0, 7)
+}
+
+function shortenRefName(ref: string): string {
+  return ref
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "")
+    .replace(/\^0$/, "")
+}
+
+async function displayRevName(root: string, rev: string | null, editor?: Editor): Promise<string> {
+  if (!rev) return "HEAD"
+  if (!/^[0-9a-f]{40}$/.test(rev)) return shortenRefName(rev)
+  const name = await gitString(["name-rev", "--name-only", "--no-undefined", rev], root, editor)
+  if (name && !name.includes("undefined")) return shortenRefName(name)
+  return shortRevision(root, rev, editor)
+}
+
+async function upstreamHeaderLabel(root: string, branch: string | null, editor?: Editor): Promise<"Merge:" | "Rebase:"> {
+  if (!branch || branch === "(detached)") return "Merge:"
+  const branchRebase = await gitConfig(root, `branch.${branch}.rebase`, editor)
+  if (branchRebase === "false") return "Merge:"
+  if (branchRebase) return "Rebase:"
+  const pullRebase = await gitConfig(root, "pull.rebase", editor)
+  return pullRebase && pullRebase !== "false" ? "Rebase:" : "Merge:"
+}
+
+async function pushBranchTarget(root: string, branch: string | null, editor?: Editor): Promise<string | null> {
+  if (!branch || branch === "(detached)") return null
+  const remote = await gitConfig(root, `branch.${branch}.pushRemote`, editor)
+    ?? await gitConfig(root, "remote.pushDefault", editor)
+  if (!remote) return null
+  const target = await gitString(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"], root, editor)
+  return target ? shortenRefName(target) : `${remote}/${branch}`
+}
+
+async function describedTag(root: string, editor?: Editor): Promise<{ tag: string; count: number } | null> {
+  const describe = await gitString(["describe", "--tags", "--long", "--abbrev=7"], root, editor)
+  if (!describe) return null
+  const match = /^(.*)-(\d+)-g[0-9a-f]+$/.exec(describe)
+  if (!match) return { tag: describe, count: 0 }
+  return { tag: match[1]!, count: Number(match[2]!) }
+}
+
+async function absoluteGitDir(root: string, editor?: Editor): Promise<string> {
+  return (await gitString(["rev-parse", "--absolute-git-dir"], root, editor)) ?? join(root, ".git")
+}
+
+function gitStatePath(gitDir: string, rel: string): string {
+  return isAbsolute(rel) ? rel : join(gitDir, rel)
+}
+
+function gitStateExists(gitDir: string, rel: string): boolean {
+  return existsSync(gitStatePath(gitDir, rel))
+}
+
+async function readGitStateFile(gitDir: string, rel: string): Promise<string | null> {
+  try {
+    return await readFile(gitStatePath(gitDir, rel), "utf8")
+  } catch {
+    return null
+  }
+}
+
+async function readGitStateLine(gitDir: string, rel: string): Promise<string | null> {
+  const text = await readGitStateFile(gitDir, rel)
+  return text == null ? null : trimOrNull(text.split(/\r?\n/, 1)[0] ?? "")
+}
+
+function fileDisplayName(change: FileChange | MagitEntry): string {
+  return change.oldFile && change.oldFile !== change.file
+    ? `${change.oldFile} -> ${change.file}`
+    : change.file
+}
+
+function entryPathspecs(entry: MagitEntry): string[] {
+  return entry.oldFile && entry.oldFile !== entry.file ? [entry.oldFile, entry.file] : [entry.file]
+}
+
+function commitShaFromLine(line: string): string {
+  return /\b([0-9a-f]{7,40})\b/.exec(line)?.[1] ?? line
+}
+
+function insertCommitLine(builder: MagitSectionBuilder, line: string): void {
+  builder.insertSection({ type: "commit", value: commitShaFromLine(line) }, () => {
+    builder.insertHeading(line)
+  })
+}
+
+function insertCommitListSection(
+  builder: MagitSectionBuilder,
+  options: { type: string; value: string; title: string; commits: string[]; hidden?: boolean },
+): void {
+  if (!options.commits.length) return
+  builder.insertSection({ type: options.type, value: options.value, hidden: options.hidden ?? false }, () => {
+    builder.insertHeading(`${options.title} (${options.commits.length})`)
+    for (const commit of options.commits) insertCommitLine(builder, commit)
+    builder.insert("\n")
+  })
+}
+
+async function revCommitLine(root: string, rev: string | null, action: string, editor?: Editor): Promise<string | null> {
+  if (!rev) return null
+  const line = await revisionLine(root, rev, editor)
+  if (line) return `${action} ${line}`
+  return `${action} ${await shortRevision(root, rev, editor)}`
+}
+
+function parseSequenceTodo(text: string | null): string[] {
+  if (!text) return []
+  return text.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith("#"))
+}
+
+async function patchSubject(path: string): Promise<string> {
+  try {
+    const text = await readFile(path, "utf8")
+    const subject = text.split(/\r?\n/).find(line => /^Subject:\s*/i.test(line))
+    if (subject) return subject.replace(/^Subject:\s*/i, "").trim()
+  } catch {
+    // Fall through to filename.
+  }
+  return basename(path)
+}
+
+async function insertInProgressSections(
+  builder: MagitSectionBuilder,
+  root: string,
+  gitDir: string,
+  conflicted: FileChange[],
+  insertConflicts: () => void,
+  editor?: Editor,
+): Promise<boolean> {
+  let conflictsInserted = false
+  const maybeInsertConflicts = () => {
+    if (!conflictsInserted && conflicted.length) {
+      insertConflicts()
+      conflictsInserted = true
+    }
+  }
+
+  const mergeHeads = (await readGitStateFile(gitDir, "MERGE_HEAD"))
+    ?.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean) ?? []
+  if (mergeHeads.length) {
+    const names = await Promise.all(mergeHeads.map(head => displayRevName(root, head, editor)))
+    const lines = await Promise.all(mergeHeads.map(head => revCommitLine(root, head, "merge", editor)))
+    builder.insertSection({ type: "merge", value: mergeHeads }, () => {
+      builder.insertHeading(`Merging ${names.join(", ")}`)
+      for (let i = 0; i < mergeHeads.length; i++) {
+        insertCommitLine(builder, lines[i] ?? `merge ${mergeHeads[i]!.slice(0, 7)} ${names[i] ?? ""}`)
+      }
+      maybeInsertConflicts()
+      builder.insert("\n")
+    })
+  }
+
+  const amInProgress = gitStateExists(gitDir, "rebase-apply/applying")
+  const rebaseMerge = gitStateExists(gitDir, "rebase-merge")
+  const rebaseApply = gitStateExists(gitDir, "rebase-apply/onto") && !amInProgress
+  if (rebaseMerge || rebaseApply) {
+    const dir = rebaseMerge ? "rebase-merge" : "rebase-apply"
+    const headName = await readGitStateLine(gitDir, `${dir}/head-name`)
+    const onto = await readGitStateLine(gitDir, `${dir}/onto`)
+    const done = parseSequenceTodo(await readGitStateFile(gitDir, `${dir}/done`))
+    const todo = parseSequenceTodo(await readGitStateFile(gitDir, `${dir}/git-rebase-todo`))
+    const displayHead = shortenRefName(headName ?? "HEAD")
+    const displayOnto = await displayRevName(root, onto, editor)
+    builder.insertSection({ type: "rebase-sequence", value: onto ?? "rebase" }, () => {
+      builder.insertHeading(`Rebasing ${displayHead} onto ${displayOnto}`)
+      if (done.length) {
+        builder.insertSection({ type: "rebase-done", value: done.length, hidden: true }, () => {
+          builder.insertHeading(`Done (${done.length})`)
+          for (const line of done) insertCommitLine(builder, line)
+        })
+      }
+      if (todo.length) {
+        builder.insertSection({ type: "rebase-todo", value: todo.length }, () => {
+          builder.insertHeading(`Todo (${todo.length})`)
+          for (const line of todo) insertCommitLine(builder, line)
+        })
+      }
+      maybeInsertConflicts()
+      builder.insert("\n")
+    })
+  }
+
+  if (amInProgress) {
+    const dir = gitStatePath(gitDir, "rebase-apply")
+    const next = Number(await readGitStateLine(gitDir, "rebase-apply/next"))
+    const last = Number(await readGitStateLine(gitDir, "rebase-apply/last"))
+    const names = await readdir(dir).catch(() => [] as string[])
+    const patches = names
+      .filter(name => /^\d+$/.test(name))
+      .sort()
+      .filter(name => {
+        const n = Number(name)
+        return Number.isFinite(next) && Number.isFinite(last) ? n >= next && n <= last : true
+      })
+    const patchLines = await Promise.all(patches.map(async (name, index) => {
+      const action = index === 0 ? "stop" : "pick"
+      return `${action} ${name} ${await patchSubject(join(dir, name))}`
+    }))
+    builder.insertSection({ type: "am-sequence", value: "rebase-apply" }, () => {
+      builder.insertHeading("Applying patches")
+      for (const line of patchLines) insertCommitLine(builder, line)
+      maybeInsertConflicts()
+      builder.insert("\n")
+    })
+  }
+
+  const cherryHead = await readGitStateLine(gitDir, "CHERRY_PICK_HEAD")
+  const revertHead = await readGitStateLine(gitDir, "REVERT_HEAD")
+  const sequencerTodo = parseSequenceTodo(await readGitStateFile(gitDir, "sequencer/todo"))
+  const firstTodo = sequencerTodo[0] ?? ""
+  const picking = !!cherryHead || firstTodo.startsWith("pick ")
+  const reverting = !!revertHead || firstTodo.startsWith("revert ")
+  if (picking || reverting) {
+    const current = picking ? cherryHead : revertHead
+    const currentLine = await revCommitLine(root, current, picking ? "pick" : "revert", editor)
+    const remaining = current ? sequencerTodo.slice(1) : sequencerTodo
+    builder.insertSection({ type: "sequence", value: picking ? "cherry-pick" : "revert" }, () => {
+      builder.insertHeading(picking ? "Cherry Picking" : "Reverting")
+      if (currentLine) insertCommitLine(builder, currentLine)
+      if (remaining.length) {
+        builder.insertSection({ type: "sequence-todo", value: remaining.length }, () => {
+          builder.insertHeading(`Todo (${remaining.length})`)
+          for (const line of remaining) insertCommitLine(builder, line)
+        })
+      }
+      maybeInsertConflicts()
+      builder.insert("\n")
+    })
+  }
+
+  if (gitStateExists(gitDir, "BISECT_LOG")) {
+    const start = await readGitStateLine(gitDir, "BISECT_START")
+    const terms = (await readGitStateFile(gitDir, "BISECT_TERMS"))
+      ?.split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean) ?? []
+    const logLines = (await readGitStateFile(gitDir, "BISECT_LOG"))
+      ?.split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line.startsWith("git bisect "))
+      .slice(-8) ?? []
+    builder.insertSection({ type: "bisect", value: "BISECT_LOG", hidden: true }, () => {
+      builder.insertHeading("Bisecting")
+      if (start) builder.insert(`Start: ${start}\n`)
+      if (terms.length) builder.insert(`Terms: ${terms.join(", ")}\n`)
+      for (const line of logLines) builder.insert(`${line}\n`)
+      builder.insert("\n")
+    })
+  }
+
+  return conflictsInserted
+}
+
 export type MagitStatus = {
   root: string
   text: string
@@ -182,74 +485,48 @@ export async function buildStatus(
   editor?: Editor,
 ): Promise<MagitStatus> {
   const diffContextArgs = magitDiffContextArgs(context)
-  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, bisectPath] = await Promise.all([
-    git(["status", "--porcelain=v2", "--branch"], root, undefined, undefined, editor),
+  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, gitDir] = await Promise.all([
+    git(["status", "--porcelain=v2", "--branch", "--renames"], root, undefined, undefined, editor),
     git(["log", "-1", "--pretty=%s"], root, undefined, undefined, editor),
-    git(["diff", ...diffContextArgs], root, undefined, undefined, editor),
-    git(["diff", "--cached", ...diffContextArgs], root, undefined, undefined, editor),
+    git(["diff", "--find-renames", ...diffContextArgs], root, undefined, undefined, editor),
+    git(["diff", "--cached", "--find-renames", ...diffContextArgs], root, undefined, undefined, editor),
     git(["log", "-n", "10", "--pretty=%h %s"], root, undefined, undefined, editor),
     git(["stash", "list"], root, undefined, undefined, editor),
-    git(["rev-parse", "--git-path", "BISECT_LOG"], root, undefined, undefined, editor),
+    absoluteGitDir(root, editor),
   ])
   const { branch, upstream, files } = parsePorcelain(status.out)
   const unstagedDiffs = new Map(parseDiff(unstagedDiff.out).map(d => [d.file, d]))
   const stagedDiffs = new Map(parseDiff(stagedDiff.out).map(d => [d.file, d]))
 
+  const conflicted = files.filter(f => f.unmerged || f.xy.includes("U") || f.xy === "AA" || f.xy === "DD")
   const untracked = files.filter(f => f.xy === "??")
-  const unstaged = files.filter(f => f.xy !== "??" && f.xy[1] !== "." && f.xy[1] !== undefined)
-  const staged = files.filter(f => f.xy[0] !== "." && f.xy[0] !== "?")
+  const unstaged = files.filter(f => !conflicted.includes(f) && f.xy !== "??" && f.xy[1] !== "." && f.xy[1] !== undefined)
+  const staged = files.filter(f => !conflicted.includes(f) && f.xy[0] !== "." && f.xy[0] !== "?")
 
   const entries: MagitEntry[] = []
   const hunks: MagitHunk[] = []
   const visibility = cacheOrFolded instanceof Map ? cacheOrFolded : new Map<string, MagitSectionVisibility>()
   const builder = new MagitSectionBuilder({ visibilityCache: visibility })
 
-  builder.insertSection({ type: "status", value: root }, () => {
-    builder.insertHeading(`Head:     ${branch ?? "(detached)"} ${headMsg.out.trim()}`)
-    if (upstream) builder.insert(`Merge:    ${upstream}\n`)
-    const bisectLog = bisectPath.out.trim()
-    if (bisectPath.code === 0 && bisectLog && existsSync(isAbsolute(bisectLog) ? bisectLog : join(root, bisectLog))) {
-      builder.insert("Bisect:   in progress\n")
+  const insertFileSection = (f: FileChange, isStaged: boolean, diffs: Map<string, FileDiff>, codeOverride?: string) => {
+    const code = codeOverride ?? (f.unmerged ? "U" : isStaged ? f.xy[0]! : f.xy[1]!)
+    const entry: MagitEntry = {
+      file: f.file,
+      oldFile: f.oldFile,
+      staged: isStaged,
+      untracked: code === "?",
+      conflicted: code === "U",
+      startLine: 0,
+      endLine: 0,
     }
-    builder.insert("\n")
-  })
-
-  if (upstream) {
-    const aheadBehind = await git(["rev-list", "--count", "--left-right", "HEAD...@{upstream}"], root, undefined, undefined, editor)
-    if (aheadBehind.code === 0) {
-      const [aheadRaw, behindRaw] = aheadBehind.out.trim().split(/\s+/)
-      const ahead = Number(aheadRaw)
-      const behind = Number(behindRaw)
-      if (Number.isFinite(ahead) && ahead > 0) {
-        const commits = (await git(["log", "--oneline", "@{upstream}..HEAD"], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
-        builder.insertSection({ type: "unpushed", value: upstream }, () => {
-          builder.insertHeading(`Unpushed to ${upstream} (${ahead})`)
-          for (const commit of commits) builder.insert(`${commit}\n`)
-          builder.insert("\n")
-        })
-      }
-      if (Number.isFinite(behind) && behind > 0) {
-        const commits = (await git(["log", "--oneline", "HEAD..@{upstream}"], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
-        builder.insertSection({ type: "unpulled", value: upstream }, () => {
-          builder.insertHeading(`Unpulled from ${upstream} (${behind})`)
-          for (const commit of commits) builder.insert(`${commit}\n`)
-          builder.insert("\n")
-        })
-      }
-    }
-  }
-
-  const insertFileSection = (f: FileChange, isStaged: boolean, diffs: Map<string, FileDiff>) => {
-    const code = isStaged ? f.xy[0]! : f.xy[1]!
-    const entry: MagitEntry = { file: f.file, staged: isStaged, untracked: code === "?", startLine: 0, endLine: 0 }
     entries.push(entry)
     builder.insertSection({ type: "file", value: entry }, section => {
       entry.startLine = lineNumberAtTextPoint(builder.toString(), section.start)
-      builder.insertHeading(`${changeLabel(code)} ${f.file}`)
+      builder.insertHeading(`${changeLabel(code)} ${fileDisplayName(f)}`)
       const fd = diffs.get(f.file)
       for (const h of fd?.hunks ?? []) {
         const patch = hunkPatch(fd!, h)
-        const hunk: MagitHunk = { file: f.file, staged: isStaged, startLine: 0, endLine: 0, patch }
+        const hunk: MagitHunk = { file: f.file, oldFile: f.oldFile, staged: isStaged, startLine: 0, endLine: 0, patch }
         hunks.push(hunk)
         builder.insertSection({ type: "hunk", value: hunk }, hunkSection => {
           hunk.startLine = lineNumberAtTextPoint(builder.toString(), hunkSection.start)
@@ -262,6 +539,15 @@ export async function buildStatus(
     entry.endLine = lineNumberAtTextPoint(builder.toString(), builder.length)
   }
 
+  const insertConflictedFilesSection = () => {
+    if (!conflicted.length) return
+    builder.insertSection({ type: "conflicts", value: conflicted.length }, () => {
+      builder.insertHeading(`Conflicts (${conflicted.length})`)
+      for (const f of conflicted) insertFileSection(f, false, unstagedDiffs, "U")
+      builder.insert("\n")
+    })
+  }
+
   const insertChangeSection = (type: string, title: string, items: FileChange[], isStaged: boolean, diffs: Map<string, FileDiff>) => {
     if (!items.length) return
     builder.insertSection({ type, value: items.length }, () => {
@@ -270,6 +556,69 @@ export async function buildStatus(
       builder.insert("\n")
     })
   }
+
+  const headName = branch && branch !== "(detached)" ? branch : await shortRevision(root, "HEAD", editor)
+  const headSummary = trimOrNull(headMsg.out) ?? "(no commit message)"
+  const [upstreamKind, pushTarget, tag] = await Promise.all([
+    upstream ? upstreamHeaderLabel(root, branch, editor) : Promise.resolve(null),
+    pushBranchTarget(root, branch, editor),
+    describedTag(root, editor),
+  ])
+  const [upstreamSummary, pushSummary] = await Promise.all([
+    upstream ? revisionSummary(root, upstream, editor) : Promise.resolve(null),
+    pushTarget ? revisionSummary(root, pushTarget, editor) : Promise.resolve(null),
+  ])
+
+  builder.insertSection({ type: "status", value: root }, () => {
+    builder.insertHeading(statusHeader("Head:", `${headName} ${headSummary}`).trimEnd())
+    if (upstream && upstreamKind) {
+      builder.insert(statusHeader(upstreamKind, `${upstream} ${upstreamSummary ?? "does not exist"}`))
+    }
+    if (pushTarget) {
+      builder.insert(statusHeader("Push:", `${pushTarget} ${pushSummary ?? "does not exist"}`))
+    }
+    if (tag) {
+      builder.insert(statusHeader("Tag:", `${tag.tag} (${tag.count})`))
+    }
+    if (gitStateExists(gitDir, "BISECT_LOG")) {
+      builder.insert(statusHeader("Bisect:", "in progress"))
+    }
+    builder.insert("\n")
+  })
+
+  const conflictsInserted = await insertInProgressSections(builder, root, gitDir, conflicted, insertConflictedFilesSection, editor)
+  if (conflicted.length && !conflictsInserted) insertConflictedFilesSection()
+
+  const insertAheadBehindSections = async (target: string, valuePrefix: string) => {
+    const aheadBehind = await git(["rev-list", "--count", "--left-right", `HEAD...${target}`], root, undefined, undefined, editor)
+    if (aheadBehind.code !== 0) return
+    const [aheadRaw, behindRaw] = aheadBehind.out.trim().split(/\s+/)
+    const ahead = Number(aheadRaw)
+    const behind = Number(behindRaw)
+    if (Number.isFinite(ahead) && ahead > 0) {
+      const commits = (await git(["log", "--oneline", `${target}..HEAD`], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
+      insertCommitListSection(builder, {
+        type: "unpushed",
+        value: `${valuePrefix}${target}..`,
+        title: `Unpushed to ${target}`,
+        commits,
+        hidden: true,
+      })
+    }
+    if (Number.isFinite(behind) && behind > 0) {
+      const commits = (await git(["log", "--oneline", `HEAD..${target}`], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
+      insertCommitListSection(builder, {
+        type: "unpulled",
+        value: `${valuePrefix}..${target}`,
+        title: `Unpulled from ${target}`,
+        commits,
+        hidden: true,
+      })
+    }
+  }
+
+  if (upstream) await insertAheadBehindSections(upstream, "upstream:")
+  if (pushTarget && pushTarget !== upstream) await insertAheadBehindSections(pushTarget, "push:")
 
   insertChangeSection("untracked", "Untracked files", untracked, false, unstagedDiffs)
   insertChangeSection("unstaged", "Unstaged changes", unstaged, false, unstagedDiffs)
@@ -478,7 +827,7 @@ export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): T
   let offset = base
   for (const line of text.split("\n")) {
     const end = offset + line.length
-    if (/^(Head|Merge|Bisect|Untracked|Unstaged|Staged|Stashes|Recent|Unpushed|Unpulled)\b/.test(line)) {
+    if (/^(Head|Merge|Rebase|Push|Tag|Tags|Bisect|Merging|Rebasing|Applying|Cherry Picking|Reverting|Conflicts|Done|Todo|Untracked|Unstaged|Staged|Stashes|Recent|Unpushed|Unpulled)\b/.test(line)) {
       sectionSpans.push({ start: offset, end, face: "keyword" })
     }
     offset = end + 1
@@ -753,6 +1102,7 @@ const magitDispatchTransient: TransientDefinition = {
       { key: "s", label: "stage", command: "magit-stage" },
       { key: "u", label: "unstage", command: "magit-unstage" },
       { key: "k", label: "discard", command: "magit-discard" },
+      { key: "S-x", label: "file", command: "magit-file-popup" },
       { key: "tab", label: "toggle section", command: "magit-section-toggle" },
     ] },
     { title: "Prefixes", suffixes: [
@@ -952,6 +1302,15 @@ const magitRemoteTransient: TransientDefinition = {
   ] }],
 }
 
+const magitFileTransient: TransientDefinition = {
+  name: "magit-file",
+  title: "File",
+  groups: [{ title: "Actions", suffixes: [
+    { key: "i", label: "intent-to-add", command: "magit-stage-intent-to-add" },
+    { key: "u", label: "untrack", command: "magit-file-untrack" },
+  ] }],
+}
+
 const magitBisectTransient: TransientDefinition = {
   name: "magit-bisect",
   title: "Bisect",
@@ -1093,7 +1452,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("d", "magit-diff-popup")
   statusMap.bind("z", "magit-stash-popup")
   statusMap.bind("x", "magit-reset-popup")
-  statusMap.bind("S-x", "magit-reset-popup")
+  statusMap.bind("S-x", "magit-file-popup")
   statusMap.bind("S-b", "magit-bisect-popup")
   statusMap.bind("m", "magit-merge-popup")
   statusMap.bind("r", "magit-rebase-popup")
@@ -1303,6 +1662,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   defineTransientCommand(editor, "magit-revert-popup", magitRevertTransient, "Show the Magit revert popup.")
   defineTransientCommand(editor, "magit-tag-popup", magitTagTransient, "Show the Magit tag popup.")
   defineTransientCommand(editor, "magit-remote-popup", magitRemoteTransient, "Show the Magit remote popup.")
+  defineTransientCommand(editor, "magit-file-popup", magitFileTransient, "Show the Magit file popup.")
 
   editor.command("magit-status", async ({ editor, buffer, args }) => {
     const start = args[0] ?? buffer.directory() ?? process.cwd()
@@ -1342,9 +1702,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Nothing to stage at point")
       return
     }
-    await git(["add", "--", entry.file], root, undefined, undefined, editor)
+    await git(["add", "--", ...entryPathspecs(entry)], root, undefined, undefined, editor)
     await refresh(editor, root)
-    editor.message(`Staged ${entry.file}`)
+    editor.message(`Staged ${fileDisplayName(entry)}`)
   }, "Stage the hunk or file at point.")
 
   editor.command("magit-unstage", async ({ editor, buffer }) => {
@@ -1369,9 +1729,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Nothing to unstage at point")
       return
     }
-    await git(["restore", "--staged", "--", entry.file], root, undefined, undefined, editor)
+    await git(["restore", "--staged", "--", ...entryPathspecs(entry)], root, undefined, undefined, editor)
     await refresh(editor, root)
-    editor.message(`Unstaged ${entry.file}`)
+    editor.message(`Unstaged ${fileDisplayName(entry)}`)
   }, "Unstage the hunk or file at point.")
 
   editor.command("magit-commit", async ({ editor, buffer, args }) => {
@@ -1562,16 +1922,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-discard", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     const entry = entryAtPoint(buffer)
-    if (!root || !entry || entry.staged) {
+    if (!root || !entry || (entry.staged && !entry.oldFile)) {
       editor.message("Nothing to discard at point")
       return
     }
-    const ans = await editor.prompt(`Discard changes in ${entry.file}? (y or n) `)
+    const ans = await editor.prompt(`Discard changes in ${fileDisplayName(entry)}? (y or n) `)
     if (ans !== "y") {
       editor.message("Discard cancelled")
       return
     }
-    if (entry.untracked) {
+    if (entry.staged && entry.oldFile) {
+      const { err, code } = await git(["restore", "--staged", "--worktree", "--source=HEAD", "--", ...entryPathspecs(entry)], root, undefined, undefined, editor)
+      if (code !== 0) {
+        editor.message(`git restore failed: ${err.trim()}`)
+        return
+      }
+    } else if (entry.oldFile) {
+      const { err, code } = await git(["restore", "--worktree", "--source=HEAD", "--", ...entryPathspecs(entry)], root, undefined, undefined, editor)
+      if (code !== 0) {
+        editor.message(`git restore failed: ${err.trim()}`)
+        return
+      }
+    } else if (entry.untracked) {
       // No HEAD/index version to restore — discarding an untracked file means removing it.
       try {
         await unlink(join(root, entry.file))
@@ -1587,8 +1959,37 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       }
     }
     await refresh(editor, root)
-    editor.message(`Discarded ${entry.file}`)
+    editor.message(`Discarded ${fileDisplayName(entry)}`)
   }, "Discard unstaged changes to the file at point (with confirmation).")
+
+  editor.command("magit-file-untrack", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const entry = entryAtPoint(buffer)
+    const file = args[0] ?? entry?.file
+    if (!file) return editor.message("No file at point")
+    const { err, code } = await git(["rm", "--cached", "--", String(file)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git rm --cached failed: ${err.trim() || code}`)
+    await refresh(editor, root)
+    editor.message(`Untracked ${file}`)
+  }, "Stop tracking the file at point without deleting it from the worktree.")
+
+  editor.command("magit-stage-intent-to-add", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const entry = entryAtPoint(buffer)
+    let file = args[0] ? String(args[0]) : entry?.file
+    if (!file) {
+      const { out } = await git(["ls-files", "--others", "--exclude-standard"], root, undefined, undefined, editor)
+      const files = out.split("\n").filter(Boolean)
+      file = await editor.completingRead("Intent-to-add file: ", { collection: files, history: "magit-file" }) ?? undefined
+    }
+    if (!file) return
+    const { err, code } = await git(["add", "-N", "--", file], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git add -N failed: ${err.trim() || code}`)
+    await refresh(editor, root)
+    editor.message(`Marked ${file} intent-to-add`)
+  }, "Add the file at point to the index with intent-to-add.")
 
   editor.command("magit-file-checkout", async ({ editor, buffer, args }) => {
     const path = buffer.path
@@ -1676,6 +2077,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   const remoteDefault = async (editor: Editor, root: string, kind: "push" | "upstream"): Promise<string> => {
     const { out: branch } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const b = branch.trim()
+    if (kind === "push" && b) {
+      const configured = await gitConfig(root, `branch.${b}.pushRemote`, editor)
+        ?? await gitConfig(root, "remote.pushDefault", editor)
+      if (configured) return configured
+    }
     if (kind === "upstream") {
       const { out } = await git(["rev-parse", "--abbrev-ref", `${b}@{upstream}`], root, undefined, undefined, editor)
       const up = out.trim()

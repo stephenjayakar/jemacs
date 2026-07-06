@@ -6,9 +6,10 @@ import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { spawnProcess } from "../../src/platform/runtime"
 import { getMode } from "../../src/modes/mode"
-import { install } from "../../plugins/magit"
+import { buildStatus, install } from "../../plugins/magit"
 
 let repo: string
+let extraPaths: string[] = []
 
 async function git(args: string[], cwd = repo): Promise<string> {
   const proc = spawnProcess({ cmd: ["git", ...args], cwd, stdout: "pipe", stderr: "pipe" })
@@ -18,6 +19,7 @@ async function git(args: string[], cwd = repo): Promise<string> {
 }
 
 beforeEach(async () => {
+  extraPaths = []
   repo = await mkdtemp(join(tmpdir(), "jemacs-magit-parity-"))
   await git(["init", "-q", "-b", "main"])
   await git(["config", "user.email", "test@example.com"])
@@ -29,12 +31,38 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(repo, { recursive: true, force: true })
+  await Promise.all(extraPaths.map(path => rm(path, { recursive: true, force: true })))
 })
 
 function ed() {
   const editor = makeEditor()
   install(editor)
   return editor
+}
+
+function pointAtLine(text: string, needle: string): number {
+  const i = text.indexOf(needle)
+  if (i < 0) throw new Error(`not found in buffer: ${needle}`)
+  return i
+}
+
+async function bareRemote(name: string): Promise<string> {
+  const remote = await mkdtemp(join(tmpdir(), `jemacs-magit-${name}-`))
+  extraPaths.push(remote)
+  await git(["init", "--bare", "-q", "-b", "main", remote])
+  return remote
+}
+
+async function commitToRemote(remote: string, file: string, message: string): Promise<void> {
+  const work = await mkdtemp(join(tmpdir(), "jemacs-magit-remote-work-"))
+  extraPaths.push(work)
+  await git(["clone", "-q", remote, work])
+  await git(["config", "user.email", "test@example.com"], work)
+  await git(["config", "user.name", "test"], work)
+  await writeFile(join(work, file), `${message}\n`)
+  await git(["add", "."], work)
+  await git(["commit", "-q", "-m", message], work)
+  await git(["push", "-q", "origin", "main"], work)
 }
 
 test("install registers parity commands and bindings", () => {
@@ -47,6 +75,7 @@ test("install registers parity commands and bindings", () => {
     "magit-stash-apply", "magit-stash-drop", "magit-stash-list",
     "magit-commit-extend", "magit-commit-reword",
     "magit-diff-working", "magit-diff-unstaged", "magit-diff-staged",
+    "magit-file-popup", "magit-file-untrack", "magit-stage-intent-to-add",
   ]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
@@ -63,8 +92,122 @@ test("install registers parity commands and bindings", () => {
   expect(status?.keymap?.get("z a")).toBe("magit-stash-apply")
   expect(status?.keymap?.get("c e")).toBe("magit-commit-extend")
   expect(status?.keymap?.get("d d")).toBe("magit-diff-working")
+  expect(status?.keymap?.get("S-x")).toBe("magit-file-popup")
   expect(status?.keymap?.get("n")).toBe("magit-section-forward")
   expect(status?.keymap?.get("p")).toBe("magit-section-backward")
+})
+
+test("status headers show upstream pull mode, push target, and described tag", async () => {
+  const origin = await bareRemote("origin")
+  const publish = await bareRemote("publish")
+  await git(["remote", "add", "origin", origin])
+  await git(["remote", "add", "publish", publish])
+  await git(["push", "-q", "-u", "origin", "main"])
+  await git(["push", "-q", "publish", "main"])
+  await git(["fetch", "-q", "origin"])
+  await git(["fetch", "-q", "publish"])
+  await git(["config", "branch.main.pushRemote", "publish"])
+  await git(["config", "pull.rebase", "true"])
+  await git(["tag", "v1.0"])
+
+  const status = await buildStatus(repo)
+
+  expect(status.text).toContain("Head:     main initial")
+  expect(status.text).toContain("Rebase:   origin/main initial")
+  expect(status.text).toContain("Push:     publish/main initial")
+  expect(status.text).toContain("Tag:      v1.0 (0)")
+  expect(status.text).not.toContain("Merge:    origin/main")
+})
+
+test("status shows unpushed and unpulled sections for upstream and push-remote", async () => {
+  const origin = await bareRemote("origin")
+  const publish = await bareRemote("publish")
+  await git(["remote", "add", "origin", origin])
+  await git(["remote", "add", "publish", publish])
+  await git(["push", "-q", "-u", "origin", "main"])
+  await git(["push", "-q", "publish", "main"])
+  await git(["config", "branch.main.pushRemote", "publish"])
+
+  await commitToRemote(origin, "origin.txt", "origin ahead")
+  await commitToRemote(publish, "publish.txt", "publish ahead")
+  await writeFile(join(repo, "local.txt"), "local ahead\n")
+  await git(["add", "."])
+  await git(["commit", "-q", "-m", "local ahead"])
+  await git(["fetch", "-q", "origin"])
+  await git(["fetch", "-q", "publish"])
+
+  const status = await buildStatus(repo)
+
+  expect(status.text).toContain("Unpushed to origin/main")
+  expect(status.text).toContain("Unpulled from origin/main")
+  expect(status.text).toContain("Unpushed to publish/main")
+  expect(status.text).toContain("Unpulled from publish/main")
+  expect(status.text).toContain("local ahead")
+  expect(status.text).toContain("origin ahead")
+  expect(status.text).toContain("publish ahead")
+})
+
+test("merge conflict status shows in-progress merge and conflicted files", async () => {
+  await git(["checkout", "-q", "-b", "feature"])
+  await writeFile(join(repo, "a.txt"), "feature\n")
+  await git(["commit", "-am", "feature edit", "-q"])
+  await git(["checkout", "-q", "main"])
+  await writeFile(join(repo, "a.txt"), "main\n")
+  await git(["commit", "-am", "main edit", "-q"])
+  await git(["merge", "feature"])
+
+  const status = await buildStatus(repo)
+
+  expect(status.text).toContain("Merging")
+  expect(status.text).toContain("Conflicts (1)")
+  expect(status.text).toContain("unmerged   a.txt")
+})
+
+test("rename entries display old and new paths and stage/unstage as a pair", async () => {
+  await git(["mv", "a.txt", "renamed.txt"])
+  const editor = ed()
+  await editor.run("magit-status", [repo])
+  let buf = editor.currentBuffer
+  expect(buf.text).toContain("renamed   a.txt -> renamed.txt")
+
+  buf.point = pointAtLine(buf.text, "renamed   a.txt -> renamed.txt")
+  await keySeq(editor, "u")
+  expect((await git(["diff", "--cached", "--name-status"])).trim()).toBe("")
+  buf = editor.currentBuffer
+  expect(buf.text).toContain("deleted")
+  expect(buf.text).toContain("untracked  renamed.txt")
+
+  buf.point = pointAtLine(buf.text, "deleted")
+  await keySeq(editor, "s")
+  buf = editor.currentBuffer
+  buf.point = pointAtLine(buf.text, "untracked  renamed.txt")
+  await keySeq(editor, "s")
+
+  expect(editor.currentBuffer.text).toContain("renamed   a.txt -> renamed.txt")
+  expect((await git(["diff", "--cached", "--name-status"]))).toContain("R100")
+})
+
+test("X u untracks a file and X i marks an untracked file intent-to-add", async () => {
+  const editor = ed()
+  await writeFile(join(repo, "a.txt"), "changed\n")
+  await editor.run("magit-status", [repo])
+  let buf = editor.currentBuffer
+  buf.point = pointAtLine(buf.text, "modified   a.txt")
+  await keySeq(editor, "S-x", "u")
+  expect((await git(["ls-files", "--", "a.txt"])).trim()).toBe("")
+  expect(editor.currentBuffer.text).toContain("untracked  a.txt")
+
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "track a again"])
+  await writeFile(join(repo, "intent.txt"), "intent\n")
+  await editor.run("magit-status", [repo])
+  buf = editor.currentBuffer
+  buf.point = pointAtLine(buf.text, "untracked  intent.txt")
+  await keySeq(editor, "S-x", "i")
+
+  expect((await git(["diff", "--cached", "--name-only"])).trim()).toBe("")
+  expect((await git(["diff", "--name-only"]))).toContain("intent.txt")
+  expect(editor.currentBuffer.text).toContain("new file   intent.txt")
 })
 
 test("m m merges a branch into the current branch", async () => {
