@@ -1,4 +1,5 @@
-import { basename, dirname, resolve, sep } from "node:path"
+import { readFileSync } from "node:fs"
+import { basename, dirname, join, resolve, sep } from "node:path"
 import { BufferModel, inferMode } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
@@ -43,9 +44,9 @@ import {
 import type { RegisterContents } from "./register"
 import { modeHookName, runHooks } from "./hooks"
 import type { LspManager } from "../lsp/manager"
-import { fileExists, isDirectory, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
+import { fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
-import { getCustom } from "../runtime/custom"
+import { defcustom, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
 import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
 import type { SourceLocation } from "../runtime/source"
@@ -115,6 +116,7 @@ export type MinibufferCompletionDisplay = {
 export type TransientInfix = {
   key: string
   label: string
+  description?: string
   argument: string
   kind?: "toggle" | "value"
   defaultValue?: boolean | string
@@ -126,6 +128,7 @@ export type TransientInfix = {
 export type TransientSuffix = {
   key: string
   label: string
+  description?: string
   command: string
   args?: string[]
   transient?: true | "stay" | "return"
@@ -147,8 +150,19 @@ export type TransientState = {
   definition: TransientDefinition
   values: Map<string, boolean | string>
   pending: string[]
+  helpPending: string[] | null
+  historyIndex: number | null
   windowId: string
 }
+
+type TransientValue = boolean | string
+type TransientValueSnapshot = Record<string, TransientValue>
+type TransientEngineCommand =
+  | "transient-set"
+  | "transient-save"
+  | "transient-reset"
+  | "transient-history-prev"
+  | "transient-history-next"
 
 export type CompletingReadFunction = (editor: Editor, prompt: string, options: CompletingReadOptions) => Promise<string | null>
 
@@ -194,6 +208,11 @@ export class Editor {
   transient: TransientState | null = null
   private readonly transientStack: TransientState[] = []
   private suspendedTransient: { active: TransientState; stack: TransientState[] } | null = null
+  private readonly transientSessionValues = new Map<string, TransientValueSnapshot>()
+  private transientSavedValues = new Map<string, TransientValueSnapshot>()
+  private transientSavedValuesFile: string | null = null
+  private transientSavedValuesFileExists = false
+  private readonly transientHistory = new Map<string, TransientValueSnapshot[]>()
   isearch: IsearchState | null = null
   /** Per-key dispatch while isearch is active; the UI loop is owned by lisp/isearch-ui (DESIGN.md). */
   isearchKeyHandler: ((key: KeyEventLike) => Promise<KeyDispatchResult | null>) | null = null
@@ -254,7 +273,13 @@ export class Editor {
     this.windowLayout = rootWindow
     this.selectedWindowId = rootWindow.id
     this.tabs.push({ name: "1", bufferId: scratch.id })
+    defcustom("transient-values-file", "string", join(homedir(), ".jemacs", "transient.json"), "File where transient-saved values are persisted.")
     this.command("transient-resume", ({ editor }) => editor.resumeTransient(), "Resume the last suspended transient popup.")
+    this.command("transient-set", ({ editor }) => editor.transientSet(), "Set the active transient values for this session.")
+    this.command("transient-save", async ({ editor }) => editor.transientSave(), "Save the active transient values across sessions.")
+    this.command("transient-reset", async ({ editor }) => editor.transientReset(), "Reset the active transient values to their defaults.")
+    this.command("transient-history-prev", ({ editor }) => editor.transientHistoryCycle("prev"), "Load older transient argument history.")
+    this.command("transient-history-next", ({ editor }) => editor.transientHistoryCycle("next"), "Load newer transient argument history.")
   }
 
   get completingReadFunction(): CompletingReadFunction | null {
@@ -1061,12 +1086,14 @@ export class Editor {
   }
 
   openTransient(definition: TransientDefinition): void {
-    const values = new Map<string, boolean | string>()
-    for (const group of definition.groups) {
-      for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
-    }
+    this.loadTransientSavedValues()
+    const values = transientDefaultValues(definition)
+    const saved = this.transientSavedValues.get(definition.name)
+    if (saved) applyTransientValueSnapshot(definition, values, saved)
+    const session = this.transientSessionValues.get(definition.name)
+    if (session) applyTransientValueSnapshot(definition, values, session)
     if (this.transient) this.transientStack.push(this.transient)
-    this.transient = { definition, values, pending: [], windowId: this.selectedWindowId }
+    this.transient = { definition, values, pending: [], helpPending: null, historyIndex: null, windowId: this.selectedWindowId }
     void this.changed("transient-open")
   }
 
@@ -1096,9 +1123,13 @@ export class Editor {
   private async handleTransientKey(key: KeyEventLike): Promise<KeyDispatchResult | null> {
     const state = this.transient
     if (!state) return null
+    if (state.helpPending) return this.handleTransientHelpKey(state, key)
     const token = keyToken(key)
     const sequence = [...state.pending, token].join(" ")
-    const hasExplicitBinding = Boolean(transientInfix(state.definition, sequence) ?? transientSuffix(state.definition, sequence))
+    const infix = transientInfix(state.definition, sequence)
+    const suffix = transientSuffix(state.definition, sequence)
+    const hasExplicitBinding = Boolean(infix ?? suffix)
+    const hasDefinitionPrefix = transientHasPrefix(state.definition, sequence)
     if (!hasExplicitBinding && token === "C-q") {
       this.transientQuitAll()
       await this.changed("transient-cancel")
@@ -1119,9 +1150,22 @@ export class Editor {
       await this.changed("transient-suspend")
       return { status: "command", command: "transient-suspend" }
     }
-    const infix = transientInfix(state.definition, sequence)
+    if (!hasExplicitBinding && !hasDefinitionPrefix && (token === "C-h" || token === "?")) {
+      state.pending = []
+      state.helpPending = []
+      this.message("Describe key: ")
+      await this.changed("transient-help")
+      return { status: "pending" }
+    }
+    const engineCommand = transientEngineCommand(sequence)
+    if (!hasExplicitBinding && !hasDefinitionPrefix && engineCommand) {
+      state.pending = []
+      await this.runTransientEngineCommand(engineCommand)
+      return { status: "command", command: engineCommand }
+    }
     if (infix) {
       state.pending = []
+      state.historyIndex = null
       if (infix.choices?.length) {
         const current = state.values.get(infix.argument)
         const index = typeof current === "string" ? infix.choices.indexOf(current) : -1
@@ -1139,19 +1183,19 @@ export class Editor {
       await this.changed("transient-infix")
       return { status: "command", command: "transient-infix" }
     }
-    const suffix = transientSuffix(state.definition, sequence)
     if (suffix) {
       state.pending = []
       const args = [...transientArguments(state), ...(suffix.args ?? [])]
       if (!suffix.transient) this.transientQuitAll("")
       await this.run(suffix.command, args, key)
+      if (args.length) this.pushTransientHistory(state.definition.name, transientValueSnapshot(state))
       if (suffix.transient === "return" && this.transient === state) {
         this.transientQuitOne("")
         await this.changed("transient-return")
       }
       return { status: "command", command: suffix.command }
     }
-    if (transientHasPrefix(state.definition, sequence)) {
+    if (hasDefinitionPrefix || transientEngineHasPrefix(sequence)) {
       state.pending.push(token)
       await this.changed("transient-prefix")
       return { status: "pending" }
@@ -1160,6 +1204,176 @@ export class Editor {
     this.message(`No transient binding: ${token}`)
     await this.changed("transient-unmatched")
     return { status: "unmatched" }
+  }
+
+  private async handleTransientHelpKey(state: TransientState, key: KeyEventLike): Promise<KeyDispatchResult> {
+    const token = keyToken(key)
+    if (token === "C-g") {
+      state.helpPending = null
+      this.message("Quit")
+      await this.changed("transient-help-cancel")
+      return { status: "command", command: "keyboard-quit" }
+    }
+    state.helpPending!.push(token)
+    const sequence = state.helpPending!.join(" ")
+    const infix = transientInfix(state.definition, sequence)
+    if (infix) {
+      state.helpPending = null
+      this.message(infix.description ?? infix.label)
+      await this.changed("transient-help-describe")
+      return { status: "command", command: "transient-help" }
+    }
+    const suffix = transientSuffix(state.definition, sequence)
+    if (suffix) {
+      state.helpPending = null
+      this.message(suffix.description ?? this.commands.get(suffix.command)?.description ?? suffix.label)
+      await this.changed("transient-help-describe")
+      return { status: "command", command: "transient-help" }
+    }
+    if (transientHasPrefix(state.definition, sequence)) {
+      this.message(`Describe key: ${emacsKeyDescription(sequence)}`)
+      await this.changed("transient-help-prefix")
+      return { status: "pending" }
+    }
+    state.helpPending = null
+    this.message(`No transient binding: ${emacsKeyDescription(sequence)}`)
+    await this.changed("transient-help-unmatched")
+    return { status: "unmatched" }
+  }
+
+  private async runTransientEngineCommand(command: TransientEngineCommand): Promise<void> {
+    switch (command) {
+      case "transient-set":
+        this.transientSet()
+        return
+      case "transient-save":
+        await this.transientSave()
+        return
+      case "transient-reset":
+        await this.transientReset()
+        return
+      case "transient-history-prev":
+        this.transientHistoryCycle("prev")
+        return
+      case "transient-history-next":
+        this.transientHistoryCycle("next")
+        return
+    }
+  }
+
+  private transientSet(): void {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.transientSessionValues.set(state.definition.name, transientValueSnapshot(state))
+    this.message(`Set transient values for ${state.definition.name}`)
+    void this.changed("transient-set")
+  }
+
+  private async transientSave(): Promise<void> {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.loadTransientSavedValues()
+    const snapshot = transientValueSnapshot(state)
+    this.transientSessionValues.set(state.definition.name, snapshot)
+    this.transientSavedValues.set(state.definition.name, snapshot)
+    await this.writeTransientSavedValues()
+    this.message(`Saved transient values for ${state.definition.name}`)
+    await this.changed("transient-save")
+  }
+
+  private async transientReset(): Promise<void> {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.loadTransientSavedValues()
+    this.transientSessionValues.delete(state.definition.name)
+    const hadSaved = this.transientSavedValues.delete(state.definition.name)
+    state.values = transientDefaultValues(state.definition)
+    state.historyIndex = null
+    if (hadSaved || this.transientSavedValuesFileExists) await this.writeTransientSavedValues()
+    this.message(`Reset transient values for ${state.definition.name}`)
+    await this.changed("transient-reset")
+  }
+
+  private transientHistoryCycle(direction: "prev" | "next"): void {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    const history = this.transientHistory.get(state.definition.name) ?? []
+    if (!history.length) {
+      this.message(`No transient history for ${state.definition.name}`)
+      return
+    }
+    const nextIndex = direction === "prev"
+      ? state.historyIndex == null ? 0 : (state.historyIndex + 1) % history.length
+      : state.historyIndex == null ? history.length - 1 : (state.historyIndex - 1 + history.length) % history.length
+    state.historyIndex = nextIndex
+    applyTransientValueSnapshot(state.definition, state.values, history[nextIndex]!)
+    this.message(`Transient history ${nextIndex + 1}/${history.length}`)
+    void this.changed(`transient-history-${direction}`)
+  }
+
+  private pushTransientHistory(name: string, snapshot: TransientValueSnapshot): void {
+    const history = this.transientHistory.get(name) ?? []
+    history.unshift(snapshot)
+    if (history.length > TRANSIENT_HISTORY_LIMIT) history.length = TRANSIENT_HISTORY_LIMIT
+    this.transientHistory.set(name, history)
+  }
+
+  private transientValuesFile(): string {
+    return getCustom<string>("transient-values-file") ?? join(homedir(), ".jemacs", "transient.json")
+  }
+
+  private loadTransientSavedValues(): void {
+    const file = this.transientValuesFile()
+    if (this.transientSavedValuesFile === file) return
+    this.transientSavedValuesFile = file
+    this.transientSavedValues = new Map()
+    this.transientSavedValuesFileExists = false
+    let text: string
+    try {
+      text = readFileSync(file, "utf8")
+      this.transientSavedValuesFileExists = true
+    } catch {
+      return
+    }
+    let data: unknown
+    try {
+      data = JSON.parse(text)
+    } catch {
+      return
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return
+    for (const [name, value] of Object.entries(data)) {
+      const snapshot = parseTransientValueSnapshot(value)
+      if (snapshot) this.transientSavedValues.set(name, snapshot)
+    }
+  }
+
+  private async writeTransientSavedValues(): Promise<void> {
+    const file = this.transientValuesFile()
+    if (!this.transientSavedValues.size) {
+      await unlink(file).catch(() => undefined)
+      this.transientSavedValuesFile = file
+      this.transientSavedValuesFileExists = false
+      return
+    }
+    const data: Record<string, TransientValueSnapshot> = {}
+    for (const [name, snapshot] of this.transientSavedValues) data[name] = snapshot
+    await mkdir(dirname(file), { recursive: true })
+    await writeFileText(file, JSON.stringify(data, null, 2))
+    this.transientSavedValuesFile = file
+    this.transientSavedValuesFileExists = true
   }
 
   private transientQuitOne(message = "Quit"): void {
@@ -1183,7 +1397,12 @@ export class Editor {
   private formatTransient(state: TransientState): string {
     const { definition, values } = state
     const lines = [definition.title]
-    if (state.pending.length) lines.push(`-- pending: ${state.pending.join(" ")} `)
+    if (state.pending.length) {
+      lines.push(`-- pending: ${state.pending.join(" ")} `)
+      if (normalizeSequence(state.pending.join(" ")) === "C-x") {
+        lines.push("Common: C-x s set  C-x C-s save  C-x C-r reset  C-x p previous  C-x n next")
+      }
+    }
     for (const group of definition.groups) {
       lines.push("")
       lines.push(group.title)
@@ -1740,11 +1959,32 @@ function shouldOpenLiterally(size: number | undefined): boolean {
   return threshold > 0 && size > threshold
 }
 
+const TRANSIENT_HISTORY_LIMIT = 10
+const TRANSIENT_ENGINE_BINDINGS = new Map<string, TransientEngineCommand>([
+  ["C-x s", "transient-set"],
+  ["C-x C-s", "transient-save"],
+  ["C-x C-r", "transient-reset"],
+  ["C-x p", "transient-history-prev"],
+  ["C-x n", "transient-history-next"],
+])
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`
   if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MiB`
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GiB`
+}
+
+function transientEngineCommand(key: string): TransientEngineCommand | undefined {
+  return TRANSIENT_ENGINE_BINDINGS.get(normalizeSequence(key))
+}
+
+function transientEngineHasPrefix(key: string): boolean {
+  const prefix = `${normalizeSequence(key)} `
+  for (const sequence of TRANSIENT_ENGINE_BINDINGS.keys()) {
+    if (sequence.startsWith(prefix)) return true
+  }
+  return false
 }
 
 function transientInfix(definition: TransientDefinition, key: string): TransientInfix | undefined {
@@ -1777,6 +2017,41 @@ function transientInfixMarker(infix: TransientInfix, value: boolean | string | u
     return typeof value === "string" && value ? `[${infix.argument}=${value}]` : "[ ]"
   }
   return `[${value === true ? "*" : " "}]`
+}
+
+function transientDefaultValues(definition: TransientDefinition): Map<string, TransientValue> {
+  const values = new Map<string, TransientValue>()
+  for (const group of definition.groups) {
+    for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
+  }
+  return values
+}
+
+function transientValueSnapshot(state: TransientState): TransientValueSnapshot {
+  const snapshot: TransientValueSnapshot = {}
+  for (const group of state.definition.groups) {
+    for (const infix of group.infixes ?? []) {
+      snapshot[infix.argument] = state.values.get(infix.argument) ?? false
+    }
+  }
+  return snapshot
+}
+
+function applyTransientValueSnapshot(definition: TransientDefinition, values: Map<string, TransientValue>, snapshot: TransientValueSnapshot): void {
+  for (const group of definition.groups) {
+    for (const infix of group.infixes ?? []) {
+      if (Object.hasOwn(snapshot, infix.argument)) values.set(infix.argument, snapshot[infix.argument]!)
+    }
+  }
+}
+
+function parseTransientValueSnapshot(value: unknown): TransientValueSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const snapshot: TransientValueSnapshot = {}
+  for (const [argument, entry] of Object.entries(value)) {
+    if (typeof entry === "boolean" || typeof entry === "string") snapshot[argument] = entry
+  }
+  return snapshot
 }
 
 function transientArguments(state: TransientState): string[] {
