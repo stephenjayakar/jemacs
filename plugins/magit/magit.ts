@@ -10,6 +10,7 @@ import { Keymap } from "../../src/kernel/keymap"
 import { nextWindowId } from "../../src/kernel/window"
 import { spawnProcess } from "../../src/platform/runtime"
 import { diffFontLockText } from "../../src/modes/diff"
+import { defcustom, getCustom } from "../../src/runtime/custom"
 import { projectRoot } from "../project"
 import { BLAME_SHAS_LOCAL, blameChunkTarget, blameShaAtPoint, parseBlamePorcelain, renderBlame } from "./blame"
 import { parseBisectOutput } from "./bisect"
@@ -149,6 +150,14 @@ function changeLabel(code: string): string {
 
 export type DiffHunk = { header: string; lines: string[] }
 export type FileDiff = { file: string; header: string[]; hunks: DiffHunk[] }
+type HunkHeader = {
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+  suffix: string
+}
+type TextLine = { text: string; start: number; end: number; index: number }
 
 /** Split `git diff` output into per-file headers and per-hunk bodies, preserving enough to rebuild a patch. */
 export function parseDiff(diff: string): FileDiff[] {
@@ -178,6 +187,303 @@ export function parseDiff(diff: string): FileDiff[] {
 
 function hunkPatch(fd: FileDiff, h: DiffHunk): string {
   return [...fd.header, h.header, ...h.lines, ""].join("\n")
+}
+
+function parseHunkHeader(header: string): HunkHeader | null {
+  const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(header)
+  if (!m) return null
+  return {
+    oldStart: Number(m[1]),
+    oldCount: m[2] == null ? 1 : Number(m[2]),
+    newStart: Number(m[3]),
+    newCount: m[4] == null ? 1 : Number(m[4]),
+    suffix: m[5] ?? "",
+  }
+}
+
+function formatHunkHeader(header: HunkHeader, oldCount: number, newCount: number): string {
+  const oldRange = oldCount === 1 ? String(header.oldStart) : `${header.oldStart},${oldCount}`
+  const newRange = newCount === 1 ? String(header.newStart) : `${header.newStart},${newCount}`
+  return `@@ -${oldRange} +${newRange} @@${header.suffix}`
+}
+
+function lineInfos(text: string): TextLine[] {
+  const lines: TextLine[] = []
+  let start = 0
+  let index = 0
+  while (start <= text.length) {
+    const newline = text.indexOf("\n", start)
+    const end = newline < 0 ? text.length : newline
+    lines.push({ text: text.slice(start, end), start, end, index })
+    if (newline < 0) break
+    start = newline + 1
+    index++
+    if (start === text.length) break
+  }
+  return lines
+}
+
+function countHunkLine(line: string, side: "old" | "new"): boolean {
+  if (line.startsWith("\\")) return false
+  if (line.startsWith(" ")) return true
+  if (side === "old") return line.startsWith("-")
+  return line.startsWith("+")
+}
+
+function effectiveSelectedHunkLines(lines: string[], selectedBodyLines: ReadonlySet<number>): Set<number> {
+  const selected = new Set(selectedBodyLines)
+  let i = 0
+  while (i < lines.length) {
+    if (!lines[i]?.startsWith("-")) {
+      i++
+      continue
+    }
+    const removed: number[] = []
+    while (i < lines.length && lines[i]?.startsWith("-")) removed.push(i++)
+    const between = i
+    while (i < lines.length && lines[i]?.startsWith("\\")) i++
+    const added: number[] = []
+    while (i < lines.length && lines[i]?.startsWith("+")) added.push(i++)
+    if (!added.length) continue
+    if (removed.length === added.length) {
+      for (let n = 0; n < removed.length; n++) {
+        const r = removed[n]!
+        const a = added[n]!
+        if (selected.has(r) || selected.has(a)) {
+          selected.add(r)
+          selected.add(a)
+        }
+      }
+    } else if ([...removed, ...added].some(index => selected.has(index))) {
+      for (const index of [...removed, ...added]) selected.add(index)
+    }
+    if (between !== i) {
+      // No-newline markers annotate the changed line immediately before them.
+      // They are kept later only when that changed line survives the partial hunk.
+    }
+  }
+  return selected
+}
+
+function transformPartialHunkBody(body: string[], selected: ReadonlySet<number>): string[] {
+  const out: string[] = []
+  for (let i = 0; i < body.length; i++) {
+    const line = body[i]!
+    if (line.startsWith("-")) {
+      const removed: Array<{ index: number; line: string }> = []
+      while (i < body.length && body[i]?.startsWith("-")) {
+        removed.push({ index: i, line: body[i]! })
+        i++
+      }
+      while (i < body.length && body[i]?.startsWith("\\")) i++
+      const added: Array<{ index: number; line: string }> = []
+      while (i < body.length && body[i]?.startsWith("+")) {
+        added.push({ index: i, line: body[i]! })
+        i++
+      }
+      i--
+      if (added.length && removed.length === added.length) {
+        for (let n = 0; n < removed.length; n++) {
+          const r = removed[n]!
+          const a = added[n]!
+          if (selected.has(r.index) || selected.has(a.index)) {
+            out.push(r.line, a.line)
+          } else {
+            out.push(` ${r.line.slice(1)}`)
+          }
+        }
+      } else if (added.length) {
+        const wholeBlock = [...removed, ...added].some(entry => selected.has(entry.index))
+        if (wholeBlock) out.push(...removed.map(entry => entry.line), ...added.map(entry => entry.line))
+        else out.push(...removed.map(entry => ` ${entry.line.slice(1)}`))
+      } else {
+        for (const r of removed) out.push(selected.has(r.index) ? r.line : ` ${r.line.slice(1)}`)
+      }
+      continue
+    }
+    if (line.startsWith("+")) {
+      if (selected.has(i)) out.push(line)
+      continue
+    }
+    if (line.startsWith("\\")) {
+      const prev = out[out.length - 1]
+      if (prev?.startsWith("+") || prev?.startsWith("-")) out.push(line)
+      continue
+    }
+    out.push(line)
+  }
+  return out
+}
+
+export function partialHunkPatch(patch: string, selectedBodyLines: Iterable<number>): string | null {
+  const raw = patch.endsWith("\n") ? patch.slice(0, -1) : patch
+  const lines = raw.split("\n")
+  const hunkIndex = lines.findIndex(line => line.startsWith("@@"))
+  if (hunkIndex < 0) return null
+  const parsed = parseHunkHeader(lines[hunkIndex]!)
+  if (!parsed) return null
+  const body = lines.slice(hunkIndex + 1)
+  const selected = effectiveSelectedHunkLines(body, new Set(selectedBodyLines))
+  const selectedChanged = [...selected].some(index => body[index]?.startsWith("+") || body[index]?.startsWith("-"))
+  if (!selectedChanged) return null
+
+  const outBody = transformPartialHunkBody(body, selected)
+
+  const oldCount = outBody.filter(line => countHunkLine(line, "old")).length
+  const newCount = outBody.filter(line => countHunkLine(line, "new")).length
+  const next = [
+    ...lines.slice(0, hunkIndex),
+    formatHunkHeader(parsed, oldCount, newCount),
+    ...outBody,
+    "",
+  ]
+  return next.join("\n")
+}
+
+function selectedHunkBodyLines(buffer: BufferModel, hunk: MagitHunk): number[] | null {
+  if (!buffer.useRegion()) return null
+  const section = sectionOfType(buffer, "hunk")
+  if (section && section.value !== hunk) return null
+  const start = Math.min(buffer.mark!, buffer.point)
+  const end = Math.max(buffer.mark!, buffer.point)
+  const lines = hunk.patch.split("\n")
+  const hunkHeaderIndex = lines.findIndex(line => line.startsWith("@@"))
+  if (hunkHeaderIndex < 0) return null
+  const bodyLineCount = lines.length - hunkHeaderIndex - 2
+  const selected: number[] = []
+  for (let i = 0; i < bodyLineCount; i++) {
+    const bufferLine = hunk.startLine + 1 + i
+    if (bufferLine < 0 || bufferLine >= buffer.lineCount) continue
+    const [lineStart, lineEndNoNewline] = buffer.lineBounds(bufferLine)
+    const lineEnd = Math.min(buffer.text.length, lineEndNoNewline + 1)
+    if (lineEnd > start && lineStart < end) selected.push(i)
+  }
+  return selected.length ? selected : null
+}
+
+function partialPatchForRegion(buffer: BufferModel, hunk: MagitHunk): string | null {
+  const selected = selectedHunkBodyLines(buffer, hunk)
+  return selected ? partialHunkPatch(hunk.patch, selected) : null
+}
+
+type Token = { text: string; start: number; end: number }
+
+function wordTokens(text: string): Token[] {
+  const tokens: Token[] = []
+  const re = /[A-Za-z0-9_]+|\s+|[^A-Za-z0-9_\s]+/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) tokens.push({ text: m[0], start: m.index, end: m.index + m[0].length })
+  return tokens
+}
+
+function changedSubstringBounds(oldText: string, newText: string): [number, number, number, number] {
+  let prefix = 0
+  const maxPrefix = Math.min(oldText.length, newText.length)
+  while (prefix < maxPrefix && oldText[prefix] === newText[prefix]) prefix++
+  let oldSuffix = oldText.length
+  let newSuffix = newText.length
+  while (oldSuffix > prefix && newSuffix > prefix && oldText[oldSuffix - 1] === newText[newSuffix - 1]) {
+    oldSuffix--
+    newSuffix--
+  }
+  return [prefix, oldSuffix, prefix, newSuffix]
+}
+
+function tokenChangedRanges(oldText: string, newText: string): Array<[number, number, number, number]> {
+  const oldTokens = wordTokens(oldText)
+  const newTokens = wordTokens(newText)
+  if (!oldTokens.length || !newTokens.length) return [changedSubstringBounds(oldText, newText)]
+  const dp: number[][] = Array.from({ length: oldTokens.length + 1 }, () => Array(newTokens.length + 1).fill(0))
+  for (let i = oldTokens.length - 1; i >= 0; i--) {
+    for (let j = newTokens.length - 1; j >= 0; j--) {
+      dp[i]![j] = oldTokens[i]!.text === newTokens[j]!.text
+        ? dp[i + 1]![j + 1]! + 1
+        : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
+    }
+  }
+  const pairs: Array<[number, number]> = []
+  let i = 0
+  let j = 0
+  while (i < oldTokens.length && j < newTokens.length) {
+    if (oldTokens[i]!.text === newTokens[j]!.text) {
+      pairs.push([i, j])
+      i++
+      j++
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) i++
+    else j++
+  }
+  const ranges: Array<[number, number, number, number]> = []
+  let oldCursor = 0
+  let newCursor = 0
+  for (const [oldIndex, newIndex] of pairs) {
+    const oldToken = oldTokens[oldIndex]!
+    const newToken = newTokens[newIndex]!
+    if (oldCursor < oldToken.start || newCursor < newToken.start) {
+      ranges.push([oldCursor, oldToken.start, newCursor, newToken.start])
+    }
+    oldCursor = oldToken.end
+    newCursor = newToken.end
+  }
+  if (oldCursor < oldText.length || newCursor < newText.length) ranges.push([oldCursor, oldText.length, newCursor, newText.length])
+  return ranges.filter(([oldStart, oldEnd, newStart, newEnd]) => oldStart < oldEnd || newStart < newEnd)
+}
+
+function refineLinePairs(removed: TextLine[], added: TextLine[], prefixLen: number, spans: TextSpan[]): void {
+  const n = Math.min(removed.length, added.length)
+  for (let i = 0; i < n; i++) {
+    const r = removed[i]!
+    const a = added[i]!
+    const oldText = r.text.slice(prefixLen)
+    const newText = a.text.slice(prefixLen)
+    for (const [oldStart, oldEnd, newStart, newEnd] of tokenChangedRanges(oldText, newText)) {
+      if (oldStart < oldEnd) spans.push({ start: r.start + prefixLen + oldStart, end: r.start + prefixLen + oldEnd, face: "diffRefineRemoved" })
+      if (newStart < newEnd) spans.push({ start: a.start + prefixLen + newStart, end: a.start + prefixLen + newEnd, face: "diffRefineAdded" })
+    }
+  }
+  for (const r of removed.slice(n)) {
+    if (r.text.length > prefixLen) spans.push({ start: r.start + prefixLen, end: r.end, face: "diffRefineRemoved" })
+  }
+  for (const a of added.slice(n)) {
+    if (a.text.length > prefixLen) spans.push({ start: a.start + prefixLen, end: a.end, face: "diffRefineAdded" })
+  }
+}
+
+function unifiedHunkRanges(lines: TextLine[]): Array<{ startLine: number; endLine: number; start: number; end: number }> {
+  const ranges: Array<{ startLine: number; endLine: number; start: number; end: number }> = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]!.text.startsWith("@@")) continue
+    let endLine = lines.length - 1
+    for (let j = i + 1; j < lines.length; j++) {
+      const text = lines[j]!.text
+      if (text.startsWith("@@") || text.startsWith("diff --git ")) {
+        endLine = j - 1
+        break
+      }
+    }
+    ranges.push({ startLine: i, endLine, start: lines[i]!.start, end: lines[endLine]?.end ?? lines[i]!.end })
+  }
+  return ranges
+}
+
+export function magitDiffRefineSpans(text: string, options: { point?: number; all?: boolean; offset?: number } = {}): TextSpan[] {
+  const offset = options.offset ?? 0
+  const lines = lineInfos(text)
+  const ranges = unifiedHunkRanges(lines)
+    .filter(range => options.all || options.point == null || (options.point >= range.start && options.point <= range.end))
+  const spans: TextSpan[] = []
+  for (const range of ranges) {
+    for (let i = range.startLine + 1; i <= range.endLine; i++) {
+      if (!lines[i]?.text.startsWith("-")) continue
+      const removed: TextLine[] = []
+      while (i <= range.endLine && lines[i]?.text.startsWith("-")) removed.push(lines[i++]!)
+      while (i <= range.endLine && lines[i]?.text.startsWith("\\")) i++
+      const added: TextLine[] = []
+      while (i <= range.endLine && lines[i]?.text.startsWith("+")) added.push(lines[i++]!)
+      i--
+      refineLinePairs(removed, added, 1, spans)
+    }
+  }
+  return offset ? spans.map(span => ({ ...span, start: span.start + offset, end: span.end + offset })) : spans
 }
 
 function statusHeader(label: string, value: string): string {
@@ -628,7 +934,12 @@ export async function buildStatus(
   if (stashes.length) {
     builder.insertSection({ type: "stashes", value: stashes.length }, () => {
       builder.insertHeading(`Stashes (${stashes.length})`)
-      for (const s of stashes) builder.insert(`${s}\n`)
+      for (const s of stashes) {
+        const ref = /^stash@\{\d+\}/.exec(s)?.[0] ?? s.split(":", 1)[0] ?? s
+        builder.insertSection({ type: "stash", value: ref }, () => {
+          builder.insertHeading(s)
+        })
+      }
       builder.insert("\n")
     })
   }
@@ -637,7 +948,7 @@ export async function buildStatus(
   if (commits.length) {
     builder.insertSection({ type: "recent", value: commits.length }, () => {
       builder.insertHeading("Recent commits")
-      for (const c of commits) builder.insert(`${c}\n`)
+      for (const c of commits) insertCommitLine(builder, c)
       builder.insert("\n")
     })
   }
@@ -745,9 +1056,203 @@ function magitDiffContextArgs(context: number): string[] {
   return context === DEFAULT_DIFF_CONTEXT ? [] : [`-U${context}`]
 }
 
+function withDiffOptions(baseArgs: string[], extraArgs: string[]): string[] {
+  if (!extraArgs.length) return [...baseArgs]
+  const dashDash = baseArgs.indexOf("--")
+  if (dashDash < 0) return [...baseArgs, ...extraArgs]
+  return [...baseArgs.slice(0, dashDash), ...extraArgs, ...baseArgs.slice(dashDash)]
+}
+
+function displayDiffContextArgs(baseArgs: string[], context: number): string[] {
+  return baseArgs.includes("--stat") ? [] : magitDiffContextArgs(context)
+}
+
 function magitDiffBaseArgs(buffer: BufferModel): string[] | null {
   const args = buffer.locals.get("magit-diff-args") as string[] | undefined
   return args ? [...args] : null
+}
+
+type ParsedDiffArgs = {
+  flags: string[]
+  context: number | null
+  range: string | null
+  paths: string[]
+  positionals: string[]
+}
+
+function numericContext(value: string | undefined): number | null {
+  if (value == null || value === "") return null
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : null
+}
+
+function parseMagitDiffArgs(args: readonly string[]): ParsedDiffArgs {
+  const flags: string[] = []
+  const paths: string[] = []
+  const positionals: string[] = []
+  let context: number | null = null
+  let range: string | null = null
+  let afterDashDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (afterDashDash) {
+      paths.push(arg)
+      continue
+    }
+    if (arg === "--") {
+      afterDashDash = true
+      continue
+    }
+    if (arg === "--ignore-all-space" || arg === "-w") {
+      flags.push("--ignore-all-space")
+      continue
+    }
+    if (arg === "--ignore-space-change" || arg === "-b") {
+      flags.push("--ignore-space-change")
+      continue
+    }
+    if (arg === "--stat") {
+      flags.push("--stat")
+      continue
+    }
+    if (arg === "--find-renames" || arg === "-M") {
+      flags.push("--find-renames")
+      continue
+    }
+    if (arg.startsWith("-U") && arg.length > 2) {
+      context = numericContext(arg.slice(2))
+      continue
+    }
+    if (arg === "-U" || arg === "--unified") {
+      context = numericContext(args[++i])
+      continue
+    }
+    if (arg.startsWith("--unified=")) {
+      context = numericContext(arg.slice("--unified=".length))
+      continue
+    }
+    if (arg === "--range") {
+      range = args[++i] ?? null
+      continue
+    }
+    if (arg.startsWith("--range=")) {
+      range = arg.slice("--range=".length)
+      continue
+    }
+    positionals.push(arg)
+  }
+  return { flags: [...new Set(flags)], context, range, paths, positionals }
+}
+
+function diffCommandArgs(
+  kind: "working-tree" | "unstaged" | "staged" | "range",
+  commandArgs: readonly string[],
+  buffer: BufferModel,
+  fallbackContext: number,
+  explicitRange?: string | null,
+): { gitArgs: string[]; context: number; title: string } | null {
+  const parsed = parseMagitDiffArgs(commandArgs)
+  const paths = parsed.paths
+  const context = parsed.context ?? fallbackContext
+  const revRange = explicitRange ?? parsed.range ?? parsed.positionals[0] ?? null
+  const args = ["diff", ...parsed.flags]
+  let title = "diff"
+  if (kind === "working-tree") {
+    args.push("HEAD")
+    title = "working tree"
+  } else if (kind === "staged") {
+    args.push("--cached")
+    title = "staged"
+  } else if (kind === "unstaged") {
+    title = "unstaged"
+  } else {
+    if (!revRange) return null
+    args.push(refname(revRange))
+    title = revRange
+  }
+  if (paths.length) args.push("--", ...paths)
+  return { gitArgs: args, context, title: paths.length ? `${title}: ${paths.join(" ")}` : title }
+}
+
+type ParsedLogArgs = {
+  flags: string[]
+  maxCount: string | null
+  follow: boolean
+  revs: string[]
+  paths: string[]
+}
+
+function parseMagitLogArgs(args: readonly string[]): ParsedLogArgs {
+  const flags: string[] = []
+  const revs: string[] = []
+  const paths: string[] = []
+  let maxCount: string | null = null
+  let follow = false
+  let afterDashDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (afterDashDash) {
+      paths.push(arg)
+      continue
+    }
+    if (arg === "--") {
+      afterDashDash = true
+      continue
+    }
+    if (arg === "--graph" || arg === "--decorate" || arg === "-p") {
+      flags.push(arg)
+      continue
+    }
+    if (arg === "--follow") {
+      follow = true
+      continue
+    }
+    if (arg === "--author" || arg === "--grep" || arg === "--max-count") {
+      const value = args[++i] ?? ""
+      if (arg === "--max-count") maxCount = value
+      else if (value) flags.push(`${arg}=${value}`)
+      continue
+    }
+    if (arg.startsWith("--author=") || arg.startsWith("--grep=")) {
+      flags.push(arg)
+      continue
+    }
+    if (arg.startsWith("--max-count=")) {
+      maxCount = arg.slice("--max-count=".length)
+      continue
+    }
+    if (/^-n\d+$/.test(arg)) {
+      maxCount = arg.slice(2)
+      continue
+    }
+    if (arg === "-n") {
+      maxCount = args[++i] ?? null
+      continue
+    }
+    revs.push(arg)
+  }
+  return { flags: [...new Set(flags)], maxCount, follow, revs, paths }
+}
+
+function magitLogStoredArgs(buffer: BufferModel): string[] {
+  return [...((buffer.locals.get("magit-log-args") as string[] | undefined) ?? [])]
+}
+
+function logCommandArgs(
+  commandArgs: readonly string[],
+  options: { all?: boolean; branch?: string | null; pathspec?: string | null } = {},
+): { gitArgs: string[]; storedArgs: string[] } {
+  const parsed = parseMagitLogArgs(commandArgs)
+  const maxCount = numericContext(parsed.maxCount ?? undefined) ?? 50
+  const flags = new Set(parsed.flags)
+  flags.add("--graph")
+  const revs = options.all ? ["--all"] : options.branch ? [refname(options.branch)] : parsed.revs.map(refname)
+  const pathspec = options.pathspec ?? parsed.paths[0] ?? null
+  const args = ["log", "--oneline", `-n${maxCount}`, ...flags]
+  if (pathspec && parsed.follow) args.push("--follow")
+  args.push(...revs)
+  if (pathspec) args.push("--", pathspec)
+  return { gitArgs: args, storedArgs: [...commandArgs] }
 }
 
 function modeDerivesFrom(mode: string, parent: string): boolean {
@@ -772,7 +1277,7 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   const baseArgs = magitDiffBaseArgs(buffer)
   const title = buffer.locals.get("magit-diff-title") as string | undefined
   if (!baseArgs || !title) return false
-  const { out } = await git([...baseArgs, ...magitDiffContextArgs(context)], root, undefined, undefined, editor)
+  const { out } = await git(withDiffOptions(baseArgs, displayDiffContextArgs(baseArgs, context)), root, undefined, undefined, editor)
   buffer.readOnly = false
   buffer.setText(out || "(no changes)\n", false)
   buffer.readOnly = true
@@ -832,7 +1337,16 @@ export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): T
     }
     offset = end + 1
   }
-  return [...sectionSpans, ...diffFontLockText(text, base)]
+  const refineSetting = getCustom<false | null | "t" | "all" | boolean>("magit-diff-refine-hunk")
+  const refine = refineSetting === "all"
+    ? magitDiffRefineSpans(buffer.text, { all: true })
+    : refineSetting === true || refineSetting === "t"
+      ? magitDiffRefineSpans(buffer.text, { point: buffer.point })
+      : []
+  const boundedRefine = range
+    ? refine.filter(span => span.end >= range.start && span.start <= range.end)
+    : refine
+  return [...sectionSpans, ...diffFontLockText(text, base), ...boundedRefine]
 }
 
 function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {
@@ -849,6 +1363,19 @@ export function logShaAtPoint(buffer: BufferModel): string | null {
   const line = lineAt(buffer)
   const text = buffer.text.split("\n")[line] ?? ""
   return /\b([0-9a-f]{7,40})\b/.exec(text)?.[1] ?? null
+}
+
+function commitishAtPoint(buffer: BufferModel): string | null {
+  for (let section = currentSection(buffer); section; section = section.parent) {
+    if (section.type === "commit" && typeof section.value === "string") return commitShaFromLine(section.value)
+    if (section.type === "stash" && typeof section.value === "string") return section.value
+  }
+  const blamed = blameShaAtPoint(buffer)
+  if (blamed) return blamed
+  const line = buffer.text.split("\n")[lineAt(buffer)] ?? ""
+  const stash = /\bstash@\{\d+\}/.exec(line)?.[0]
+  if (stash) return stash
+  return logShaAtPoint(buffer)
 }
 
 function lineStartsFor(text: string): number[] {
@@ -924,14 +1451,24 @@ async function repoRelativePath(root: string, path: string): Promise<string> {
   return relative(root, real)
 }
 
-async function openLog(editor: Editor, root: string, source?: BufferModel, pathspec?: string): Promise<BufferModel> {
-  const args = ["log", "--oneline", "--graph", "-50", ...(pathspec ? ["--", pathspec] : [])]
-  const { out } = await git(args, root, undefined, undefined, editor)
-  const buf = editor.scratch("*magit-log*", out || "(no commits)\n", "magit-log")
+async function openLog(
+  editor: Editor,
+  root: string,
+  source?: BufferModel,
+  options: { args?: string[]; pathspec?: string | null; all?: boolean; branch?: string | null } = {},
+): Promise<BufferModel> {
+  const commandArgs = options.args ?? magitLogStoredArgs(source ?? editor.currentBuffer)
+  const { gitArgs, storedArgs } = logCommandArgs(commandArgs, options)
+  const { out } = await git(gitArgs, root, undefined, undefined, editor)
+  const title = "*magit-log*"
+  const buf = editor.scratch(title, out || "(no commits)\n", "magit-log")
   buf.readOnly = true
   buf.path = root
   buf.locals.set("magit-root", root)
-  if (pathspec) buf.locals.set("magit-log-file", pathspec)
+  buf.locals.set("magit-log-args", storedArgs)
+  if (options.pathspec) buf.locals.set("magit-log-file", options.pathspec)
+  if (options.all) buf.locals.set("magit-log-all", true)
+  if (options.branch) buf.locals.set("magit-log-branch", options.branch)
   if (source) pushMagitHistory(buf, source)
   buf.point = 0
   return buf
@@ -1192,10 +1729,18 @@ const magitLogTransient: TransientDefinition = {
   title: "Log",
   groups: [
     { title: "Arguments", infixes: [
-      { key: "- n", label: "limit", argument: "--max-count", kind: "value", defaultValue: "" },
+      { key: "- n", label: "limit", argument: "--max-count", kind: "value", defaultValue: "", style: "equals" },
+      { key: "- g", label: "graph", argument: "--graph" },
+      { key: "- d", label: "decorate", argument: "--decorate" },
+      { key: "- a", label: "author", argument: "--author", kind: "value", defaultValue: "", style: "equals" },
+      { key: "- e", label: "grep", argument: "--grep", kind: "value", defaultValue: "", style: "equals" },
+      { key: "- p", label: "patch", argument: "-p" },
+      { key: "- f", label: "follow", argument: "--follow" },
     ] },
     { title: "Actions", suffixes: [
-      { key: "l", label: "log current", command: "magit-log" },
+      { key: "l", label: "log current", command: "magit-log-current" },
+      { key: "o", label: "log other", command: "magit-log-other" },
+      { key: "a", label: "log all", command: "magit-log-all" },
     ] },
   ],
 }
@@ -1205,12 +1750,18 @@ const magitDiffTransient: TransientDefinition = {
   title: "Diff",
   groups: [
     { title: "Arguments", infixes: [
-      { key: "r", label: "range", argument: "--range", kind: "value", defaultValue: "" },
+      { key: "- U", label: "context", argument: "--unified", kind: "value", defaultValue: "", style: "equals" },
+      { key: "- w", label: "ignore all space", argument: "--ignore-all-space" },
+      { key: "- b", label: "ignore space change", argument: "--ignore-space-change" },
+      { key: "- s", label: "stat", argument: "--stat" },
+      { key: "- M", label: "find renames", argument: "--find-renames" },
     ] },
     { title: "Actions", suffixes: [
-      { key: "d", label: "working tree", command: "magit-diff-working" },
+      { key: "w", label: "working tree", command: "magit-diff-working-tree" },
+      { key: "d", label: "working tree", command: "magit-diff-working-tree" },
       { key: "u", label: "unstaged", command: "magit-diff-unstaged" },
       { key: "s", label: "staged", command: "magit-diff-staged" },
+      { key: "r", label: "range", command: "magit-diff-range" },
     ] },
   ],
 }
@@ -1329,6 +1880,13 @@ function defineTransientCommand(editor: Editor, command: string, definition: Tra
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   installMagitSection(editor)
+  defcustom<null | "t" | "all">(
+    "magit-diff-refine-hunk",
+    "sexp",
+    null,
+    "Whether Magit diff hunks receive word-level intra-line highlighting: nil, t, or all.",
+    "magit",
+  )
 
   const magitModeMap = new Keymap("magit-mode-map")
   magitModeMap.bind("return", "magit-visit-thing")
@@ -1383,7 +1941,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("c a", "magit-commit-amend")
   statusMap.bind("S-p p", "magit-push")
   statusMap.bind("S-p u", "magit-push-upstream")
-  statusMap.bind("l l", "magit-log")
+  statusMap.bind("l l", "magit-log-current")
+  statusMap.bind("l o", "magit-log-other")
+  statusMap.bind("l a", "magit-log-all")
   statusMap.bind("S-l l", "magit-log-refresh")
   statusMap.bind("b b", "magit-branch-checkout")
   statusMap.bind("b c", "magit-branch-create")
@@ -1424,8 +1984,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("c f", "magit-commit-fixup")
   statusMap.bind("c s", "magit-commit-squash")
   statusMap.bind("d d", "magit-diff-working")
+  statusMap.bind("d w", "magit-diff-working-tree")
   statusMap.bind("d u", "magit-diff-unstaged")
   statusMap.bind("d s", "magit-diff-staged")
+  statusMap.bind("d r", "magit-diff-range")
   statusMap.bind("n", "magit-section-forward")
   statusMap.bind("p", "magit-section-backward")
   statusMap.bind("f p", "magit-fetch-from-pushremote")
@@ -1608,7 +2170,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const file = args[0] ?? await editor.prompt("Write patch file: ", join(root, "magit.patch"), "magit-patch-save")
     if (!file) return
     const diffArgs = magitDiffBaseArgs(buffer)
-    const patch = diffArgs ? (await git([...diffArgs, ...magitDiffContextArgs(magitDiffContext(buffer)), "-p"], root, undefined, undefined, editor)).out : buffer.text
+    const patch = diffArgs ? (await git(withDiffOptions(diffArgs, [...magitDiffContextArgs(magitDiffContext(buffer)), "-p"]), root, undefined, undefined, editor)).out : buffer.text
     const target = isAbsolute(file) ? file : join(root, file)
     if (existsSync(target)) {
       const ans = await editor.prompt(`File ${target} exists; overwrite? (y or n) `)
@@ -1688,13 +2250,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const hunk = hunkAtPoint(buffer)
     if (hunk && !hunk.staged) {
-      const { err, code } = await git(["apply", "--cached", "-"], root, hunk.patch, undefined, editor)
+      const patch = partialPatchForRegion(buffer, hunk) ?? hunk.patch
+      const partial = patch !== hunk.patch
+      const { err, code } = await git(["apply", "--cached", "-"], root, patch, undefined, editor)
       if (code !== 0) {
         editor.message(`git apply failed: ${err.trim()}`)
         return
       }
       await refresh(editor, root)
-      editor.message(`Staged hunk in ${hunk.file}`)
+      editor.message(`Staged ${partial ? "selected lines" : "hunk"} in ${hunk.file}`)
       return
     }
     const entry = entryAtPoint(buffer)
@@ -1715,13 +2279,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const hunk = hunkAtPoint(buffer)
     if (hunk && hunk.staged) {
-      const { err, code } = await git(["apply", "--cached", "--reverse", "-"], root, hunk.patch, undefined, editor)
+      const patch = partialPatchForRegion(buffer, hunk) ?? hunk.patch
+      const partial = patch !== hunk.patch
+      const { err, code } = await git(["apply", "--cached", "--reverse", "-"], root, patch, undefined, editor)
       if (code !== 0) {
         editor.message(`git apply failed: ${err.trim()}`)
         return
       }
       await refresh(editor, root)
-      editor.message(`Unstaged hunk in ${hunk.file}`)
+      editor.message(`Unstaged ${partial ? "selected lines" : "hunk"} in ${hunk.file}`)
       return
     }
     const entry = entryAtPoint(buffer)
@@ -1818,17 +2384,51 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`Pushed ${branch} to ${remote}`)
   }, "Push the current branch, prompting for remote and branch.")
 
-  editor.command("magit-log", async ({ editor, buffer }) => {
+  editor.command("magit-log", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) {
       editor.message("Not in a Magit buffer")
       return
     }
     const pathspec = buffer.locals.get("magit-log-file") as string | undefined
-    await openLog(editor, root, buffer, pathspec)
-  }, "Show recent history in a *magit-log* buffer.")
+    const all = buffer.locals.get("magit-log-all") === true
+    const branch = buffer.locals.get("magit-log-branch") as string | undefined
+    await openLog(editor, root, buffer, {
+      args: args.length ? args : magitLogStoredArgs(buffer),
+      pathspec,
+      all,
+      branch,
+    })
+  }, "Refresh or show recent history in a *magit-log* buffer.")
 
-  editor.command("magit-log-buffer-file", async ({ editor, buffer }) => {
+  editor.command("magit-log-current", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) {
+      editor.message("Not in a Magit buffer")
+      return
+    }
+    const pathspec = buffer.locals.get("magit-log-file") as string | undefined
+    await openLog(editor, root, buffer, { args, pathspec })
+  }, "Show recent history for the current branch.")
+
+  editor.command("magit-log-other", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const parsed = parseMagitLogArgs(args)
+    const { out } = await git(["branch", "-a", "--format=%(refname:short)"], root, undefined, undefined, editor)
+    const branches = out.split("\n").filter(Boolean)
+    const branch = parsed.revs[0] ?? await editor.completingRead("Log branch: ", { collection: branches, history: "magit-log-branch" })
+    if (!branch) return
+    await openLog(editor, root, buffer, { args, branch })
+  }, "Show recent history for another branch.")
+
+  editor.command("magit-log-all", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    await openLog(editor, root, buffer, { args, all: true })
+  }, "Show recent history for all refs.")
+
+  editor.command("magit-log-buffer-file", async ({ editor, buffer, args }) => {
     const path = buffer.path
     if (!path || buffer.kind === "directory") {
       editor.message("Buffer is not visiting a file")
@@ -1836,12 +2436,19 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const root = await repositoryRootForFile(path)
     if (!root) return editor.message("Not in a git repository")
-    await openLog(editor, root, buffer, await repoRelativePath(root, path))
+    await openLog(editor, root, buffer, { args, pathspec: await repoRelativePath(root, path) })
   }, "Show recent history for the current file in a *magit-log* buffer.")
+
+  editor.command("magit-show-commit", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    const rev = args[0] ?? commitishAtPoint(buffer)
+    if (!root || !rev) return editor.message("No commit at point")
+    await showRevision(editor, root, rev, buffer)
+  }, "Show the commit or stash at point in a revision buffer.")
 
   editor.command("magit-log-show-commit", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
-    const sha = logShaAtPoint(buffer)
+    const sha = commitishAtPoint(buffer)
     if (!root || !sha) {
       editor.message("No commit at point")
       return
@@ -1921,6 +2528,27 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("magit-discard", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
+    const hunk = hunkAtPoint(buffer)
+    if (root && hunk) {
+      const patch = partialPatchForRegion(buffer, hunk) ?? hunk.patch
+      const partial = patch !== hunk.patch
+      const ans = await editor.prompt(`Discard ${partial ? "selected lines" : "hunk"} in ${hunk.file}? (y or n) `)
+      if (ans !== "y") {
+        editor.message("Discard cancelled")
+        return
+      }
+      const applyArgs = hunk.staged
+        ? ["apply", "--index", "--reverse", "-"]
+        : ["apply", "--reverse", "-"]
+      const { err, code } = await git(applyArgs, root, patch, undefined, editor)
+      if (code !== 0) {
+        editor.message(`git apply failed: ${err.trim()}`)
+        return
+      }
+      await refresh(editor, root)
+      editor.message(`Discarded ${partial ? "selected lines" : "hunk"} in ${hunk.file}`)
+      return
+    }
     const entry = entryAtPoint(buffer)
     if (!root || !entry || (entry.staged && !entry.oldFile)) {
       editor.message("Nothing to discard at point")
@@ -2214,9 +2842,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       await editor.openFile(join(root, entry.file))
       return
     }
-    const sha = logShaAtPoint(buffer)
-    if (sha) {
-      await editor.run("magit-log-show-commit")
+    const rev = commitishAtPoint(buffer)
+    if (rev) {
+      if (buffer.mode === "magit-log") await editor.run("magit-log-show-commit")
+      else await showRevision(editor, root, rev, buffer)
       return
     }
     editor.message("Nothing to visit at point")
@@ -2696,11 +3325,19 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Create a squash commit for a recent commit.")
 
-  const openDiff = async (editor: Editor, buffer: BufferModel, gitArgs: string[], title: string) => {
+  const openDiff = async (
+    editor: Editor,
+    buffer: BufferModel,
+    kind: "working-tree" | "unstaged" | "staged" | "range",
+    commandArgs: readonly string[],
+    explicitRange?: string | null,
+  ) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const context = magitDiffContext(buffer)
-    const { out } = await git([...gitArgs, ...magitDiffContextArgs(context)], root, undefined, undefined, editor)
+    const built = diffCommandArgs(kind, commandArgs, buffer, magitDiffContext(buffer), explicitRange)
+    if (!built) return editor.message("No diff range")
+    const { gitArgs, context, title } = built
+    const { out } = await git(withDiffOptions(gitArgs, displayDiffContextArgs(gitArgs, context)), root, undefined, undefined, editor)
     const buf = editor.scratch(`*magit-diff: ${title}*`, out || "(no changes)\n", "magit-diff-mode")
     buf.readOnly = true
     buf.locals.set("magit-root", root)
@@ -2711,17 +3348,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     buf.point = 0
   }
 
-  editor.command("magit-diff-working", async ({ editor, buffer }) => {
-    await openDiff(editor, buffer, ["diff", "HEAD"], "working tree")
+  editor.command("magit-diff-working-tree", async ({ editor, buffer, args }) => {
+    await openDiff(editor, buffer, "working-tree", args)
   }, "Show the diff of the working tree against HEAD.")
 
-  editor.command("magit-diff-unstaged", async ({ editor, buffer }) => {
-    await openDiff(editor, buffer, ["diff"], "unstaged")
+  editor.command("magit-diff-working", async ({ editor, buffer, args }) => {
+    await editor.run("magit-diff-working-tree", args)
+  }, "Alias for magit-diff-working-tree.")
+
+  editor.command("magit-diff-unstaged", async ({ editor, buffer, args }) => {
+    await openDiff(editor, buffer, "unstaged", args)
   }, "Show unstaged changes.")
 
-  editor.command("magit-diff-staged", async ({ editor, buffer }) => {
-    await openDiff(editor, buffer, ["diff", "--cached"], "staged")
+  editor.command("magit-diff-staged", async ({ editor, buffer, args }) => {
+    await openDiff(editor, buffer, "staged", args)
   }, "Show staged changes.")
+
+  editor.command("magit-diff-range", async ({ editor, buffer, args }) => {
+    const parsed = parseMagitDiffArgs(args)
+    const explicit = parsed.range ?? parsed.positionals[0] ?? await editor.prompt("Diff range: ", "HEAD", "magit-diff-range")
+    if (!explicit) return
+    await openDiff(editor, buffer, "range", args, explicit)
+  }, "Show a diff for an arbitrary revision range.")
 
   editor.key("C-x g", "magit-status")
   editor.key("C-c g", "magit-dispatch")
