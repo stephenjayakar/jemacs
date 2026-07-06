@@ -67,6 +67,21 @@ export type MagitHunk = {
 }
 
 type MagitHistoryMark = { bufferId: string; point: number }
+type MagitRefKind = "local" | "remote" | "tag"
+type MagitRef = {
+  name: string
+  fullName: string
+  kind: MagitRefKind
+  remote?: string
+  current?: boolean
+  sha?: string
+  summary?: string
+  upstream?: string
+  ahead?: number
+  behind?: number
+}
+type MagitModule = { name: string; path: string; url?: string }
+type MagitWorktree = { path: string; head?: string; branch?: string; current?: boolean; bare?: boolean; detached?: boolean }
 
 /** Reject names that would be parsed as a flag by git. */
 function refname(s: string): string {
@@ -524,6 +539,92 @@ function shortenRefName(ref: string): string {
     .replace(/\^0$/, "")
 }
 
+function parseForEachRef(text: string, kind: MagitRefKind, options: { remote?: string; current?: string | null } = {}): MagitRef[] {
+  const refs: MagitRef[] = []
+  for (const line of text.split("\n")) {
+    if (!line) continue
+    const [fullName = "", name = "", sha = "", upstream = "", summary = ""] = line.split("\0")
+    if (!fullName || !name || fullName.endsWith("/HEAD")) continue
+    refs.push({
+      fullName,
+      name,
+      kind,
+      remote: options.remote,
+      current: kind === "local" && name === options.current,
+      sha,
+      upstream: upstream || undefined,
+      summary,
+    })
+  }
+  return refs
+}
+
+function parseWorktreeList(text: string): MagitWorktree[] {
+  const worktrees: MagitWorktree[] = []
+  let current: MagitWorktree | null = null
+  const finish = () => {
+    if (!current) return
+    worktrees.push(current)
+    current = null
+  }
+  for (const line of text.split("\n")) {
+    if (!line) {
+      finish()
+      continue
+    }
+    if (line.startsWith("worktree ")) {
+      finish()
+      current = { path: line.slice("worktree ".length) }
+    } else if (current && line.startsWith("HEAD ")) {
+      current.head = line.slice("HEAD ".length)
+    } else if (current && line.startsWith("branch ")) {
+      current.branch = shortenRefName(line.slice("branch ".length))
+    } else if (current && line === "bare") {
+      current.bare = true
+    } else if (current && line === "detached") {
+      current.detached = true
+    }
+  }
+  finish()
+  return worktrees
+}
+
+function parseGitModulesConfig(text: string): MagitModule[] {
+  const byName = new Map<string, MagitModule>()
+  for (const line of text.split("\n")) {
+    const match = /^submodule\.(.+)\.(path|url)\s+(.+)$/.exec(line)
+    if (!match) continue
+    const [, name = "", key = "", value = ""] = match
+    const module = byName.get(name) ?? { name, path: "" }
+    if (key === "path") module.path = value
+    else module.url = value
+    byName.set(name, module)
+  }
+  return [...byName.values()].filter(module => module.path).sort((a, b) => a.path.localeCompare(b.path))
+}
+
+async function listSubmodules(root: string, editor?: Editor): Promise<MagitModule[]> {
+  if (!existsSync(join(root, ".gitmodules"))) return []
+  const { out, code } = await git(["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.(path|url)$"], root, undefined, undefined, editor)
+  return code === 0 ? parseGitModulesConfig(out) : []
+}
+
+async function listWorktrees(root: string, editor?: Editor): Promise<MagitWorktree[]> {
+  const { out, code } = await git(["worktree", "list", "--porcelain"], root, undefined, undefined, editor)
+  if (code !== 0) return []
+  const current = await realpath(root).catch(() => root)
+  const worktrees = parseWorktreeList(out)
+  return Promise.all(worktrees.map(async worktree => ({
+    ...worktree,
+    current: await realpath(worktree.path).catch(() => worktree.path) === current,
+  })))
+}
+
+function worktreeLabel(worktree: MagitWorktree): string {
+  const head = worktree.branch ?? (worktree.detached ? "detached" : worktree.head?.slice(0, 7) ?? "unknown")
+  return `${worktree.current ? "* " : "  "}${worktree.path} ${head}`
+}
+
 async function displayRevName(root: string, rev: string | null, editor?: Editor): Promise<string> {
   if (!rev) return "HEAD"
   if (!/^[0-9a-f]{40}$/.test(rev)) return shortenRefName(rev)
@@ -791,7 +892,7 @@ export async function buildStatus(
   editor?: Editor,
 ): Promise<MagitStatus> {
   const diffContextArgs = magitDiffContextArgs(context)
-  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, gitDir] = await Promise.all([
+  const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, gitDir, modules, worktrees] = await Promise.all([
     git(["status", "--porcelain=v2", "--branch", "--renames"], root, undefined, undefined, editor),
     git(["log", "-1", "--pretty=%s"], root, undefined, undefined, editor),
     git(["diff", "--find-renames", ...diffContextArgs], root, undefined, undefined, editor),
@@ -799,6 +900,8 @@ export async function buildStatus(
     git(["log", "-n", "10", "--pretty=%h %s"], root, undefined, undefined, editor),
     git(["stash", "list"], root, undefined, undefined, editor),
     absoluteGitDir(root, editor),
+    listSubmodules(root, editor),
+    listWorktrees(root, editor),
   ])
   const { branch, upstream, files } = parsePorcelain(status.out)
   const unstagedDiffs = new Map(parseDiff(unstagedDiff.out).map(d => [d.file, d]))
@@ -944,6 +1047,30 @@ export async function buildStatus(
     })
   }
 
+  if (modules.length) {
+    builder.insertSection({ type: "modules", value: modules.length }, () => {
+      builder.insertHeading(`Modules (${modules.length})`)
+      for (const module of modules) {
+        builder.insertSection({ type: "module", value: module }, () => {
+          builder.insertHeading(`  ${module.path}${module.url ? ` ${module.url}` : ""}`)
+        })
+      }
+      builder.insert("\n")
+    })
+  }
+
+  if (worktrees.length > 1) {
+    builder.insertSection({ type: "worktrees", value: worktrees.length }, () => {
+      builder.insertHeading(`Worktrees (${worktrees.length})`)
+      for (const worktree of worktrees) {
+        builder.insertSection({ type: "worktree", value: worktree }, () => {
+          builder.insertHeading(worktreeLabel(worktree))
+        })
+      }
+      builder.insert("\n")
+    })
+  }
+
   const commits = log.out.split("\n").filter(Boolean)
   if (commits.length) {
     builder.insertSection({ type: "recent", value: commits.length }, () => {
@@ -978,6 +1105,31 @@ export function hunkAtPoint(buffer: BufferModel): MagitHunk | null {
   if (!hunks) return null
   const line = lineAt(buffer)
   return hunks.find(h => line >= h.startLine && line <= h.endLine) ?? null
+}
+
+function stashAtPoint(buffer: BufferModel): string | null {
+  const section = sectionOfType(buffer, "stash")
+  if (section && typeof section.value === "string") return section.value
+  const line = buffer.text.split("\n")[lineAt(buffer)] ?? ""
+  return /\bstash@\{\d+\}/.exec(line)?.[0] ?? null
+}
+
+function refAtPoint(buffer: BufferModel): MagitRef | null {
+  const section = sectionOfType(buffer, "ref")
+  const value = section?.value as MagitRef | undefined
+  return value?.name && value?.kind ? value : null
+}
+
+function moduleAtPoint(buffer: BufferModel): MagitModule | null {
+  const section = sectionOfType(buffer, "module")
+  const value = section?.value as MagitModule | undefined
+  return value?.path ? value : null
+}
+
+function worktreeAtPoint(buffer: BufferModel): MagitWorktree | null {
+  const section = sectionOfType(buffer, "worktree")
+  const value = section?.value as MagitWorktree | undefined
+  return value?.path ? value : null
 }
 
 function sectionOfType(buffer: BufferModel, type: string): MagitSection | null {
@@ -1332,7 +1484,7 @@ export function magitDiffFontLock(buffer: BufferModel, range?: FontLockRange): T
   let offset = base
   for (const line of text.split("\n")) {
     const end = offset + line.length
-    if (/^(Head|Merge|Rebase|Push|Tag|Tags|Bisect|Merging|Rebasing|Applying|Cherry Picking|Reverting|Conflicts|Done|Todo|Untracked|Unstaged|Staged|Stashes|Recent|Unpushed|Unpulled)\b/.test(line)) {
+    if (/^(Head|Merge|Rebase|Push|Tag|Tags|Branches|Bisect|Merging|Rebasing|Applying|Cherry Picking|Reverting|Conflicts|Done|Todo|Untracked|Unstaged|Staged|Stashes|Modules|Worktrees|Recent|Unpushed|Unpulled)\b/.test(line)) {
       sectionSpans.push({ start: offset, end, face: "keyword" })
     }
     offset = end + 1
@@ -1472,6 +1624,109 @@ async function openLog(
   if (source) pushMagitHistory(buf, source)
   buf.point = 0
   return buf
+}
+
+async function refAheadBehind(root: string, ref: string, editor?: Editor): Promise<{ ahead: number; behind: number } | null> {
+  const { out, code } = await git(["rev-list", "--left-right", "--count", `HEAD...${ref}`], root, undefined, undefined, editor)
+  if (code !== 0) return null
+  const [leftRaw, rightRaw] = out.trim().split(/\s+/)
+  const behind = Number(leftRaw)
+  const ahead = Number(rightRaw)
+  return Number.isFinite(ahead) && Number.isFinite(behind) ? { ahead, behind } : null
+}
+
+async function refsForPrefix(root: string, prefix: string, kind: MagitRefKind, options: { remote?: string; current?: string | null } = {}, editor?: Editor): Promise<MagitRef[]> {
+  const format = "%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)%00%(subject)"
+  const { out, code } = await git(["for-each-ref", `--format=${format}`, prefix], root, undefined, undefined, editor)
+  if (code !== 0) return []
+  return parseForEachRef(out, kind, options)
+}
+
+async function withRefCounts(root: string, refs: MagitRef[], editor?: Editor): Promise<MagitRef[]> {
+  if (getCustom<boolean>("magit-refs-show-commit-count") === false) return refs
+  return Promise.all(refs.map(async ref => {
+    const counts = await refAheadBehind(root, ref.name, editor)
+    return counts ? { ...ref, ...counts } : ref
+  }))
+}
+
+function refLine(ref: MagitRef): string {
+  const marker = ref.current ? "* " : "  "
+  const counts = ref.ahead == null || ref.behind == null ? "" : ` +${ref.ahead} -${ref.behind}`
+  const summary = ref.summary ? ` ${ref.summary}` : ""
+  return `${marker}${ref.name}${counts}${summary}`
+}
+
+async function buildRefs(root: string, cache: Map<string, MagitSectionVisibility> = new Map(), editor?: Editor): Promise<{ text: string; rootSection: MagitSection; refs: MagitRef[] }> {
+  const current = await gitString(["rev-parse", "--abbrev-ref", "HEAD"], root, editor)
+  const remotes = (await gitString(["remote"], root, editor))?.split("\n").filter(Boolean) ?? []
+  const [locals, tags, ...remoteRefs] = await Promise.all([
+    refsForPrefix(root, "refs/heads", "local", { current }, editor),
+    refsForPrefix(root, "refs/tags", "tag", {}, editor),
+    ...remotes.map(remote => refsForPrefix(root, `refs/remotes/${remote}`, "remote", { remote }, editor)),
+  ])
+  const localsWithCounts = await withRefCounts(root, locals, editor)
+  const tagsWithCounts = await withRefCounts(root, tags, editor)
+  const remotesWithCounts = await Promise.all(remoteRefs.map(refs => withRefCounts(root, refs, editor)))
+  const refs = [...localsWithCounts, ...remotesWithCounts.flat(), ...tagsWithCounts]
+  const builder = new MagitSectionBuilder({ visibilityCache: cache })
+  builder.insertSection({ type: "refs", value: root }, () => {
+    if (localsWithCounts.length) {
+      builder.insertSection({ type: "local-branches", value: localsWithCounts.length }, () => {
+        builder.insertHeading(`Branches (${localsWithCounts.length})`)
+        for (const ref of localsWithCounts) {
+          builder.insertSection({ type: "ref", value: ref }, () => builder.insertHeading(refLine(ref)))
+        }
+        builder.insert("\n")
+      })
+    }
+    for (let i = 0; i < remotes.length; i++) {
+      const remote = remotes[i]!
+      const refsForRemote = remotesWithCounts[i] ?? []
+      if (!refsForRemote.length) continue
+      builder.insertSection({ type: "remote-branches", value: remote }, () => {
+        builder.insertHeading(`${remote} (${refsForRemote.length})`)
+        for (const ref of refsForRemote) {
+          builder.insertSection({ type: "ref", value: ref }, () => builder.insertHeading(refLine(ref)))
+        }
+        builder.insert("\n")
+      })
+    }
+    if (tagsWithCounts.length) {
+      builder.insertSection({ type: "tags", value: tagsWithCounts.length }, () => {
+        builder.insertHeading(`Tags (${tagsWithCounts.length})`)
+        for (const ref of tagsWithCounts) {
+          builder.insertSection({ type: "ref", value: ref }, () => builder.insertHeading(refLine(ref)))
+        }
+        builder.insert("\n")
+      })
+    }
+  })
+  const text = builder.toString() || "No refs.\n"
+  builder.root.end = text.length
+  return { text, rootSection: builder.root, refs }
+}
+
+async function openRefs(editor: Editor, root: string, source?: BufferModel, point = 0): Promise<BufferModel> {
+  const name = `*magit-refs: ${basename(root)}*`
+  const prev = [...editor.buffers.values()].find(b => b.name === name)
+  const cache = (prev?.locals.get(MAGIT_SECTION_VISIBILITY_CACHE_LOCAL) as Map<string, MagitSectionVisibility> | undefined) ?? new Map<string, MagitSectionVisibility>()
+  const refs = await buildRefs(root, cache, editor)
+  const buf = editor.scratch(name, refs.text, "magit-refs-mode")
+  buf.readOnly = true
+  buf.path = root
+  buf.locals.set("magit-root", root)
+  buf.locals.set("magit-refs", refs.refs)
+  buf.locals.set(MAGIT_SECTION_VISIBILITY_CACHE_LOCAL, cache)
+  setRootSection(buf, refs.rootSection)
+  if (source) pushMagitHistory(buf, source)
+  buf.point = Math.min(point, buf.text.length)
+  return buf
+}
+
+async function visitRef(editor: Editor, root: string, ref: MagitRef, source: BufferModel): Promise<void> {
+  if (ref.kind === "tag") await showRevision(editor, root, ref.name, source)
+  else await openLog(editor, root, source, { branch: ref.name })
 }
 
 type MagitWithEditorProcess = {
@@ -1630,6 +1885,44 @@ async function recentCommitChoice(editor: Editor, root: string, prompt: string):
   return selected?.trim().split(/\s+/, 1)[0] ?? null
 }
 
+async function stashChoice(editor: Editor, root: string, buffer: BufferModel, prompt: string): Promise<string | null> {
+  const atPoint = stashAtPoint(buffer)
+  if (atPoint) return atPoint
+  const { out } = await git(["stash", "list"], root, undefined, undefined, editor)
+  const choices = out.split("\n").filter(Boolean)
+  if (!choices.length) return null
+  if (choices.length === 1) return /^stash@\{\d+\}/.exec(choices[0]!)?.[0] ?? choices[0]!.split(":", 1)[0] ?? choices[0]!
+  const selected = await editor.completingRead(prompt, { collection: choices, history: "magit-stash" })
+  return selected ? (/^stash@\{\d+\}/.exec(selected)?.[0] ?? selected.split(":", 1)[0] ?? selected) : null
+}
+
+async function branchOrCommitChoices(editor: Editor, root: string): Promise<string[]> {
+  const { out } = await git(["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes", "refs/tags"], root, undefined, undefined, editor)
+  const commits = (await git(["log", "-n", "20", "--pretty=%h %s"], root, undefined, undefined, editor)).out
+    .split("\n")
+    .filter(Boolean)
+  return [...out.split("\n").filter(Boolean), ...commits]
+}
+
+async function resetTarget(editor: Editor, root: string, buffer: BufferModel, prompt: string, args: string[]): Promise<string | null> {
+  if (args[0]) return args[0]
+  const ref = refAtPoint(buffer)
+  const atPoint = ref?.name ?? logShaAtPoint(buffer)
+  const choices = await branchOrCommitChoices(editor, root)
+  const selected = await editor.completingRead(prompt, {
+    collection: choices,
+    history: "magit-reset",
+    initialValue: atPoint ?? "HEAD",
+  })
+  if (!selected) return null
+  return selected.trim().split(/\s+/, 1)[0] ?? null
+}
+
+function stashPushArgs(commandArgs: readonly string[], extra: string[] = []): string[] {
+  const allowed = ["--include-untracked", "--all", "--staged", "--keep-index"]
+  return ["stash", "push", ...allowed.filter(arg => commandArgs.includes(arg)), ...extra]
+}
+
 const magitDispatchTransient: TransientDefinition = {
   name: "magit-dispatch",
   title: "Magit",
@@ -1639,7 +1932,8 @@ const magitDispatchTransient: TransientDefinition = {
       { key: "s", label: "stage", command: "magit-stage" },
       { key: "u", label: "unstage", command: "magit-unstage" },
       { key: "k", label: "discard", command: "magit-discard" },
-      { key: "S-x", label: "file", command: "magit-file-popup" },
+      { key: "S-x", label: "reset", command: "magit-reset-popup" },
+      { key: "y", label: "refs", command: "magit-show-refs" },
       { key: "tab", label: "toggle section", command: "magit-section-toggle" },
     ] },
     { title: "Prefixes", suffixes: [
@@ -1652,6 +1946,8 @@ const magitDispatchTransient: TransientDefinition = {
       { key: "d", label: "diff", command: "magit-diff-popup" },
       { key: "z", label: "stash", command: "magit-stash-popup" },
       { key: "x", label: "reset", command: "magit-reset-popup" },
+      { key: "o", label: "submodule", command: "magit-submodule-popup" },
+      { key: "S-z", label: "worktree", command: "magit-worktree-popup" },
       { key: "S-b", label: "bisect", command: "magit-bisect-popup" },
       { key: "m", label: "merge", command: "magit-merge-popup" },
       { key: "r", label: "rebase", command: "magit-rebase-popup" },
@@ -1770,14 +2066,23 @@ const magitStashTransient: TransientDefinition = {
   name: "magit-stash",
   title: "Stash",
   groups: [
-    { title: "Arguments", infixes: [{ key: "- u", label: "include untracked", argument: "--include-untracked" }] },
+    { title: "Arguments", infixes: [
+      { key: "- u", label: "include untracked", argument: "--include-untracked" },
+      { key: "- a", label: "include ignored", argument: "--all" },
+      { key: "- s", label: "staged only", argument: "--staged" },
+      { key: "- k", label: "keep index", argument: "--keep-index" },
+    ] },
     { title: "Actions", suffixes: [
       { key: "z", label: "stash", command: "magit-stash" },
       { key: "s", label: "stash with message", command: "magit-stash-save" },
+      { key: "i", label: "stash index", command: "magit-stash-index" },
+      { key: "x", label: "keep index", command: "magit-stash-keep-index" },
       { key: "p", label: "pop", command: "magit-stash-pop" },
       { key: "a", label: "apply", command: "magit-stash-apply" },
       { key: "k", label: "drop", command: "magit-stash-drop" },
       { key: "l", label: "list", command: "magit-stash-list" },
+      { key: "v", label: "show", command: "magit-stash-show" },
+      { key: "b", label: "branch", command: "magit-stash-branch" },
     ] },
   ],
 }
@@ -1790,7 +2095,45 @@ const magitResetTransient: TransientDefinition = {
     { key: "m", label: "mixed", command: "magit-reset-mixed" },
     { key: "s", label: "soft", command: "magit-reset-soft" },
     { key: "h", label: "hard", command: "magit-reset-hard" },
+    { key: "k", label: "keep", command: "magit-reset-keep" },
+    { key: "i", label: "index", command: "magit-reset-index" },
+    { key: "w", label: "worktree", command: "magit-reset-worktree" },
   ] }],
+}
+
+const magitSubmoduleTransient: TransientDefinition = {
+  name: "magit-submodule",
+  title: "Submodule",
+  groups: [
+    { title: "Arguments", infixes: [
+      { key: "- f", label: "force", argument: "--force" },
+      { key: "- r", label: "recursive", argument: "--recursive" },
+      { key: "- N", label: "no fetch", argument: "--no-fetch" },
+      { key: "- U", label: "remote", argument: "--remote" },
+    ] },
+    { title: "Actions", suffixes: [
+      { key: "a", label: "add", command: "magit-submodule-add" },
+      { key: "i", label: "init", command: "magit-submodule-init" },
+      { key: "u", label: "update", command: "magit-submodule-update" },
+      { key: "s", label: "sync", command: "magit-submodule-sync" },
+      { key: "d", label: "deinit", command: "magit-submodule-deinit" },
+    ] },
+  ],
+}
+
+const magitWorktreeTransient: TransientDefinition = {
+  name: "magit-worktree",
+  title: "Worktree",
+  groups: [
+    { title: "Create new", suffixes: [
+      { key: "b", label: "worktree", command: "magit-worktree-checkout" },
+      { key: "c", label: "branch and worktree", command: "magit-worktree-branch" },
+    ] },
+    { title: "Commands", suffixes: [
+      { key: "g", label: "visit", command: "magit-worktree-status" },
+      { key: "k", label: "delete", command: "magit-worktree-delete" },
+    ] },
+  ],
 }
 
 const magitMergeTransient: TransientDefinition = {
@@ -1887,6 +2230,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     "Whether Magit diff hunks receive word-level intra-line highlighting: nil, t, or all.",
     "magit",
   )
+  defcustom<boolean>(
+    "magit-refs-show-commit-count",
+    "boolean",
+    true,
+    "Whether the Magit refs buffer shows ahead/behind counts relative to HEAD.",
+    "magit",
+  )
 
   const magitModeMap = new Keymap("magit-mode-map")
   magitModeMap.bind("return", "magit-visit-thing")
@@ -1904,6 +2254,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   magitModeMap.bind("S-g", "magit-refresh-all")
   magitModeMap.bind("h", "magit-dispatch")
   magitModeMap.bind("?", "magit-dispatch")
+  magitModeMap.bind("y", "magit-show-refs")
+  magitModeMap.bind("o", "magit-submodule-popup")
+  magitModeMap.bind("S-z", "magit-worktree-popup")
   magitModeMap.bind("q", "magit-bury-buffer")
   magitModeMap.bind(":", "magit-git-command")
   magitModeMap.bind("$", "magit-process")
@@ -1956,6 +2309,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("z k", "magit-stash-drop")
   statusMap.bind("z l", "magit-stash-list")
   statusMap.bind("z s", "magit-stash-save")
+  statusMap.bind("z i", "magit-stash-index")
+  statusMap.bind("z x", "magit-stash-keep-index")
+  statusMap.bind("z v", "magit-stash-show")
+  statusMap.bind("z b", "magit-stash-branch")
+  statusMap.bind("a", "magit-stash-show")
   statusMap.bind("S-b s", "magit-bisect-start")
   statusMap.bind("S-b g", "magit-bisect-good")
   statusMap.bind("S-b b", "magit-bisect-bad")
@@ -1979,6 +2337,16 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("S-m a", "magit-remote-add")
   statusMap.bind("S-m k", "magit-remote-remove")
   statusMap.bind("S-m r", "magit-remote-rename")
+  statusMap.bind("o a", "magit-submodule-add")
+  statusMap.bind("o i", "magit-submodule-init")
+  statusMap.bind("o u", "magit-submodule-update")
+  statusMap.bind("o s", "magit-submodule-sync")
+  statusMap.bind("o d", "magit-submodule-deinit")
+  statusMap.bind("S-z b", "magit-worktree-checkout")
+  statusMap.bind("S-z c", "magit-worktree-branch")
+  statusMap.bind("S-z g", "magit-worktree-status")
+  statusMap.bind("S-z k", "magit-worktree-delete")
+  statusMap.bind("y", "magit-show-refs")
   statusMap.bind("c e", "magit-commit-extend")
   statusMap.bind("c w", "magit-commit-reword")
   statusMap.bind("c f", "magit-commit-fixup")
@@ -2015,6 +2383,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("z", "magit-stash-popup")
   statusMap.bind("x", "magit-reset-popup")
   statusMap.bind("S-x", "magit-file-popup")
+  statusMap.bind("o", "magit-submodule-popup")
+  statusMap.bind("S-z", "magit-worktree-popup")
   statusMap.bind("S-b", "magit-bisect-popup")
   statusMap.bind("m", "magit-merge-popup")
   statusMap.bind("r", "magit-rebase-popup")
@@ -2055,6 +2425,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   logMap.bind("g", "magit-log")
   logMap.bind("q", "magit-bury-buffer")
   defineMode({ name: "magit-log", parent: "magit-mode", keymap: logMap, fontLock: magitDiffFontLock })
+
+  const refsMap = new Keymap("magit-refs-mode-map")
+  refsMap.bind("return", "magit-visit-thing")
+  refsMap.bind("RET", "magit-visit-thing")
+  refsMap.bind("g", "magit-refresh")
+  refsMap.bind("k", "magit-branch-delete")
+  refsMap.bind("b b", "magit-branch-checkout")
+  refsMap.bind("q", "magit-bury-buffer")
+  defineMode({ name: "magit-refs-mode", parent: "magit-mode", keymap: refsMap, fontLock: magitDiffFontLock })
 
   const revisionMap = new Keymap("magit-revision-mode-map")
   revisionMap.bind("j", "magit-revision-jump")
@@ -2225,6 +2604,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   defineTransientCommand(editor, "magit-tag-popup", magitTagTransient, "Show the Magit tag popup.")
   defineTransientCommand(editor, "magit-remote-popup", magitRemoteTransient, "Show the Magit remote popup.")
   defineTransientCommand(editor, "magit-file-popup", magitFileTransient, "Show the Magit file popup.")
+  defineTransientCommand(editor, "magit-submodule-popup", magitSubmoduleTransient, "Show the Magit submodule popup.")
+  defineTransientCommand(editor, "magit-worktree-popup", magitWorktreeTransient, "Show the Magit worktree popup.")
 
   editor.command("magit-status", async ({ editor, buffer, args }) => {
     const start = args[0] ?? buffer.directory() ?? process.cwd()
@@ -2239,8 +2620,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-refresh", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.run("magit-status")
+    if (buffer.mode === "magit-refs-mode") {
+      await openRefs(editor, root, undefined, buffer.point)
+      return
+    }
     await refresh(editor, root)
   }, "Refresh the current Magit status buffer.")
+
+  editor.command("magit-show-refs", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer) ?? await projectRoot(buffer.directory() ?? process.cwd())
+    if (!root) return editor.message("Not inside a Git repository")
+    await openRefs(editor, root, buffer)
+  }, "Show branches, remote branches, and tags in a Magit refs buffer.")
 
   editor.command("magit-stage", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -2466,9 +2857,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { out } = await git(["branch", "--list", "--format=%(refname:short)"], root, undefined, undefined, editor)
+    const ref = refAtPoint(buffer)
+    const { out } = await git(["branch", "-a", "--format=%(refname:short)"], root, undefined, undefined, editor)
     const branches = out.split("\n").filter(Boolean)
-    const target = args[0] ?? await editor.completingRead("Checkout branch: ", { collection: branches, history: "magit-branch" })
+    const target = args[0] ?? (ref?.kind === "local" || ref?.kind === "remote" ? ref.name : null)
+      ?? await editor.completingRead("Checkout branch: ", { collection: branches, history: "magit-branch" })
     if (!target) return
     const { err, code } = await git(["checkout", refname(target)], root, undefined, undefined, editor)
     if (code !== 0) {
@@ -2502,7 +2895,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { out, err, code } = await git(["stash", "push", ...(args.includes("--include-untracked") ? ["--include-untracked"] : [])], root, undefined, undefined, editor)
+    const { out, err, code } = await git(stashPushArgs(args), root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git stash failed: ${err.trim()}`)
       return
@@ -2511,20 +2904,40 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(out.trim() || "Stashed")
   }, "Stash working tree changes.")
 
-  editor.command("magit-stash-pop", async ({ editor, buffer }) => {
+  editor.command("magit-stash-index", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(stashPushArgs(args, ["--staged"]), root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(out.trim() || "Stashed index")
+  }, "Stash only staged/index changes.")
+
+  editor.command("magit-stash-keep-index", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const { out, err, code } = await git(stashPushArgs(args, ["--keep-index"]), root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(out.trim() || "Stashed while keeping index")
+  }, "Stash working tree changes while keeping staged changes in the index.")
+
+  editor.command("magit-stash-pop", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) {
       editor.message("Not in a Magit buffer")
       return
     }
-    const { err, code } = await git(["stash", "pop"], root, undefined, undefined, editor)
+    const stash = args[0] ?? await stashChoice(editor, root, buffer, "Pop stash: ")
+    if (!stash) return editor.message("No stash")
+    const { err, code } = await git(["stash", "pop", refname(stash)], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git stash pop failed: ${err.trim()}`)
       return
     }
     await refresh(editor, root)
-    editor.message("Popped stash")
-  }, "Pop the most recent stash.")
+    editor.message(`Popped ${stash}`)
+  }, "Pop a stash, defaulting to the stash at point.")
 
   editor.command("magit-discard", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -2636,54 +3049,95 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`Checked out ${file} from ${rev}`)
   }, "Checkout the current file from a revision and revert the buffer.")
 
-  editor.command("magit-reset-quickly", async ({ editor, buffer }) => {
+  editor.command("magit-reset-quickly", async ({ editor, buffer, args, prefixArgument }) => {
     const root = magitRoot(buffer)
     if (!root) {
       editor.message("Not in a Magit buffer")
       return
     }
-    const { err, code } = await git(["reset", "HEAD", "--"], root, undefined, undefined, editor)
-    if (code !== 0) {
-      editor.message(`git reset failed: ${err.trim()}`)
-      return
-    }
-    await refresh(editor, root)
-    editor.message("Reset index to HEAD")
-  }, "Unstage all staged changes (reset index to HEAD).")
-
-  editor.command("magit-reset", async ({ editor, buffer }) => {
-    await editor.run("magit-reset-quickly")
-  }, "Unstage all staged changes (reset index to HEAD).")
-
-  const resetIndex = async (editor: Editor, root: string, mode: string, label: string) => {
-    const { err, code } = await git(["reset", mode, "HEAD"], root, undefined, undefined, editor)
+    const target = args[0] ?? refAtPoint(buffer)?.name ?? logShaAtPoint(buffer) ?? "HEAD"
+    const mode = prefixArgument ? "--hard" : null
+    const { err, code } = await git(["reset", ...(mode ? [mode] : []), refname(target), "--"], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git reset failed: ${err.trim()}`)
       return
     }
     await refresh(editor, root, 0)
-    editor.message(label)
+    editor.message(mode ? `Reset hard to ${target}` : `Reset index to ${target}`)
+  }, "Quickly reset the index to a target, defaulting to HEAD.")
+
+  editor.command("magit-reset", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const target = args[0] ?? refAtPoint(buffer)?.name ?? logShaAtPoint(buffer) ?? "HEAD"
+    const { err, code } = await git(["reset", refname(target), "--"], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git reset failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(`Reset index to ${target}`)
+  }, "Reset the index to a target, defaulting to HEAD.")
+
+  const resetHead = async (editor: Editor, buffer: BufferModel, mode: string, label: string, prompt: string, args: string[], confirm?: (target: string) => Promise<boolean>) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const target = await resetTarget(editor, root, buffer, prompt, args)
+    if (!target) return
+    if (confirm && !(await confirm(target))) return editor.message("Reset cancelled")
+    const { err, code } = await git(["reset", mode, refname(target)], root, undefined, undefined, editor)
+    if (code !== 0) {
+      editor.message(`git reset failed: ${err.trim()}`)
+      return
+    }
+    await refresh(editor, root, 0)
+    editor.message(`${label} ${target}`)
   }
 
-  editor.command("magit-reset-mixed", async ({ editor, buffer }) => {
-    const root = magitRoot(buffer)
-    if (!root) return editor.message("Not in a Magit buffer")
-    await resetIndex(editor, root, "--mixed", "Reset mixed to HEAD")
-  }, "Reset mixed to HEAD.")
+  editor.command("magit-reset-mixed", async ({ editor, buffer, args }) => {
+    await resetHead(editor, buffer, "--mixed", "Reset mixed to", "Reset branch and index to: ", args)
+  }, "Reset HEAD and index to a target.")
 
-  editor.command("magit-reset-soft", async ({ editor, buffer }) => {
-    const root = magitRoot(buffer)
-    if (!root) return editor.message("Not in a Magit buffer")
-    await resetIndex(editor, root, "--soft", "Reset soft to HEAD")
-  }, "Reset soft to HEAD.")
+  editor.command("magit-reset-soft", async ({ editor, buffer, args }) => {
+    await resetHead(editor, buffer, "--soft", "Reset soft to", "Soft reset branch to: ", args)
+  }, "Reset HEAD to a target, keeping index and worktree.")
 
-  editor.command("magit-reset-hard", async ({ editor, buffer }) => {
+  editor.command("magit-reset-hard", async ({ editor, buffer, args }) => {
+    await resetHead(editor, buffer, "--hard", "Reset hard to", "Hard reset branch to: ", args, async target => {
+      const ans = await editor.prompt(`Hard reset to ${target}? (y or n) `)
+      return ans === "y"
+    })
+  }, "Reset HEAD, index, and worktree to a target (with confirmation).")
+
+  editor.command("magit-reset-keep", async ({ editor, buffer, args }) => {
+    await resetHead(editor, buffer, "--keep", "Reset keep to", "Reset branch to, keeping local changes: ", args)
+  }, "Reset HEAD and index to a target, keeping uncommitted changes.")
+
+  editor.command("magit-reset-index", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const ans = await editor.prompt("Hard reset to HEAD? (y or n) ")
-    if (ans !== "y") return editor.message("Reset cancelled")
-    await resetIndex(editor, root, "--hard", "Reset hard to HEAD")
-  }, "Reset hard to HEAD (with confirmation).")
+    const target = await resetTarget(editor, root, buffer, "Reset index to: ", args)
+    if (!target) return
+    const { err, code } = await git(["reset", refname(target), "--", "."], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git reset failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(`Reset index to ${target}`)
+  }, "Reset only the index to a target.")
+
+  editor.command("magit-reset-worktree", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const target = await resetTarget(editor, root, buffer, "Reset worktree to: ", args)
+    if (!target) return
+    const indexPath = join(tmpdir(), `jemacs-magit-reset-index-${process.pid}-${Date.now()}`)
+    const result = await git(["read-tree", refname(target)], root, undefined, { GIT_INDEX_FILE: indexPath }, editor)
+    if (result.code !== 0) {
+      await unlink(indexPath).catch(() => {})
+      return editor.message(`git read-tree failed: ${result.err.trim()}`)
+    }
+    const checkout = await git(["checkout-index", "--all", "--force"], root, undefined, { GIT_INDEX_FILE: indexPath }, editor)
+    await unlink(indexPath).catch(() => {})
+    if (checkout.code !== 0) return editor.message(`git checkout-index failed: ${checkout.err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(`Reset worktree to ${target}`)
+  }, "Reset only the worktree to a target.")
 
   editor.command("magit-stage-modified", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -2803,8 +3257,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!root) return editor.message("Not in a Magit buffer")
     const msg = await editor.prompt("Stash message: ", "", "magit-stash")
     if (msg == null) return
-    const includeUntracked = commandArgs.includes("--include-untracked") ? ["--include-untracked"] : []
-    const args = msg.trim() ? ["stash", "push", ...includeUntracked, "-m", msg] : ["stash", "push", ...includeUntracked]
+    const args = stashPushArgs(commandArgs, msg.trim() ? ["-m", msg] : [])
     const { err, code } = await git(args, root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git stash failed: ${err.trim()}`)
     await refresh(editor, root, 0)
@@ -2840,6 +3293,30 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const entry = entryAtPoint(buffer)
     if (entry) {
       await editor.openFile(join(root, entry.file))
+      return
+    }
+    const module = moduleAtPoint(buffer)
+    if (module) {
+      const modulePath = join(root, module.path)
+      const moduleRoot = await git(["rev-parse", "--show-toplevel"], modulePath, undefined, undefined, editor)
+      const target = moduleRoot.out.trim()
+      if (moduleRoot.code !== 0 || !target) return editor.message(`Module is not initialized: ${module.path}`)
+      await refresh(editor, target, 0)
+      return
+    }
+    const worktree = worktreeAtPoint(buffer)
+    if (worktree) {
+      await refresh(editor, worktree.path, 0)
+      return
+    }
+    const ref = refAtPoint(buffer)
+    if (ref) {
+      await visitRef(editor, root, ref, buffer)
+      return
+    }
+    const stash = stashAtPoint(buffer)
+    if (stash) {
+      await editor.run("magit-stash-show", [stash])
       return
     }
     const rev = commitishAtPoint(buffer)
@@ -3012,6 +3489,133 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const { out } = await git(args, root, undefined, undefined, editor)
     return out.split("\n").filter(Boolean)
   }
+
+  const moduleChoice = async (editor: Editor, root: string, buffer: BufferModel, prompt: string): Promise<string | null> => {
+    const atPoint = moduleAtPoint(buffer)?.path
+    if (atPoint) return atPoint
+    const modules = await listSubmodules(root, editor)
+    if (!modules.length) return null
+    if (modules.length === 1) return modules[0]!.path
+    return editor.completingRead(prompt, { collection: modules.map(module => module.path), history: "magit-submodule" })
+  }
+
+  const worktreeChoice = async (editor: Editor, root: string, buffer: BufferModel, prompt: string, includeCurrent = false): Promise<MagitWorktree | null> => {
+    const atPoint = worktreeAtPoint(buffer)
+    if (atPoint && (includeCurrent || !atPoint.current)) return atPoint
+    const worktrees = (await listWorktrees(root, editor)).filter(worktree => includeCurrent || !worktree.current)
+    if (!worktrees.length) return null
+    if (worktrees.length === 1) return worktrees[0]!
+    const selected = await editor.completingRead(prompt, { collection: worktrees.map(worktree => worktreeLabel(worktree)), history: "magit-worktree" })
+    if (!selected) return null
+    return worktrees.find(worktree => selected.includes(worktree.path)) ?? null
+  }
+
+  editor.command("magit-submodule-add", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const url = args.find(arg => !arg.startsWith("--")) ?? await editor.prompt("Add submodule URL: ", "", "magit-submodule-url")
+    if (!url) return
+    const pathArg = args.find((arg, index) => index > args.indexOf(url) && !arg.startsWith("--"))
+    const path = pathArg ?? await editor.prompt("Add submodule path: ", basename(url.replace(/\.git$/, "")), "magit-submodule-path")
+    if (!path) return
+    const flags = args.filter(arg => arg === "--force")
+    await runGit(editor, buffer, ["submodule", "add", ...flags, url, path], `Added submodule ${path}`, { resetPoint: true })
+  }, "Add a submodule.")
+
+  editor.command("magit-submodule-init", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const module = args.find(arg => !arg.startsWith("--")) ?? await moduleChoice(editor, root, buffer, "Init submodule: ")
+    if (!module) return editor.message("No submodule")
+    await runGit(editor, buffer, ["submodule", "init", "--", module], `Initialized submodule ${module}`)
+  }, "Initialize a submodule.")
+
+  editor.command("magit-submodule-update", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const module = args.find(arg => !arg.startsWith("--")) ?? await moduleChoice(editor, root, buffer, "Update submodule: ")
+    if (!module) return editor.message("No submodule")
+    const flags = args.filter(arg => ["--force", "--recursive", "--no-fetch", "--remote"].includes(arg))
+    await runGit(editor, buffer, ["submodule", "update", ...flags, "--", module], `Updated submodule ${module}`)
+  }, "Update a submodule.")
+
+  editor.command("magit-submodule-sync", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const module = args.find(arg => !arg.startsWith("--")) ?? await moduleChoice(editor, root, buffer, "Sync submodule: ")
+    if (!module) return editor.message("No submodule")
+    const flags = args.filter(arg => arg === "--recursive")
+    await runGit(editor, buffer, ["submodule", "sync", ...flags, "--", module], `Synced submodule ${module}`)
+  }, "Synchronize a submodule URL.")
+
+  editor.command("magit-submodule-deinit", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const module = args.find(arg => !arg.startsWith("--")) ?? await moduleChoice(editor, root, buffer, "Deinit submodule: ")
+    if (!module) return editor.message("No submodule")
+    const ans = await editor.prompt(`Deinit submodule ${module}? (y or n) `)
+    if (ans !== "y") return editor.message("Cancelled")
+    await runGit(editor, buffer, ["submodule", "deinit", "-f", "--", module], `Deinitialized submodule ${module}`)
+  }, "Deinitialize a submodule.")
+
+  editor.command("magit-worktree-checkout", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const commitChoice = args[0] ?? await editor.completingRead("In new worktree; checkout: ", { collection: await branchOrCommitChoices(editor, root), history: "magit-worktree-commit", initialValue: "HEAD" })
+    const commit = commitChoice?.trim().split(/\s+/, 1)[0]
+    if (!commit) return
+    const initialPath = join(root, "..", `${basename(root)}-${commit.replace(/[^A-Za-z0-9_.-]/g, "-")}`)
+    const directory = args[1] ?? await editor.prompt(`Checkout ${commit} in new worktree: `, initialPath, "magit-worktree-directory")
+    if (!directory) return
+    const target = isAbsolute(directory) ? directory : join(root, directory)
+    const { err, code } = await git(["worktree", "add", target, refname(commit)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git worktree failed: ${err.trim()}`)
+    await refresh(editor, target, 0)
+    editor.message(`Created worktree ${target}`)
+  }, "Checkout a commit or branch in a new worktree.")
+
+  editor.command("magit-worktree-branch", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const branch = args[0] ?? await editor.prompt("New worktree branch: ", "", "magit-worktree-branch")
+    if (!branch) return
+    const startChoice = args[1] ?? await editor.completingRead("Start point: ", { collection: await branchOrCommitChoices(editor, root), history: "magit-worktree-start", initialValue: "HEAD" })
+    const startPoint = startChoice?.trim().split(/\s+/, 1)[0]
+    if (!startPoint) return
+    const initialPath = join(root, "..", `${basename(root)}-${branch.replace(/[^A-Za-z0-9_.-]/g, "-")}`)
+    const directory = args[2] ?? await editor.prompt(`Checkout ${branch} in new worktree: `, initialPath, "magit-worktree-directory")
+    if (!directory) return
+    const target = isAbsolute(directory) ? directory : join(root, directory)
+    const { err, code } = await git(["worktree", "add", "-b", refname(branch), target, refname(startPoint)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git worktree failed: ${err.trim()}`)
+    await refresh(editor, target, 0)
+    editor.message(`Created worktree ${target}`)
+  }, "Create a branch and checkout it in a new worktree.")
+
+  editor.command("magit-worktree-status", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const selected = args[0]
+      ? (await listWorktrees(root, editor)).find(worktree => worktree.path === args[0])
+      : await worktreeChoice(editor, root, buffer, "Visit worktree: ", true)
+    if (!selected) return editor.message("No worktree")
+    await refresh(editor, selected.path, 0)
+  }, "Visit a worktree's Magit status buffer.")
+
+  editor.command("magit-worktree-delete", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const selected = args[0]
+      ? (await listWorktrees(root, editor)).find(worktree => worktree.path === args[0])
+      : await worktreeChoice(editor, root, buffer, "Delete worktree: ")
+    if (!selected) return editor.message("No worktree")
+    const ans = await editor.prompt(`Delete worktree ${selected.path}? (y or n) `)
+    if (ans !== "y") return editor.message("Cancelled")
+    const { err, code } = await git(["worktree", "remove", selected.path], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git worktree failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(`Deleted worktree ${selected.path}`)
+  }, "Delete a linked worktree.")
 
   editor.command("magit-merge", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
@@ -3251,9 +3855,27 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-branch-delete", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const branch = args[0] ?? await editor.completingRead("Delete branch: ", { collection: await branchList(editor, root), history: "magit-branch" })
+    const ref = refAtPoint(buffer)
+    const branch = args[0] ?? (ref?.kind === "local" || ref?.kind === "remote" ? ref.name : null)
+      ?? await editor.completingRead("Delete branch: ", { collection: await branchList(editor, root, true), history: "magit-branch" })
     if (!branch) return
-    await runGit(editor, buffer, ["branch", "-d", refname(branch)], `Deleted branch ${branch}`)
+    const remote = branch.includes("/") && ref?.kind === "remote"
+    const deleteArgs = ["branch", ...(remote ? ["-r"] : []), "-d", refname(branch)]
+    const first = await git(deleteArgs, root, undefined, undefined, editor)
+    if (first.code === 0) {
+      await (buffer.mode === "magit-refs-mode" ? openRefs(editor, root, undefined, buffer.point) : refresh(editor, root))
+      editor.message(`Deleted branch ${branch}`)
+      return
+    }
+    if (remote || !/not fully merged|not fully merged|not merged|not been merged/i.test(first.err)) {
+      return editor.message(`git branch failed: ${first.err.trim() || first.code}`)
+    }
+    const ans = await editor.prompt(`Branch ${branch} is unmerged; delete with -D? (y or n) `)
+    if (ans !== "y") return editor.message("Cancelled")
+    const forced = await git(["branch", "-D", refname(branch)], root, undefined, undefined, editor)
+    if (forced.code !== 0) return editor.message(`git branch failed: ${forced.err.trim() || forced.code}`)
+    await (buffer.mode === "magit-refs-mode" ? openRefs(editor, root, undefined, buffer.point) : refresh(editor, root))
+    editor.message(`Deleted branch ${branch}`)
   }, "Delete a branch.")
 
   editor.command("magit-branch-rename", async ({ editor, buffer, args }) => {
@@ -3266,13 +3888,29 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await runGit(editor, buffer, ["branch", "-m", refname(old), refname(next)], `Renamed ${old} to ${next}`, { resetPoint: true })
   }, "Rename a branch.")
 
-  editor.command("magit-stash-apply", async ({ editor, buffer }) => {
-    await runGit(editor, buffer, ["stash", "apply"], "Applied stash")
-  }, "Apply the most recent stash without dropping it.")
+  editor.command("magit-stash-apply", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const stash = args[0] ?? await stashChoice(editor, root, buffer, "Apply stash: ")
+    if (!stash) return editor.message("No stash")
+    const { err, code } = await git(["stash", "apply", refname(stash)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash apply failed: ${err.trim()}`)
+    await refresh(editor, root)
+    editor.message(`Applied ${stash}`)
+  }, "Apply a stash without dropping it.")
 
-  editor.command("magit-stash-drop", async ({ editor, buffer }) => {
-    await runGit(editor, buffer, ["stash", "drop"], "Dropped stash", { confirm: "Drop stash@{0}? (y or n) " })
-  }, "Drop the most recent stash (with confirmation).")
+  editor.command("magit-stash-drop", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const stash = args[0] ?? await stashChoice(editor, root, buffer, "Drop stash: ")
+    if (!stash) return editor.message("No stash")
+    const ans = await editor.prompt(`Drop ${stash}? (y or n) `)
+    if (ans !== "y") return editor.message("Cancelled")
+    const { err, code } = await git(["stash", "drop", refname(stash)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash drop failed: ${err.trim()}`)
+    await refresh(editor, root)
+    editor.message(`Dropped ${stash}`)
+  }, "Drop a stash (with confirmation).")
 
   editor.command("magit-stash-list", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
@@ -3284,6 +3922,34 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     pushMagitHistory(buf, buffer)
     buf.point = 0
   }, "List stashes in a buffer.")
+
+  editor.command("magit-stash-show", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const stash = args[0] ?? await stashChoice(editor, root, buffer, "Show stash: ")
+    if (!stash) return editor.message("No stash")
+    const { out, err, code } = await git(["stash", "show", "--stat", "-p", refname(stash)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash show failed: ${err.trim()}`)
+    const buf = editor.scratch(`*magit-stash: ${stash}*`, out || "(empty stash)\n", "magit-diff-mode")
+    buf.readOnly = true
+    buf.locals.set("magit-root", root)
+    buf.locals.set("magit-diff-title", stash)
+    pushMagitHistory(buf, buffer)
+    buf.point = 0
+  }, "Show a stash as a diff buffer.")
+
+  editor.command("magit-stash-branch", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const stash = args[1] ?? await stashChoice(editor, root, buffer, "Branch from stash: ")
+    if (!stash) return editor.message("No stash")
+    const branch = args[0] ?? await editor.prompt("Stash branch name: ", "", "magit-stash-branch")
+    if (!branch) return
+    const { err, code } = await git(["stash", "branch", refname(branch), refname(stash)], root, undefined, undefined, editor)
+    if (code !== 0) return editor.message(`git stash branch failed: ${err.trim()}`)
+    await refresh(editor, root, 0)
+    editor.message(`Created branch ${branch} from ${stash}`)
+  }, "Create and checkout a branch from a stash.")
 
   editor.command("magit-commit-extend", async ({ editor, buffer }) => {
     await runGit(editor, buffer, ["commit", "--amend", "--no-edit"], "Extended commit", { resetPoint: true })
