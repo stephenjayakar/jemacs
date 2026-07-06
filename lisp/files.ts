@@ -234,10 +234,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       }
       // Buffers with buffer-save-without-query set save silently (files.el:6370).
       if (b.locals.get("buffer-save-without-query")) { await trySave(saveCtx({ runHook, force: true })); continue }
-      let answer = saveAll ? "y" : (await editor.prompt(`Save file ${b.path}? (y, n, !, ., q) `, "", "save-some-buffers"))?.trim()
-      if (answer == null || answer === "q") break
+      let answer = "y"
+      if (!saveAll) {
+        while (true) {
+          answer = await readKey(editor, `Save file ${b.path}? (y, n, !, ., q) `) ?? "q"
+          if (["y", "space", "n", "backspace", "delete", "!", ".", "q", "esc"].includes(answer)) break
+          editor.message("Please answer y, n, !, . or q.")
+        }
+      }
+      if (answer === "q" || answer === "esc") break
+      if (answer === "n" || answer === "backspace" || answer === "delete") continue
       if (answer === "!") { saveAll = true; answer = "y" }
-      if (answer === "y" || answer === ".") await trySave(saveCtx({ runHook }))
+      if (answer === "y" || answer === "space" || answer === ".") await trySave(saveCtx({ runHook }))
       if (answer === ".") break
     }
     const summary = dirty.length ? `Saved ${saved} of ${dirty.length} file(s)` : "(No files need saving)"

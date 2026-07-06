@@ -2,7 +2,9 @@ import { expect, test } from "bun:test"
 import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { script } from "../harness"
+import { script, keySeq } from "../harness"
+
+const settle = () => new Promise(r => setTimeout(r, 0))
 
 // t-audit-79cd15b8 — find-alternate-file: readFileText is not wrapped, so any
 // FS error (EISDIR, EACCES, ENOTDIR) propagates to the top-level instead of
@@ -45,8 +47,10 @@ test("save-some-buffers: one failing save does not abort the loop; summary repor
     mk(join(dir, "missing", "b.txt")) // parent dir absent → writeFile ENOENT
     mk(join(dir, "c.txt"))
 
-    ed.events.on("minibuffer", () => ed.minibufferAccept("!"))
-    await expect(ed.run("save-some-buffers")).resolves.toBeUndefined()
+    const done = ed.run("save-some-buffers")
+    await settle()
+    await keySeq(ed, "!")
+    await expect(done).resolves.toBeUndefined()
 
     expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("x")
     expect(await readFile(join(dir, "c.txt"), "utf8")).toBe("x") // loop continued past b
