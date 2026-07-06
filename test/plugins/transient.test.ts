@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import type { TransientDefinition } from "../../src/kernel/editor"
+import { keySeq, parseKey } from "../harness"
 import { makeEditor } from "./helper"
 
 const demoTransient: TransientDefinition = {
@@ -119,4 +120,229 @@ test("transient footer is local to invoking split window", async () => {
   expect(owner.footer?.chunks.map(c => c.text).join("")).toContain("Demo Popup")
   expect(other.footer).toBeUndefined()
   expect(owner.bodyLineBudget).toBeLessThan(other.bodyLineBudget)
+})
+
+const parentTransient: TransientDefinition = {
+  name: "parent",
+  title: "Parent Popup",
+  groups: [
+    {
+      title: "Arguments",
+      infixes: [
+        { key: "- x", label: "extra", argument: "--extra" },
+      ],
+    },
+  ],
+}
+
+const childTransient: TransientDefinition = {
+  name: "child",
+  title: "Child Popup",
+  groups: [
+    {
+      title: "Actions",
+      suffixes: [
+        { key: "r", label: "return", command: "child-return", transient: "return" },
+      ],
+    },
+  ],
+}
+
+test("nested openTransient keeps parent values and C-g returns to parent", async () => {
+  const editor = makeEditor()
+
+  editor.openTransient(parentTransient)
+  await keySeq(editor, "-", "x")
+  editor.openTransient(childTransient)
+
+  expect(editor.transient?.definition.name).toBe("child")
+  await keySeq(editor, "C-g")
+
+  expect(editor.transient?.definition.name).toBe("parent")
+  expect(editor.transientDisplayText()).toContain("[*] extra")
+})
+
+test("C-q closes the whole transient stack", async () => {
+  const editor = makeEditor()
+
+  editor.openTransient(parentTransient)
+  await keySeq(editor, "-", "x")
+  editor.openTransient(childTransient)
+  await keySeq(editor, "C-q")
+
+  expect(editor.transient).toBeNull()
+  expect(editor.transientDisplayText()).toBeNull()
+})
+
+test("C-z suspends the stack and transient-resume restores it", async () => {
+  const editor = makeEditor()
+
+  editor.openTransient(parentTransient)
+  await keySeq(editor, "-", "x")
+  editor.openTransient(childTransient)
+  await keySeq(editor, "C-z")
+
+  expect(editor.transient).toBeNull()
+
+  await editor.run("transient-resume")
+  expect(editor.transient?.definition.name).toBe("child")
+
+  await keySeq(editor, "C-g")
+  expect(editor.transient?.definition.name).toBe("parent")
+  expect(editor.transientDisplayText()).toContain("[*] extra")
+})
+
+test("suffix transient stay keeps popup open after running command", async () => {
+  const editor = makeEditor()
+  let ran = 0
+  editor.command("stay-act", () => { ran++ })
+  const definition: TransientDefinition = {
+    name: "stay",
+    title: "Stay Popup",
+    groups: [
+      {
+        title: "Actions",
+        suffixes: [
+          { key: "s", label: "stay", command: "stay-act", transient: "stay" },
+        ],
+      },
+    ],
+  }
+
+  editor.openTransient(definition)
+  await keySeq(editor, "s")
+
+  expect(ran).toBe(1)
+  expect(editor.transient?.definition.name).toBe("stay")
+})
+
+test("suffix transient return runs command and pops to parent", async () => {
+  const editor = makeEditor()
+  let ran = 0
+  editor.command("child-return", () => { ran++ })
+
+  editor.openTransient(parentTransient)
+  editor.openTransient(childTransient)
+  await keySeq(editor, "r")
+
+  expect(ran).toBe(1)
+  expect(editor.transient?.definition.name).toBe("parent")
+})
+
+test("choice infix cycles through choices and back to unset", async () => {
+  const editor = makeEditor()
+  let seen: string[] = []
+  editor.command("choice-act", ({ args }) => { seen = args })
+  const definition: TransientDefinition = {
+    name: "choice",
+    title: "Choice Popup",
+    groups: [
+      {
+        title: "Arguments",
+        infixes: [
+          { key: "m", label: "mode", argument: "--mode", choices: ["one", "two"] },
+        ],
+      },
+      {
+        title: "Actions",
+        suffixes: [
+          { key: "a", label: "act", command: "choice-act" },
+        ],
+      },
+    ],
+  }
+
+  editor.openTransient(definition)
+  await keySeq(editor, "m")
+  expect(editor.transientDisplayText()).toContain("[--mode=one] mode")
+  await keySeq(editor, "m")
+  expect(editor.transientDisplayText()).toContain("[--mode=two] mode")
+  await keySeq(editor, "m")
+  expect(editor.transientDisplayText()).toContain("[ ] mode")
+
+  await keySeq(editor, "a")
+  expect(seen).toEqual([])
+})
+
+test("value infix re-prompts with current value, C-g preserves it, and empty clears it", async () => {
+  const editor = makeEditor()
+  const definition: TransientDefinition = {
+    name: "value",
+    title: "Value Popup",
+    groups: [
+      {
+        title: "Arguments",
+        infixes: [
+          { key: "v", label: "value", argument: "--value", kind: "value", prompt: "Value: " },
+        ],
+      },
+    ],
+  }
+
+  editor.openTransient(definition)
+  const first = editor.handleKey(parseKey("v"))
+  expect(editor.minibuffer?.prompt).toBe("Value: ")
+  await editor.minibufferInsert("7")
+  editor.minibufferSubmit()
+  await first
+  expect(editor.transientDisplayText()).toContain("[--value=7] value")
+
+  const cancel = editor.handleKey(parseKey("v"))
+  expect(editor.minibufferInput()).toBe("7")
+  await keySeq(editor, "C-g")
+  await cancel
+  expect(editor.transientDisplayText()).toContain("[--value=7] value")
+
+  const clear = editor.handleKey(parseKey("v"))
+  expect(editor.minibufferInput()).toBe("7")
+  editor.minibufferAccept("")
+  await clear
+  expect(editor.transientDisplayText()).toContain("[ ] value")
+  expect(editor.transientDisplayText()).not.toContain("--value=7")
+})
+
+test("equals style value infix exports argument=value token", async () => {
+  const editor = makeEditor()
+  let seen: string[] = []
+  editor.command("equals-act", ({ args }) => { seen = args })
+  editor.prompt = async () => "5"
+  const definition: TransientDefinition = {
+    name: "equals",
+    title: "Equals Popup",
+    groups: [
+      {
+        title: "Arguments",
+        infixes: [
+          { key: "m", label: "max", argument: "--max-count", kind: "value", style: "equals" },
+        ],
+      },
+      {
+        title: "Actions",
+        suffixes: [
+          { key: "a", label: "act", command: "equals-act" },
+        ],
+      },
+    ],
+  }
+
+  editor.openTransient(definition)
+  await keySeq(editor, "m", "a")
+
+  expect(seen).toEqual(["--max-count=5"])
+})
+
+test("pending transient keys are echoed and C-g clears pending only", async () => {
+  const editor = makeEditor()
+
+  editor.openTransient(demoTransient)
+  await keySeq(editor, "-")
+
+  expect(editor.transient?.pending).toEqual(["-"])
+  expect(editor.transientDisplayText()).toContain("-- pending: - ")
+
+  await keySeq(editor, "C-g")
+
+  expect(editor.transient?.definition.name).toBe("demo")
+  expect(editor.transient?.pending).toEqual([])
+  expect(editor.transientDisplayText()).not.toContain("-- pending:")
 })

@@ -119,6 +119,8 @@ export type TransientInfix = {
   kind?: "toggle" | "value"
   defaultValue?: boolean | string
   prompt?: string
+  choices?: string[]
+  style?: "equals"
 }
 
 export type TransientSuffix = {
@@ -126,6 +128,7 @@ export type TransientSuffix = {
   label: string
   command: string
   args?: string[]
+  transient?: true | "stay" | "return"
 }
 
 export type TransientGroup = {
@@ -189,6 +192,8 @@ export class Editor {
   selectedTab = 0
   minibuffer: MinibufferRequest | null = null
   transient: TransientState | null = null
+  private readonly transientStack: TransientState[] = []
+  private suspendedTransient: { active: TransientState; stack: TransientState[] } | null = null
   isearch: IsearchState | null = null
   /** Per-key dispatch while isearch is active; the UI loop is owned by lisp/isearch-ui (DESIGN.md). */
   isearchKeyHandler: ((key: KeyEventLike) => Promise<KeyDispatchResult | null>) | null = null
@@ -249,6 +254,7 @@ export class Editor {
     this.windowLayout = rootWindow
     this.selectedWindowId = rootWindow.id
     this.tabs.push({ name: "1", bufferId: scratch.id })
+    this.command("transient-resume", ({ editor }) => editor.resumeTransient(), "Resume the last suspended transient popup.")
   }
 
   get completingReadFunction(): CompletingReadFunction | null {
@@ -903,7 +909,7 @@ export class Editor {
       if (isearchResult) return isearchResult
     }
 
-    if (this.transient) {
+    if (this.transient && !this.minibuffer) {
       const transientResult = await this.handleTransientKey(key)
       if (transientResult) return transientResult
     }
@@ -1059,6 +1065,7 @@ export class Editor {
     for (const group of definition.groups) {
       for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
     }
+    if (this.transient) this.transientStack.push(this.transient)
     this.transient = { definition, values, pending: [], windowId: this.selectedWindowId }
     void this.changed("transient-open")
   }
@@ -1066,14 +1073,24 @@ export class Editor {
   cancelTransient(message = "Quit"): void {
     if (!this.transient) return
     this.transient = null
+    this.transientStack.length = 0
     this.message(message)
     void this.changed("transient-cancel")
+  }
+
+  private resumeTransient(): void {
+    if (!this.suspendedTransient) return
+    this.transientStack.length = 0
+    this.transientStack.push(...this.suspendedTransient.stack)
+    this.transient = this.suspendedTransient.active
+    this.suspendedTransient = null
+    void this.changed("transient-resume")
   }
 
   transientDisplayText(): string | null {
     const state = this.transient
     if (!state) return null
-    return this.formatTransient(state.definition, state.values)
+    return this.formatTransient(state)
   }
 
   private async handleTransientKey(key: KeyEventLike): Promise<KeyDispatchResult | null> {
@@ -1081,17 +1098,41 @@ export class Editor {
     if (!state) return null
     const token = keyToken(key)
     const sequence = [...state.pending, token].join(" ")
-    if (!state.pending.length && (token === "C-g" || token === "esc" || token === "q")) {
-      this.transient = null
+    const hasExplicitBinding = Boolean(transientInfix(state.definition, sequence) ?? transientSuffix(state.definition, sequence))
+    if (!hasExplicitBinding && token === "C-q") {
+      this.transientQuitAll()
+      await this.changed("transient-cancel")
+      return { status: "command", command: "transient-quit-all" }
+    }
+    if (!hasExplicitBinding && (token === "C-g" || token === "esc") && state.pending.length) {
+      state.pending = []
+      await this.changed("transient-prefix-cancel")
+      return { status: "command", command: "transient-quit-one" }
+    }
+    if (!state.pending.length && !hasExplicitBinding && (token === "C-g" || token === "esc" || token === "q")) {
+      this.transientQuitOne()
       await this.changed("transient-cancel")
       return { status: "command", command: "transient-quit-one" }
+    }
+    if (!state.pending.length && !hasExplicitBinding && token === "C-z") {
+      this.suspendTransient()
+      await this.changed("transient-suspend")
+      return { status: "command", command: "transient-suspend" }
     }
     const infix = transientInfix(state.definition, sequence)
     if (infix) {
       state.pending = []
-      if ((infix.kind ?? "toggle") === "value") {
-        const value = await this.prompt(`${infix.label}: `, String(state.values.get(infix.argument) ?? ""), `transient-${state.definition.name}-${infix.argument}`)
-        if (value != null) state.values.set(infix.argument, value)
+      if (infix.choices?.length) {
+        const current = state.values.get(infix.argument)
+        const index = typeof current === "string" ? infix.choices.indexOf(current) : -1
+        const next = index === -1 ? infix.choices[0] : infix.choices[index + 1]
+        state.values.set(infix.argument, next ?? false)
+      } else if ((infix.kind ?? "toggle") === "value") {
+        const current = state.values.get(infix.argument)
+        const initial = typeof current === "string" ? current : ""
+        const value = await this.prompt(infix.prompt ?? `${infix.label}: `, initial, `transient-${state.definition.name}-${infix.argument}`)
+        if (value === "") state.values.set(infix.argument, false)
+        else if (value != null) state.values.set(infix.argument, value)
       } else {
         state.values.set(infix.argument, !state.values.get(infix.argument))
       }
@@ -1102,8 +1143,12 @@ export class Editor {
     if (suffix) {
       state.pending = []
       const args = [...transientArguments(state), ...(suffix.args ?? [])]
-      this.transient = null
+      if (!suffix.transient) this.transientQuitAll("")
       await this.run(suffix.command, args, key)
+      if (suffix.transient === "return" && this.transient === state) {
+        this.transientQuitOne("")
+        await this.changed("transient-return")
+      }
       return { status: "command", command: suffix.command }
     }
     if (transientHasPrefix(state.definition, sequence)) {
@@ -1117,15 +1162,35 @@ export class Editor {
     return { status: "unmatched" }
   }
 
-  private formatTransient(definition: TransientDefinition, values: ReadonlyMap<string, boolean | string>): string {
+  private transientQuitOne(message = "Quit"): void {
+    this.transient = this.transientStack.pop() ?? null
+    if (!this.transient && message) this.message(message)
+  }
+
+  private transientQuitAll(message = "Quit"): void {
+    this.transient = null
+    this.transientStack.length = 0
+    if (message) this.message(message)
+  }
+
+  private suspendTransient(): void {
+    if (!this.transient) return
+    this.suspendedTransient = { active: this.transient, stack: [...this.transientStack] }
+    this.transient = null
+    this.transientStack.length = 0
+  }
+
+  private formatTransient(state: TransientState): string {
+    const { definition, values } = state
     const lines = [definition.title]
+    if (state.pending.length) lines.push(`-- pending: ${state.pending.join(" ")} `)
     for (const group of definition.groups) {
       lines.push("")
       lines.push(group.title)
       for (const infix of group.infixes ?? []) {
         const value = values.get(infix.argument)
-        const marker = value === true ? "*" : value ? String(value) : " "
-        lines.push(` ${infix.key.padEnd(8)} [${marker}] ${infix.label}`)
+        const marker = transientInfixMarker(infix, value)
+        lines.push(` ${infix.key.padEnd(8)} ${marker} ${infix.label}`)
       }
       for (const suffix of group.suffixes ?? []) {
         lines.push(` ${suffix.key.padEnd(8)} ${suffix.label}`)
@@ -1707,13 +1772,23 @@ function transientHasPrefix(definition: TransientDefinition, key: string): boole
   return false
 }
 
+function transientInfixMarker(infix: TransientInfix, value: boolean | string | undefined): string {
+  if ((infix.kind ?? "toggle") === "value" || infix.choices?.length) {
+    return typeof value === "string" && value ? `[${infix.argument}=${value}]` : "[ ]"
+  }
+  return `[${value === true ? "*" : " "}]`
+}
+
 function transientArguments(state: TransientState): string[] {
   const args: string[] = []
   for (const group of state.definition.groups) {
     for (const infix of group.infixes ?? []) {
       const value = state.values.get(infix.argument)
       if (value === true) args.push(infix.argument)
-      else if (typeof value === "string" && value) args.push(infix.argument, value)
+      else if (typeof value === "string" && value) {
+        if (infix.style === "equals") args.push(`${infix.argument}=${value}`)
+        else args.push(infix.argument, value)
+      }
     }
   }
   return args
