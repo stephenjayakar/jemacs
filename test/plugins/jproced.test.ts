@@ -120,9 +120,9 @@ test("jproced-dispatch opens the JProced transient", async () => {
   await editor.run("jproced-dispatch")
 
   expect(editor.transient?.definition.name).toBe("jproced")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Marks")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Listing")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Actions")
+  expect(editor.transientDisplayText()).toContain("Marks")
+  expect(editor.transientDisplayText()).toContain("Listing")
+  expect(editor.transientDisplayText()).toContain("Actions")
 })
 
 test("jproced sort transient dispatches suffix commands", async () => {

@@ -58,9 +58,11 @@ function layoutChildFrame(logical: LogicalModel, frame: LogicalModel["childFrame
 
 function layoutNode(logical: LogicalModel, node: LogicalWindowNode, availableLines: number): SerializedWindowNode {
   if (node.kind === "leaf") {
+    const bodyAndFooterLines = windowBodyLines(availableLines)
+    const footerLines = footerLineCount(node.pane.footer?.text, bodyAndFooterLines)
     return {
       kind: "leaf",
-      pane: layoutPane(logical, node.id, node.pane, node.dedicated, windowBodyLines(availableLines)),
+      pane: layoutPane(logical, node.id, node.pane, node.dedicated, Math.max(1, bodyAndFooterLines - footerLines)),
     }
   }
   const lines = splitLineBudget(availableLines, node.direction, node.ratio)
@@ -117,6 +119,7 @@ function layoutPane(
     body,
     cursor: pane.selected ? { row: cursorLine - startLine, colOffset: col - 1 } : undefined,
     terminalSurface: pane.terminalSurface,
+    footer: pane.footer?.text ? serializeThemedText(applyTheme(pane.footer.text, [], logical.theme)) : undefined,
     modeline: serializeThemedText(pane.modeline),
     clickState: { startLine, gutterPrefixLen: 0 },
     bodyLineBudget: maxLines,
@@ -126,6 +129,11 @@ function layoutPane(
     syncPoint: 0,
     textScale: pane.textScale,
   }
+}
+
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 function themedCompletions(logical: LogicalModel): SerializedThemedText {

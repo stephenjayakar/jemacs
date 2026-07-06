@@ -227,7 +227,7 @@ export type DomTerminalRenderer = {
   mount(body: HTMLElement, pane: SerializedPane, theme?: SerializedDisplayModel["theme"]): boolean
 }
 
-type PaneDom = { paneEl: HTMLElement; bodyEl: HTMLElement; modelineEl: HTMLElement }
+type PaneDom = { paneEl: HTMLElement; bodyEl: HTMLElement; footerEl: HTMLElement; modelineEl: HTMLElement }
 type PaneSlot = { pane: SerializedPane; dom: PaneDom }
 
 export function renderWindows(
@@ -242,11 +242,13 @@ export function renderWindows(
   if (node.kind === "leaf") {
     const pane = document.createElement("div")
     const body = document.createElement("div")
+    const footer = document.createElement("div")
     const modeline = document.createElement("div")
     body.className = "window-body"
+    footer.className = "window-footer"
     modeline.className = "window-modeline"
-    pane.append(body, modeline)
-    const dom: PaneDom = { paneEl: pane, bodyEl: body, modelineEl: modeline }
+    pane.append(body, footer, modeline)
+    const dom: PaneDom = { paneEl: pane, bodyEl: body, footerEl: footer, modelineEl: modeline }
     fillPane(dom, node.pane, grow, theme, terminalRenderer, onPaneAction)
     body.addEventListener("mousedown", event => {
       if (event.button !== 0 || !onMouse) return
@@ -286,7 +288,7 @@ function fillPane(
   terminalRenderer: DomTerminalRenderer | undefined,
   onPaneAction?: DomFramePaneActionHandler,
 ): void {
-  const { paneEl, bodyEl, modelineEl } = dom
+  const { paneEl, bodyEl, footerEl, modelineEl } = dom
   paneEl.className = `window-pane${model.selected ? " selected" : ""}`
   paneEl.dataset.windowId = model.id
   paneEl.dataset.textScale = String(model.textScale ?? 1)
@@ -303,7 +305,7 @@ function fillPane(
   const bodyDefaultPx = defaultFace?.height != null ? defaultFace.height / 10 : DOM_FRAME_BODY_FONT_PX
   bodyEl.style.fontSize = `${bodyDefaultPx * textScale}px`
   bodyEl.style.lineHeight = String(DOM_FRAME_LINE_HEIGHT_RATIO)
-  bodyEl.classList.remove("terminal-surface", "xterm-surface", "rich-table-surface", "web-body")
+  removeClasses(bodyEl, "terminal-surface", "xterm-surface", "rich-table-surface", "web-body")
   if (model.terminalSurface) {
     bodyEl.style.setProperty("--jemacs-terminal-row-px", `${rowPx}px`)
     bodyEl.style.setProperty("--jemacs-terminal-col-px", `${colPx}px`)
@@ -320,9 +322,19 @@ function fillPane(
   if (modelineFace?.bg) modelineEl.style.backgroundColor = modelineFace.bg
   if (modelineFace?.fg) modelineEl.style.color = modelineFace.fg
   const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
+  footerEl.style.display = model.footer ? "" : "none"
+  footerEl.style.fontSize = `${modelineDefaultPx * textScale}px`
+  if (modelineFace?.family && modelineFace.family !== defaultFamily) footerEl.style.fontFamily = modelineFace.family
+  renderThemedText(footerEl, model.footer ?? { chunks: [] }, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
   modelineEl.style.fontSize = `${modelineDefaultPx * textScale}px`
   if (modelineFace?.family && modelineFace.family !== defaultFamily) modelineEl.style.fontFamily = modelineFace.family
   renderThemedText(modelineEl, model.modeline, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
+}
+
+function removeClasses(el: HTMLElement, ...classes: string[]): void {
+  const classList = el.classList as DOMTokenList | Set<string>
+  if ("remove" in classList) classList.remove(...classes)
+  else for (const cls of classes) classList.delete(cls)
 }
 
 /** Patch a leaf pane in place, re-rendering only the parts whose serialized
@@ -341,9 +353,10 @@ function patchPane(
     || !sameJson(prev.cursor, next.cursor)
     || !sameJson(prev.terminalSurface, next.terminalSurface)
     || !sameJson(prev.tableSurface, next.tableSurface)
+  const footerChanged = !sameJson(prev.footer, next.footer)
   const modelineChanged = !sameJson(prev.modeline, next.modeline)
   // Terminal fast path: same-shape grid → mutate cells in place.
-  if (!chromeChanged && !modelineChanged
+  if (!chromeChanged && !footerChanged && !modelineChanged
     && prev.terminalSurface && next.terminalSurface
     && prev.terminalSurface.rows === next.terminalSurface.rows
     && prev.terminalSurface.cols === next.terminalSurface.cols
@@ -351,8 +364,8 @@ function patchPane(
     patchTerminalSurface(dom.bodyEl, prev.terminalSurface, next.terminalSurface)
     return
   }
-  if (!chromeChanged && !bodyChanged && !modelineChanged) return
-  if (chromeChanged || (bodyChanged && modelineChanged)) {
+  if (!chromeChanged && !bodyChanged && !footerChanged && !modelineChanged) return
+  if (chromeChanged || (bodyChanged && (footerChanged || modelineChanged))) {
     fillPane(dom, next, grow, theme, terminalRenderer, onPaneAction)
     return
   }
@@ -375,6 +388,12 @@ function patchPane(
     const modelineFace = themeFace(theme, next.selected ? "modeLine" : "modeLineInactive")
     const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
     renderThemedText(dom.modelineEl, next.modeline, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
+  }
+  if (footerChanged) {
+    const modelineFace = themeFace(theme, next.selected ? "modeLine" : "modeLineInactive")
+    const modelineDefaultPx = modelineFace?.height != null ? modelineFace.height / 10 : DOM_FRAME_MODELINE_FONT_PX
+    dom.footerEl.style.display = next.footer ? "" : "none"
+    renderThemedText(dom.footerEl, next.footer ?? { chunks: [] }, { textScale, defaultFontPx: modelineDefaultPx, defaultFamily })
   }
 }
 

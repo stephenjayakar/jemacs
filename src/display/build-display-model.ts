@@ -67,7 +67,8 @@ function syncEditorWindowGeometry(
   function walk(node: LogicalWindowNode, lines: number, cols?: number): void {
     if (node.kind === "leaf") {
       const { pane } = node
-      const maxLines = windowBodyLines(lines)
+      const bodyAndFooterLines = windowBodyLines(lines)
+      const maxLines = Math.max(1, bodyAndFooterLines - footerLineCount(pane.footer?.text, bodyAndFooterLines))
       const isSelected = node.id === logical.selectedWindowId
       stampPaneGeometry(pane, maxLines, cols, viewport.cols)
       // Per-buffer side effect: selected window's geometry takes precedence so
@@ -85,6 +86,11 @@ function syncEditorWindowGeometry(
     walk(node.first, lb.first, cb.first)
     walk(node.second, lb.second, cb.second)
   }
+}
+
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 /** Write this leaf's body geometry into the per-pane locals snapshot so

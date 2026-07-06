@@ -57,7 +57,7 @@ test("t-26dfa2ae: Shift+P in magit-status is the push prefix, not a read-only th
   const r1 = await editor.handleKey(shiftP)
   expect(r1.status).toBe("command")
   expect(r1.status === "command" && r1.command).toBe("magit-push-popup")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Push")
+  expect(editor.transientDisplayText()).toContain("Push")
 
   await editor.handleKey({ name: "p", sequence: "p" })
   expect(prompts[0]).toBe("Push to remote: ")

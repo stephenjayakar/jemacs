@@ -117,7 +117,10 @@ function layoutLeafPane(
   hostCapabilities?: HostCapabilities,
 ): WindowPaneModel {
   const pane = leaf.pane
-  const maxLines = windowBodyLines(availableLines)
+  const bodyAndFooterLines = windowBodyLines(availableLines)
+  const footerLines = footerLineCount(pane.footer?.text, bodyAndFooterLines)
+  const maxLines = Math.max(1, bodyAndFooterLines - footerLines)
+  const footer = pane.footer?.text ? applyTheme(pane.footer.text, [], logical.theme) : undefined
   if (!pane.buffer) {
     return {
       id: leaf.id,
@@ -127,6 +130,7 @@ function layoutLeafPane(
       body: plainThemedText(""),
       terminalSurface: undefined,
       tableSurface: undefined,
+      footer,
       modeline: pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
       bodyLineBudget: maxLines,
@@ -148,6 +152,7 @@ function layoutLeafPane(
       body: useRaw ? plainThemedText("") : terminalSurfaceToThemedText(surface),
       terminalSurface: useRaw ? terminalSurfaceMetadata(surface) : surface,
       tableSurface: undefined,
+      footer,
       modeline: pane.terminalModeline ?? pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
       bodyLineBudget: maxLines,
@@ -265,6 +270,7 @@ function layoutLeafPane(
     body,
     terminalSurface: undefined,
     tableSurface: hostCapabilities?.richTables ? pane.tableSurface : undefined,
+    footer,
     modeline: pane.modeline,
     clickState,
     bodyLineBudget: maxLines,
@@ -273,6 +279,11 @@ function layoutLeafPane(
     syncSpans,
     textScale: pane.textScale,
   }
+}
+
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 function activeTerminalSurface(

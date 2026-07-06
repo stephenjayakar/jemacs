@@ -138,8 +138,16 @@ function windowScroll(editor: Editor, prefixArg: number | null, direction: 1 | -
 export function selectedWindowBodyBudget(editor: Editor): number {
   const viewport = editor.lastViewport ?? { rows: defaultTerminalRows() }
   const areaLines = contentAreaLinesForEditor(editor, viewport)
-  return leafBodyBudget(editor.windowLayout, editor.selectedWindowId, areaLines)
-    ?? pageScrollLines(viewport.rows)
+  const budget = leafBodyBudget(editor.windowLayout, editor.selectedWindowId, areaLines)
+  if (budget == null) return pageScrollLines(viewport.rows)
+  if (editor.transient?.windowId !== editor.selectedWindowId) return budget
+  const footerText = editor.transientDisplayText()
+  return Math.max(1, budget - footerLineCount(footerText, budget))
+}
+
+function footerLineCount(text: string | null | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 function contentAreaLinesForEditor(editor: Editor, viewport: ViewportSize): number {

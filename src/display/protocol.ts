@@ -20,6 +20,8 @@ export type WindowPaneModel = {
   terminalSurface?: TerminalSurfaceModel
   /** Optional host-renderable table. `body` remains the copy/search/TUI fallback text. */
   tableSurface?: TableSurfaceModel
+  /** Optional rows rendered below body and above modeline. Not part of body hit-testing. */
+  footer?: DisplayChunk
   modeline: DisplayChunk
   /** Maps body cell coordinates to buffer point (see `pointFromWindowClick`). */
   clickState: WindowClickState

@@ -63,6 +63,8 @@ export type LogicalPane = {
   modeline: ThemedText
   /** Modeline variant used when a matching terminal surface is active. */
   terminalModeline?: ThemedText
+  /** Window-local popup rows rendered between the body and mode line. */
+  footer?: { text: string }
   /** Raw terminal grid from `buffer.locals[TERMINAL_SURFACE_LOCAL]` (dims unchecked). */
   terminalSurface?: TerminalSurfaceModel
   /** Optional rich table/list pane model. Plain text remains the fallback. */
@@ -178,6 +180,7 @@ function buildLogicalWindowTree(editor: Editor, layout: WindowNode): LogicalWind
 function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
   const selected = leaf.id === editor.selectedWindowId
   const buffer = editor.buffers.get(leaf.bufferId)
+  const footerText = editor.transient?.windowId === leaf.id ? editor.transientDisplayText() : null
   if (!buffer) {
     return {
       bufferId: leaf.bufferId,
@@ -193,6 +196,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
       startLine: 0,
       mode: "",
       modeline: applyTheme(" (empty)", [], editor.theme),
+      footer: footerText ? { text: footerText } : undefined,
       readOnly: false,
       showLineNumbers: false,
       textScale: 1,
@@ -232,6 +236,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     startLine: leaf.startLine,
     mode: buffer.mode,
     modeline: modelineFor(editor, buffer, leaf, point, selected, dirty),
+    footer: footerText ? { text: footerText } : undefined,
     terminalModeline: surface
       ? themedModeline(terminalModelineText(editor, buffer, dirty, leaf.dedicated), selected, editor.theme)
       : undefined,

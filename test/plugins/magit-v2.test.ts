@@ -242,8 +242,8 @@ test("prefix keys open transient popups before suffix dispatch", async () => {
 
   await editor.handleKey({ name: "c", sequence: "c" })
   expect(editor.transient?.definition.name).toBe("magit-commit")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Commit")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("c        commit")
+  expect(editor.transientDisplayText()).toContain("Commit")
+  expect(editor.transientDisplayText()).toContain("c        commit")
 
   await editor.handleKey({ name: "g", ctrl: true })
   expect(editor.transient).toBeNull()

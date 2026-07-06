@@ -54,6 +54,7 @@ export type SerializedPane = {
   cursor?: { row: number; colOffset: number }
   terminalSurface?: TerminalSurfaceModel
   tableSurface?: TableSurfaceModel
+  footer?: SerializedThemedText
   modeline: SerializedThemedText
   clickState: { startLine: number; gutterPrefixLen: number; displayText?: string; leftPadding?: number }
   bodyLineBudget: number
@@ -118,6 +119,7 @@ function serializePane(pane: DisplayModel["childFrames"][number]["pane"]): Seria
     body: serializeThemedText(pane.body),
     terminalSurface: pane.terminalSurface ? serializeTerminalSurface(pane.terminalSurface) : undefined,
     tableSurface: pane.tableSurface ? serializeTableSurface(pane.tableSurface) : undefined,
+    footer: pane.footer ? serializeThemedText(pane.footer) : undefined,
     modeline: serializeThemedText(pane.modeline),
     clickState: {
       startLine: pane.clickState.startLine,

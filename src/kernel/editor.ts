@@ -144,6 +144,7 @@ export type TransientState = {
   definition: TransientDefinition
   values: Map<string, boolean | string>
   pending: string[]
+  windowId: string
 }
 
 export type CompletingReadFunction = (editor: Editor, prompt: string, options: CompletingReadOptions) => Promise<string | null>
@@ -1058,17 +1059,21 @@ export class Editor {
     for (const group of definition.groups) {
       for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
     }
-    this.transient = { definition, values, pending: [] }
-    this.minibufferCompletionDisplay = { text: this.formatTransient(definition, values) }
+    this.transient = { definition, values, pending: [], windowId: this.selectedWindowId }
     void this.changed("transient-open")
   }
 
   cancelTransient(message = "Quit"): void {
     if (!this.transient) return
     this.transient = null
-    this.minibufferCompletionDisplay = null
     this.message(message)
     void this.changed("transient-cancel")
+  }
+
+  transientDisplayText(): string | null {
+    const state = this.transient
+    if (!state) return null
+    return this.formatTransient(state.definition, state.values)
   }
 
   private async handleTransientKey(key: KeyEventLike): Promise<KeyDispatchResult | null> {
@@ -1078,7 +1083,6 @@ export class Editor {
     const sequence = [...state.pending, token].join(" ")
     if (!state.pending.length && (token === "C-g" || token === "esc" || token === "q")) {
       this.transient = null
-      this.minibufferCompletionDisplay = null
       await this.changed("transient-cancel")
       return { status: "command", command: "transient-quit-one" }
     }
@@ -1091,7 +1095,6 @@ export class Editor {
       } else {
         state.values.set(infix.argument, !state.values.get(infix.argument))
       }
-      this.minibufferCompletionDisplay = { text: this.formatTransient(state.definition, state.values) }
       await this.changed("transient-infix")
       return { status: "command", command: "transient-infix" }
     }
@@ -1100,7 +1103,6 @@ export class Editor {
       state.pending = []
       const args = [...transientArguments(state), ...(suffix.args ?? [])]
       this.transient = null
-      this.minibufferCompletionDisplay = null
       await this.run(suffix.command, args, key)
       return { status: "command", command: suffix.command }
     }

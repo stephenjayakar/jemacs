@@ -50,7 +50,7 @@ export class OpenTuiHost implements UiHost {
   private minibuffer!: TextRenderable
   private echo!: TextRenderable
   private splitPanes = new Map<string, BoxRenderable>()
-  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; modeline: TextRenderable }>()
+  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; footer: TextRenderable; modeline: TextRenderable }>()
   private childFramePanes = new Map<string, { frame: BoxRenderable; body: TextRenderable }>()
   private inputHandlers: InputHandler[] = []
   private resizeHandlers: ResizeHandler[] = []
@@ -272,6 +272,8 @@ export class OpenTuiHost implements UiHost {
       this.applyPaneLayout(parts.pane, parentAxis, grow)
       this.reparent(parts.pane, parent)
       this.updateLeafBody(parts.body, leaf, theme)
+      parts.footer.content = leaf.footer ? themedTextToStyledText(leaf.footer) : ""
+      parts.footer.height = leaf.footer ? Math.max(1, themedTextPlain(leaf.footer).split("\n").length) : 0
       parts.modeline.content = themedTextToStyledText(leaf.modeline)
       return
     }
@@ -366,10 +368,12 @@ export class OpenTuiHost implements UiHost {
         flexBasis: 0,
         minHeight: 0,
       })
+    const footer = new TextRenderable(this.renderer, { id: `window-footer:${windowId}`, content: "", height: 0 })
     const modeline = new TextRenderable(this.renderer, { id: `window-modeline:${windowId}`, content: "" })
     pane.add(body)
+    pane.add(footer)
     pane.add(modeline)
-    return { pane, body, modeline }
+    return { pane, body, footer, modeline }
   }
 
   private createChildFrame(id: string) {
@@ -408,6 +412,10 @@ export class OpenTuiHost implements UiHost {
     }
     body.content = themedTextToStyledText(leaf.terminalSurface ? terminalSurfaceToThemedText(leaf.terminalSurface) : leaf.body)
   }
+}
+
+function themedTextPlain(text: WindowPaneModel["footer"]): string {
+  return text?.chunks.map(chunk => chunk.text).join("") ?? ""
 }
 
 function fillBox(box: BoxRenderable, backgroundColor: string | undefined): void {

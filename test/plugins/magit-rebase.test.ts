@@ -132,5 +132,5 @@ test("magit interactive rebase commands, keymap, and transient are wired", async
 
   await editor.run("magit-rebase-popup")
   expect(editor.transient?.definition.name).toBe("magit-rebase")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("i        interactive")
+  expect(editor.transientDisplayText()).toContain("i        interactive")
 })
