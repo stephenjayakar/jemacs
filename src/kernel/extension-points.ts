@@ -31,6 +31,7 @@ export type FaceName =
   | "minibuffer"
   | "minibufferPrompt"
   | "title"
+  | "warning"
   | "error"
   | "lineNumber"
   | "lineNumberCurrent"

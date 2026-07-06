@@ -88,6 +88,9 @@ test("t t creates a tag at HEAD; t k deletes it", async () => {
   await editor.run("magit-status", [repo])
   editor.prompt = async () => "v1.0"
   await keySeq(editor, "t", "t")
+  expect(editor.currentBuffer.name).toBe("*COMMIT_EDITMSG*")
+  editor.currentBuffer.insert("release v1.0\n")
+  await keySeq(editor, "C-c", "C-c")
   expect((await git(["tag", "--list"])).trim()).toBe("v1.0")
 
   editor.completingRead = () => Promise.resolve("v1.0")
@@ -147,6 +150,8 @@ test("V v reverts the commit at point", async () => {
   const editor = ed()
   await editor.run("magit-status", [repo])
   await editor.run("magit-revert", [head])
+  expect(editor.currentBuffer.name).toBe("*COMMIT_EDITMSG*")
+  await keySeq(editor, "C-c", "C-c")
 
   expect((await git(["log", "--pretty=%s"])).split("\n")[0]).toContain("Revert")
 })

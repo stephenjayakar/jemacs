@@ -78,7 +78,7 @@ export function listKnownFaceNames(): string[] {
     "keyword", "string", "comment", "builtin", "function", "type",
     "number", "constant", "directory", "region", "isearch", "lazyHighlight",
     "modeLine", "modeLineInactive", "minibuffer", "minibufferPrompt", "title",
-    "error", "lineNumber", "lineNumberCurrent",
+    "warning", "error", "lineNumber", "lineNumberCurrent",
     "diffHeader", "diffFileHeader", "diffIndex", "diffHunkHeader",
     "diffRemoved", "diffAdded", "diffChanged", "diffContext",
     "diffFunction", "diffNonexistent",

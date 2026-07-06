@@ -20,6 +20,7 @@ import {
   runInteractiveRebaseTodo,
   type RebaseTodoAction,
 } from "./rebase-todo"
+import { appendProcessEntry, openProcessBuffer, runGitLogged, type MagitGitResult } from "./process"
 import {
   MAGIT_SECTION_VISIBILITY_CACHE_LOCAL,
   MagitSectionBuilder,
@@ -30,6 +31,18 @@ import {
   type MagitSection,
   type MagitSectionVisibility,
 } from "./section"
+import {
+  WITH_EDITOR_AWAIT_ON_FINISH_LOCAL,
+  WITH_EDITOR_PROCESS_LOCAL,
+  abortWithEditorBuffer,
+  acceptWithEditorBuffer,
+  createWithEditorSession,
+  gitCommitFontLock,
+  gitCommitMessageBody,
+  isWithEditorBuffer,
+  openWithEditorBuffer,
+  type WithEditorSession,
+} from "./with-editor"
 
 /** A file-level section in the status buffer; line ranges let s/u act on the diff body too. */
 export type MagitEntry = {
@@ -57,30 +70,30 @@ function refname(s: string): string {
   return s
 }
 
+export function magitCommitRewordArgs(): string[] {
+  return ["commit", "--amend", "--only"]
+}
+
+export function magitCommitFixupArgs(target: string): string[] {
+  return ["commit", `--fixup=${refname(target)}`]
+}
+
+export function magitCommitSquashArgs(target: string): string[] {
+  return ["commit", `--squash=${refname(target)}`]
+}
+
+export function magitRebaseInteractiveArgs(base: string): string[] {
+  return ["rebase", "-i", "--autosquash", refname(base)]
+}
+
 async function git(
   args: string[],
   cwd: string,
   stdin?: string,
   env?: Record<string, string>,
+  editor?: Editor,
 ): Promise<{ out: string; err: string; code: number | null }> {
-  const proc = spawnProcess({
-    cmd: ["git", ...args],
-    cwd,
-    env,
-    stdin: stdin != null ? "pipe" : "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  if (stdin != null && proc.stdin) {
-    proc.stdin.write(stdin)
-    proc.stdin.end()
-  }
-  const [out, err] = await Promise.all([
-    proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
-    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
-  ])
-  const code = await proc.exited
-  return { out, err, code }
+  return runGitLogged(args, cwd, { stdin, env, editor })
 }
 
 type FileChange = { file: string; xy: string }
@@ -166,16 +179,17 @@ export async function buildStatus(
   root: string,
   cacheOrFolded: Map<string, MagitSectionVisibility> | ReadonlySet<string> = new Map(),
   context = DEFAULT_DIFF_CONTEXT,
+  editor?: Editor,
 ): Promise<MagitStatus> {
   const diffContextArgs = magitDiffContextArgs(context)
   const [status, headMsg, unstagedDiff, stagedDiff, log, stashList, bisectPath] = await Promise.all([
-    git(["status", "--porcelain=v2", "--branch"], root),
-    git(["log", "-1", "--pretty=%s"], root),
-    git(["diff", ...diffContextArgs], root),
-    git(["diff", "--cached", ...diffContextArgs], root),
-    git(["log", "-n", "10", "--pretty=%h %s"], root),
-    git(["stash", "list"], root),
-    git(["rev-parse", "--git-path", "BISECT_LOG"], root),
+    git(["status", "--porcelain=v2", "--branch"], root, undefined, undefined, editor),
+    git(["log", "-1", "--pretty=%s"], root, undefined, undefined, editor),
+    git(["diff", ...diffContextArgs], root, undefined, undefined, editor),
+    git(["diff", "--cached", ...diffContextArgs], root, undefined, undefined, editor),
+    git(["log", "-n", "10", "--pretty=%h %s"], root, undefined, undefined, editor),
+    git(["stash", "list"], root, undefined, undefined, editor),
+    git(["rev-parse", "--git-path", "BISECT_LOG"], root, undefined, undefined, editor),
   ])
   const { branch, upstream, files } = parsePorcelain(status.out)
   const unstagedDiffs = new Map(parseDiff(unstagedDiff.out).map(d => [d.file, d]))
@@ -201,13 +215,13 @@ export async function buildStatus(
   })
 
   if (upstream) {
-    const aheadBehind = await git(["rev-list", "--count", "--left-right", "HEAD...@{upstream}"], root)
+    const aheadBehind = await git(["rev-list", "--count", "--left-right", "HEAD...@{upstream}"], root, undefined, undefined, editor)
     if (aheadBehind.code === 0) {
       const [aheadRaw, behindRaw] = aheadBehind.out.trim().split(/\s+/)
       const ahead = Number(aheadRaw)
       const behind = Number(behindRaw)
       if (Number.isFinite(ahead) && ahead > 0) {
-        const commits = (await git(["log", "--oneline", "@{upstream}..HEAD"], root)).out.split("\n").filter(Boolean)
+        const commits = (await git(["log", "--oneline", "@{upstream}..HEAD"], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
         builder.insertSection({ type: "unpushed", value: upstream }, () => {
           builder.insertHeading(`Unpushed to ${upstream} (${ahead})`)
           for (const commit of commits) builder.insert(`${commit}\n`)
@@ -215,7 +229,7 @@ export async function buildStatus(
         })
       }
       if (Number.isFinite(behind) && behind > 0) {
-        const commits = (await git(["log", "--oneline", "HEAD..@{upstream}"], root)).out.split("\n").filter(Boolean)
+        const commits = (await git(["log", "--oneline", "HEAD..@{upstream}"], root, undefined, undefined, editor)).out.split("\n").filter(Boolean)
         builder.insertSection({ type: "unpulled", value: upstream }, () => {
           builder.insertHeading(`Unpulled from ${upstream} (${behind})`)
           for (const commit of commits) builder.insert(`${commit}\n`)
@@ -318,7 +332,7 @@ async function refresh(editor: Editor, root: string, point?: number): Promise<Bu
   const prev = [...editor.buffers.values()].find(b => b.name === name)
   const cache = (prev?.locals.get(MAGIT_SECTION_VISIBILITY_CACHE_LOCAL) as Map<string, MagitSectionVisibility> | undefined) ?? new Map<string, MagitSectionVisibility>()
   const context = magitDiffContext(prev)
-  const status = await buildStatus(root, cache, context)
+  const status = await buildStatus(root, cache, context, editor)
   // Preserving the byte offset is only sound when the section layout is stable
   // (g/s/u). Callers that reshape the buffer — commit drops the whole Staged
   // section — pass an explicit point so we don't land mid-word (t-6bbb608e).
@@ -396,7 +410,7 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   if (!root) return false
   if (buffer.mode === "magit-status") {
     const point = buffer.point
-    const status = await buildStatus(root, visibilityCache(buffer), context)
+    const status = await buildStatus(root, visibilityCache(buffer), context, editor)
     buffer.setText(status.text, false)
     buffer.locals.set("magit-entries", status.entries)
     buffer.locals.set("magit-hunks", status.hunks)
@@ -409,7 +423,7 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   const baseArgs = magitDiffBaseArgs(buffer)
   const title = buffer.locals.get("magit-diff-title") as string | undefined
   if (!baseArgs || !title) return false
-  const { out } = await git([...baseArgs, ...magitDiffContextArgs(context)], root)
+  const { out } = await git([...baseArgs, ...magitDiffContextArgs(context)], root, undefined, undefined, editor)
   buffer.readOnly = false
   buffer.setText(out || "(no changes)\n", false)
   buffer.readOnly = true
@@ -423,7 +437,7 @@ async function showCommitDiff(editor: Editor, commitBuffer: BufferModel): Promis
   const root = magitRoot(commitBuffer)
   if (!root || commitBuffer.mode !== "magit-commit") return false
   const context = magitDiffContext(commitBuffer)
-  const { out: diff } = await git(["diff", "--cached", ...magitDiffContextArgs(context)], root)
+  const { out: diff } = await git(["diff", "--cached", ...magitDiffContextArgs(context)], root, undefined, undefined, editor)
   const diffBuf = editor.scratch("*magit-diff: staged*", diff || "(nothing staged)\n", "magit-diff-mode")
   diffBuf.readOnly = true
   diffBuf.locals.set("magit-root", root)
@@ -442,7 +456,7 @@ function commitMessageBuffer(editor: Editor): BufferModel | null {
 }
 
 async function showRevision(editor: Editor, root: string, sha: string, source?: BufferModel): Promise<BufferModel> {
-  const { out } = await git(["show", "--stat", "-p", sha], root)
+  const { out } = await git(["show", "--stat", "-p", sha], root, undefined, undefined, editor)
   const buf = editor.scratch(`*magit-commit: ${sha}*`, out, "magit-revision-mode")
   buf.readOnly = true
   buf.locals.set("magit-root", root)
@@ -563,7 +577,7 @@ async function repoRelativePath(root: string, path: string): Promise<string> {
 
 async function openLog(editor: Editor, root: string, source?: BufferModel, pathspec?: string): Promise<BufferModel> {
   const args = ["log", "--oneline", "--graph", "-50", ...(pathspec ? ["--", pathspec] : [])]
-  const { out } = await git(args, root)
+  const { out } = await git(args, root, undefined, undefined, editor)
   const buf = editor.scratch("*magit-log*", out || "(no commits)\n", "magit-log")
   buf.readOnly = true
   buf.path = root
@@ -572,6 +586,162 @@ async function openLog(editor: Editor, root: string, source?: BufferModel, paths
   if (source) pushMagitHistory(buf, source)
   buf.point = 0
   return buf
+}
+
+type MagitWithEditorProcess = {
+  root: string
+  done: Promise<MagitGitResult>
+  session: WithEditorSession
+  winconf?: ReturnType<Editor["currentWindowConfiguration"]>
+  successMessage: string
+  failurePrefix: string
+  cancelledMessage: string
+  resetPoint: boolean
+  killStagedDiff: boolean
+  cancelled: boolean
+  finalized: boolean
+}
+
+async function startGitWithEditorFlow(
+  editor: Editor,
+  root: string,
+  args: string[],
+  options: {
+    env?: Record<string, string>
+    successMessage: string
+    failurePrefix: string
+    cancelledMessage?: string
+    resetPoint?: boolean
+    showCommitDiff?: boolean
+    awaitOnFinish?: boolean
+  },
+): Promise<BufferModel | null> {
+  const winconf = editor.currentWindowConfiguration()
+  let openedResolve!: (buffer: BufferModel) => void
+  let openedReject!: (error: Error) => void
+  const opened = new Promise<BufferModel>((resolve, reject) => {
+    openedResolve = resolve
+    openedReject = reject
+  })
+
+  const processInfo: MagitWithEditorProcess = {
+    root,
+    done: Promise.resolve({ out: "", err: "", code: null }),
+    session: null as unknown as WithEditorSession,
+    winconf,
+    successMessage: options.successMessage,
+    failurePrefix: options.failurePrefix,
+    cancelledMessage: options.cancelledMessage ?? "Cancelled",
+    resetPoint: options.resetPoint ?? true,
+    killStagedDiff: options.showCommitDiff ?? false,
+    cancelled: false,
+    finalized: false,
+  }
+
+  const session = await createWithEditorSession({
+    onRequest: async request => {
+      try {
+        const editBuffer = await openWithEditorBuffer(editor, request, {
+          root,
+          winconf,
+          awaitOnFinish: options.awaitOnFinish,
+        })
+        editBuffer.locals.set(WITH_EDITOR_PROCESS_LOCAL, processInfo)
+        if (options.showCommitDiff && editBuffer.mode === "magit-commit") await showCommitDiff(editor, editBuffer)
+        openedResolve(editBuffer)
+      } catch (error) {
+        openedReject(error instanceof Error ? error : new Error(String(error)))
+        throw error
+      }
+    },
+  })
+  processInfo.session = session
+  processInfo.done = git(args, root, undefined, { ...(options.env ?? {}), ...session.env }, editor)
+    .finally(() => session.dispose())
+
+  const openedFirst = await Promise.race([
+    opened.then(() => true),
+    processInfo.done.then(() => false),
+  ])
+  if (!openedFirst) {
+    await finalizeWithEditorProcess(editor, processInfo)
+    return null
+  }
+  return opened
+}
+
+async function finishWithEditorBuffer(editor: Editor, buffer: BufferModel): Promise<boolean> {
+  const processInfo = buffer.locals.get(WITH_EDITOR_PROCESS_LOCAL) as MagitWithEditorProcess | undefined
+  if (!isWithEditorBuffer(buffer)) return false
+  if (buffer.mode === "magit-commit" && !gitCommitMessageBody(buffer.text)) {
+    if (processInfo) {
+      processInfo.cancelled = true
+      processInfo.cancelledMessage = "Aborting commit due to empty message"
+    }
+    await abortWithEditorBuffer(buffer)
+    await cleanupWithEditorBuffer(editor, buffer, processInfo)
+    if (processInfo) await finalizeWithEditorProcess(editor, processInfo)
+    return true
+  }
+  await acceptWithEditorBuffer(buffer)
+  const awaitOnFinish = buffer.locals.get(WITH_EDITOR_AWAIT_ON_FINISH_LOCAL) !== false
+  await cleanupWithEditorBuffer(editor, buffer, processInfo)
+  if (processInfo) {
+    if (awaitOnFinish) await finalizeWithEditorProcess(editor, processInfo)
+    else void finalizeWithEditorProcess(editor, processInfo)
+  }
+  return true
+}
+
+async function abortWithEditorEdit(editor: Editor, buffer: BufferModel, message: string): Promise<boolean> {
+  const processInfo = buffer.locals.get(WITH_EDITOR_PROCESS_LOCAL) as MagitWithEditorProcess | undefined
+  if (!isWithEditorBuffer(buffer)) return false
+  if (processInfo) {
+    processInfo.cancelled = true
+    processInfo.cancelledMessage = message
+  }
+  await abortWithEditorBuffer(buffer)
+  const awaitOnFinish = buffer.locals.get(WITH_EDITOR_AWAIT_ON_FINISH_LOCAL) !== false
+  await cleanupWithEditorBuffer(editor, buffer, processInfo)
+  if (processInfo) {
+    if (awaitOnFinish) await finalizeWithEditorProcess(editor, processInfo)
+    else void finalizeWithEditorProcess(editor, processInfo)
+  } else {
+    editor.message(message)
+  }
+  return true
+}
+
+async function cleanupWithEditorBuffer(editor: Editor, buffer: BufferModel, processInfo?: MagitWithEditorProcess): Promise<void> {
+  const root = processInfo?.root ?? magitRoot(buffer)
+  editor.killBuffer(buffer.id)
+  if (processInfo?.killStagedDiff) editor.killBuffer("*magit-diff: staged*")
+  if (processInfo?.winconf) editor.restoreWindowConfiguration(processInfo.winconf)
+  if (root) editor.switchToBuffer(`*magit: ${basename(root)}*`)
+}
+
+async function finalizeWithEditorProcess(editor: Editor, processInfo: MagitWithEditorProcess): Promise<MagitGitResult> {
+  if (processInfo.finalized) return processInfo.done
+  processInfo.finalized = true
+  const result = await processInfo.done
+  if (processInfo.cancelled) {
+    editor.message(processInfo.cancelledMessage)
+    return result
+  }
+  if (result.code === 0) {
+    await refresh(editor, processInfo.root, processInfo.resetPoint ? 0 : undefined)
+    editor.message(processInfo.successMessage)
+  } else {
+    editor.message(`${processInfo.failurePrefix}: ${result.err.trim() || result.code}`)
+  }
+  return result
+}
+
+async function recentCommitChoice(editor: Editor, root: string, prompt: string): Promise<string | null> {
+  const { out } = await git(["log", "-n", "50", "--pretty=%h %s"], root, undefined, undefined, editor)
+  const choices = out.split("\n").filter(Boolean)
+  const selected = await editor.completingRead(prompt, { collection: choices, history: "magit-recent-commit" })
+  return selected?.trim().split(/\s+/, 1)[0] ?? null
 }
 
 const magitDispatchTransient: TransientDefinition = {
@@ -618,6 +788,8 @@ const magitCommitTransient: TransientDefinition = {
       { key: "a", label: "amend", command: "magit-commit-amend" },
       { key: "e", label: "extend", command: "magit-commit-extend" },
       { key: "w", label: "reword", command: "magit-commit-reword" },
+      { key: "f", label: "fixup", command: "magit-commit-fixup" },
+      { key: "s", label: "squash", command: "magit-commit-squash" },
     ] },
   ],
 }
@@ -817,6 +989,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   magitModeMap.bind("?", "magit-dispatch")
   magitModeMap.bind("q", "magit-bury-buffer")
   magitModeMap.bind(":", "magit-git-command")
+  magitModeMap.bind("$", "magit-process")
   magitModeMap.bind("tab", "magit-section-toggle")
   defineMode({ name: "magit-mode", parent: "magit-section-mode", keymap: magitModeMap })
 
@@ -889,6 +1062,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("S-m r", "magit-remote-rename")
   statusMap.bind("c e", "magit-commit-extend")
   statusMap.bind("c w", "magit-commit-reword")
+  statusMap.bind("c f", "magit-commit-fixup")
+  statusMap.bind("c s", "magit-commit-squash")
   statusMap.bind("d d", "magit-diff-working")
   statusMap.bind("d u", "magit-diff-unstaged")
   statusMap.bind("d s", "magit-diff-staged")
@@ -906,6 +1081,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   statusMap.bind("j z", "magit-jump-to-stashes")
   statusMap.bind("S-i", "magit-init")
   statusMap.bind(":", "magit-git-command")
+  statusMap.bind("$", "magit-process")
   statusMap.bind("q", "magit-bury-buffer")
   statusMap.bind("tab", "magit-section-toggle")
   statusMap.bind("c", "magit-commit-popup")
@@ -931,7 +1107,12 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   commitMap.bind("C-c C-c", "magit-commit-finish")
   commitMap.bind("C-c C-d", "magit-diff-while-committing")
   commitMap.bind("C-c C-k", "magit-commit-abort")
-  defineMode({ name: "magit-commit", parent: "text", keymap: commitMap })
+  defineMode({ name: "magit-commit", parent: "text", keymap: commitMap, commentStart: "#", fontLock: gitCommitFontLock })
+
+  const processMap = new Keymap("magit-process-mode-map")
+  processMap.bind("g", "magit-refresh")
+  processMap.bind("q", "magit-bury-buffer")
+  defineMode({ name: "magit-process-mode", parent: "magit-mode", keymap: processMap, fontLock: magitDiffFontLock })
 
   const rebaseTodoMap = new Keymap("git-rebase-mode-map")
   rebaseTodoMap.bind("p", "git-rebase-pick")
@@ -974,13 +1155,13 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       return
     }
     const dir = path.slice(0, path.lastIndexOf("/")) || "/"
-    const rootResult = await git(["rev-parse", "--show-toplevel"], dir)
+    const rootResult = await git(["rev-parse", "--show-toplevel"], dir, undefined, undefined, editor)
     const root = rootResult.out.trim()
     if (rootResult.code !== 0 || !root) {
       editor.message("Not in a git repository")
       return
     }
-    const { out, err, code } = await git(["blame", "--line-porcelain", "--", path], root)
+    const { out, err, code } = await git(["blame", "--line-porcelain", "--", path], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git blame failed: ${err.trim() || code}`)
       return
@@ -1068,7 +1249,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const file = args[0] ?? await editor.prompt("Write patch file: ", join(root, "magit.patch"), "magit-patch-save")
     if (!file) return
     const diffArgs = magitDiffBaseArgs(buffer)
-    const patch = diffArgs ? (await git([...diffArgs, ...magitDiffContextArgs(magitDiffContext(buffer)), "-p"], root)).out : buffer.text
+    const patch = diffArgs ? (await git([...diffArgs, ...magitDiffContextArgs(magitDiffContext(buffer)), "-p"], root, undefined, undefined, editor)).out : buffer.text
     const target = isAbsolute(file) ? file : join(root, file)
     if (existsSync(target)) {
       const ans = await editor.prompt(`File ${target} exists; overwrite? (y or n) `)
@@ -1147,7 +1328,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const hunk = hunkAtPoint(buffer)
     if (hunk && !hunk.staged) {
-      const { err, code } = await git(["apply", "--cached", "-"], root, hunk.patch)
+      const { err, code } = await git(["apply", "--cached", "-"], root, hunk.patch, undefined, editor)
       if (code !== 0) {
         editor.message(`git apply failed: ${err.trim()}`)
         return
@@ -1161,7 +1342,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Nothing to stage at point")
       return
     }
-    await git(["add", "--", entry.file], root)
+    await git(["add", "--", entry.file], root, undefined, undefined, editor)
     await refresh(editor, root)
     editor.message(`Staged ${entry.file}`)
   }, "Stage the hunk or file at point.")
@@ -1174,7 +1355,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const hunk = hunkAtPoint(buffer)
     if (hunk && hunk.staged) {
-      const { err, code } = await git(["apply", "--cached", "--reverse", "-"], root, hunk.patch)
+      const { err, code } = await git(["apply", "--cached", "--reverse", "-"], root, hunk.patch, undefined, editor)
       if (code !== 0) {
         editor.message(`git apply failed: ${err.trim()}`)
         return
@@ -1188,7 +1369,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Nothing to unstage at point")
       return
     }
-    await git(["restore", "--staged", "--", entry.file], root)
+    await git(["restore", "--staged", "--", entry.file], root, undefined, undefined, editor)
     await refresh(editor, root)
     editor.message(`Unstaged ${entry.file}`)
   }, "Unstage the hunk or file at point.")
@@ -1199,18 +1380,19 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const winconf = editor.currentWindowConfiguration()
-    const buf = editor.scratch("*COMMIT_EDITMSG*", "", "magit-commit")
-    buf.locals.set("magit-root", root)
-    buf.locals.set("magit-winconf", winconf)
-    buf.locals.set("magit-commit-args", args)
-    buf.point = 0
-    // Show what's being committed in a split, like real magit.
-    await showCommitDiff(editor, buf)
-    editor.message("Type C-c C-c to finish, C-c C-k to abort")
+    const signoff = args.includes("--signoff") ? ["--signoff"] : []
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["commit", ...signoff], {
+      successMessage: "Committed",
+      failurePrefix: "git commit failed",
+      cancelledMessage: "Commit aborted",
+      showCommitDiff: true,
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Open a buffer to write a commit message for staged changes.")
 
   editor.command("magit-commit-finish", async ({ editor, buffer }) => {
+    if (await finishWithEditorBuffer(editor, buffer)) return
     const root = magitRoot(buffer)
     if (!root || buffer.mode !== "magit-commit") {
       editor.message("Not in a commit message buffer")
@@ -1222,7 +1404,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       return
     }
     const extra = (buffer.locals.get("magit-commit-args") as string[] | undefined) ?? []
-    const { err, code } = await git(["commit", ...extra.filter(arg => arg === "--signoff"), "-F", "-"], root, msg)
+    const { err, code } = await git(["commit", ...extra.filter(arg => arg === "--signoff"), "-F", "-"], root, msg, undefined, editor)
     if (code !== 0) {
       editor.message(`git commit failed: ${err.trim()}`)
       return
@@ -1235,7 +1417,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message("Committed")
   }, "Finish the commit using the current buffer as the message.")
 
-  editor.command("magit-commit-abort", ({ editor, buffer }) => {
+  editor.command("magit-commit-abort", async ({ editor, buffer }) => {
+    if (isWithEditorBuffer(buffer)) {
+      await abortWithEditorEdit(editor, buffer, buffer.mode === "git-rebase-mode" ? "Interactive rebase aborted" : "Commit aborted")
+      return
+    }
     if (buffer.mode !== "magit-commit") {
       editor.message("Not in a commit message buffer")
       return
@@ -1255,7 +1441,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const current = out.trim() || "HEAD"
     const setUpstream = args.includes("--set-upstream")
     const explicit = args.filter(arg => arg !== "--set-upstream")
@@ -1263,7 +1449,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (remote == null) return
     const branch = explicit[1] ?? await editor.prompt("Push branch: ", current, "magit-push-branch")
     if (branch == null) return
-    const { err, code } = await git(["push", ...(setUpstream ? ["--set-upstream"] : []), refname(remote), refname(branch)], root)
+    const { err, code } = await git(["push", ...(setUpstream ? ["--set-upstream"] : []), refname(remote), refname(branch)], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git push failed: ${err.trim()}`)
       return
@@ -1313,11 +1499,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { out } = await git(["branch", "--list", "--format=%(refname:short)"], root)
+    const { out } = await git(["branch", "--list", "--format=%(refname:short)"], root, undefined, undefined, editor)
     const branches = out.split("\n").filter(Boolean)
     const target = args[0] ?? await editor.completingRead("Checkout branch: ", { collection: branches, history: "magit-branch" })
     if (!target) return
-    const { err, code } = await git(["checkout", refname(target)], root)
+    const { err, code } = await git(["checkout", refname(target)], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git checkout failed: ${err.trim()}`)
       return
@@ -1334,7 +1520,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const name = args[0] ?? await editor.prompt("Create and checkout branch: ", "", "magit-branch")
     if (!name) return
-    const { err, code } = await git(["checkout", "-b", refname(name)], root)
+    const { err, code } = await git(["checkout", "-b", refname(name)], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git checkout -b failed: ${err.trim()}`)
       return
@@ -1349,7 +1535,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { out, err, code } = await git(["stash", "push", ...(args.includes("--include-untracked") ? ["--include-untracked"] : [])], root)
+    const { out, err, code } = await git(["stash", "push", ...(args.includes("--include-untracked") ? ["--include-untracked"] : [])], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git stash failed: ${err.trim()}`)
       return
@@ -1364,7 +1550,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { err, code } = await git(["stash", "pop"], root)
+    const { err, code } = await git(["stash", "pop"], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git stash pop failed: ${err.trim()}`)
       return
@@ -1394,7 +1580,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
         return
       }
     } else {
-      const { err, code } = await git(["checkout", "--", entry.file], root)
+      const { err, code } = await git(["checkout", "--", entry.file], root, undefined, undefined, editor)
       if (code !== 0) {
         editor.message(`git checkout failed: ${err.trim()}`)
         return
@@ -1415,7 +1601,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const rev = args[0] ?? await editor.prompt("Checkout file from revision: ", "HEAD", "magit-file-checkout")
     if (!rev) return
     const file = await repoRelativePath(root, path)
-    const { err, code } = await git(["checkout", refname(rev), "--", file], root)
+    const { err, code } = await git(["checkout", refname(rev), "--", file], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git checkout failed: ${err.trim() || code}`)
     await buffer.revert()
     editor.message(`Checked out ${file} from ${rev}`)
@@ -1427,7 +1613,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
-    const { err, code } = await git(["reset", "HEAD", "--"], root)
+    const { err, code } = await git(["reset", "HEAD", "--"], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git reset failed: ${err.trim()}`)
       return
@@ -1441,7 +1627,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Unstage all staged changes (reset index to HEAD).")
 
   const resetIndex = async (editor: Editor, root: string, mode: string, label: string) => {
-    const { err, code } = await git(["reset", mode, "HEAD"], root)
+    const { err, code } = await git(["reset", mode, "HEAD"], root, undefined, undefined, editor)
     if (code !== 0) {
       editor.message(`git reset failed: ${err.trim()}`)
       return
@@ -1473,7 +1659,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-stage-modified", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { err, code } = await git(["add", "-u"], root)
+    const { err, code } = await git(["add", "-u"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git add failed: ${err.trim()}`)
     await refresh(editor, root)
     editor.message("Staged all modified tracked files")
@@ -1487,23 +1673,23 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.run("magit-refresh")
   }, "Refresh the current Magit buffer.")
 
-  const remoteDefault = async (root: string, kind: "push" | "upstream"): Promise<string> => {
-    const { out: branch } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+  const remoteDefault = async (editor: Editor, root: string, kind: "push" | "upstream"): Promise<string> => {
+    const { out: branch } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const b = branch.trim()
     if (kind === "upstream") {
-      const { out } = await git(["rev-parse", "--abbrev-ref", `${b}@{upstream}`], root)
+      const { out } = await git(["rev-parse", "--abbrev-ref", `${b}@{upstream}`], root, undefined, undefined, editor)
       const up = out.trim()
       if (up.includes("/")) return up.split("/")[0]!
     }
-    const { out } = await git(["remote"], root)
+    const { out } = await git(["remote"], root, undefined, undefined, editor)
     return out.split("\n").find(Boolean) ?? "origin"
   }
 
   editor.command("magit-fetch-from-pushremote", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const remote = await remoteDefault(root, "push")
-    const { err, code } = await git(["fetch", refname(remote)], root)
+    const remote = await remoteDefault(editor, root, "push")
+    const { err, code } = await git(["fetch", refname(remote)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git fetch failed: ${err.trim()}`)
     await refresh(editor, root)
     editor.message(`Fetched from ${remote}`)
@@ -1512,8 +1698,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-fetch-from-upstream", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const remote = await remoteDefault(root, "upstream")
-    const { err, code } = await git(["fetch", refname(remote)], root)
+    const remote = await remoteDefault(editor, root, "upstream")
+    const { err, code } = await git(["fetch", refname(remote)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git fetch failed: ${err.trim()}`)
     await refresh(editor, root)
     editor.message(`Fetched from ${remote}`)
@@ -1522,7 +1708,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-fetch-all", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { err, code } = await git(["fetch", "--all"], root)
+    const { err, code } = await git(["fetch", "--all"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git fetch failed: ${err.trim()}`)
     await refresh(editor, root)
     editor.message("Fetched all remotes")
@@ -1531,10 +1717,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-pull-from-upstream", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const remote = await remoteDefault(root, "upstream")
-    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    const remote = await remoteDefault(editor, root, "upstream")
+    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const branch = out.trim()
-    const { err, code } = await git(["pull", refname(remote), refname(branch)], root)
+    const { err, code } = await git(["pull", refname(remote), refname(branch)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git pull failed: ${err.trim()}`)
     await refresh(editor, root, 0)
     editor.message(`Pulled ${branch} from ${remote}`)
@@ -1543,10 +1729,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-pull-from-pushremote", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const remote = await remoteDefault(root, "push")
-    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    const remote = await remoteDefault(editor, root, "push")
+    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const branch = out.trim()
-    const { err, code } = await git(["pull", refname(remote), refname(branch)], root)
+    const { err, code } = await git(["pull", refname(remote), refname(branch)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git pull failed: ${err.trim()}`)
     await refresh(editor, root, 0)
     editor.message(`Pulled ${branch} from ${remote}`)
@@ -1555,10 +1741,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-push-upstream", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const remote = await remoteDefault(root, "upstream")
-    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    const remote = await remoteDefault(editor, root, "upstream")
+    const { out } = await git(["rev-parse", "--abbrev-ref", "HEAD"], root, undefined, undefined, editor)
     const branch = out.trim()
-    const { err, code } = await git(["push", ...(args.includes("--set-upstream") ? ["--set-upstream"] : []), refname(remote), refname(branch)], root)
+    const { err, code } = await git(["push", ...(args.includes("--set-upstream") ? ["--set-upstream"] : []), refname(remote), refname(branch)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git push failed: ${err.trim()}`)
     await refresh(editor, root)
     editor.message(`Pushed ${branch} to ${remote}`)
@@ -1567,14 +1753,15 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-commit-amend", async ({ editor, buffer, args: commandArgs }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const msg = await editor.prompt("Amend commit message: ", "", "magit-commit-amend")
-    if (msg == null) return
     const signoff = commandArgs.includes("--signoff") ? ["--signoff"] : []
-    const args = msg.trim() ? ["commit", "--amend", ...signoff, "-m", msg] : ["commit", "--amend", ...signoff, "--no-edit"]
-    const { err, code } = await git(args, root)
-    if (code !== 0) return editor.message(`git commit --amend failed: ${err.trim()}`)
-    await refresh(editor, root, 0)
-    editor.message("Amended commit")
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["commit", "--amend", ...signoff], {
+      successMessage: "Amended commit",
+      failurePrefix: "git commit --amend failed",
+      cancelledMessage: "Commit aborted",
+      showCommitDiff: true,
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Amend the last commit.")
 
   editor.command("magit-stash-save", async ({ editor, buffer, args: commandArgs }) => {
@@ -1584,7 +1771,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (msg == null) return
     const includeUntracked = commandArgs.includes("--include-untracked") ? ["--include-untracked"] : []
     const args = msg.trim() ? ["stash", "push", ...includeUntracked, "-m", msg] : ["stash", "push", ...includeUntracked]
-    const { err, code } = await git(args, root)
+    const { err, code } = await git(args, root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git stash failed: ${err.trim()}`)
     await refresh(editor, root, 0)
     editor.message("Saved stash")
@@ -1654,7 +1841,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("magit-init", async ({ editor, buffer, args }) => {
     const start = args[0] ?? buffer.directory() ?? process.cwd()
-    const { err, code } = await git(["init"], start)
+    const { err, code } = await git(["init"], start, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git init failed: ${err.trim()}`)
     const root = await projectRoot(start)
     if (root) await refresh(editor, root)
@@ -1676,13 +1863,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
     ])
     const code = await proc.exited
-    const buf = editor.scratch("*magit-process*", (out + err) || `(exit ${code})\n`, "magit-revision-mode")
-    buf.readOnly = true
-    buf.locals.set("magit-root", root)
+    const buf = appendProcessEntry(editor, { args: [cmd], cwd: root, out, err, code, command: cmd })
     pushMagitHistory(buf, buffer)
     buf.point = 0
     editor.message(code === 0 ? "Command finished" : `Command failed (${code})`)
   }, "Run an arbitrary git/shell command.")
+
+  editor.command("magit-process", ({ editor, buffer }) => {
+    const root = magitRoot(buffer) ?? buffer.directory()
+    const processBuffer = openProcessBuffer(editor, root)
+    pushMagitHistory(processBuffer, buffer)
+  }, "Show the Magit process buffer.")
 
   editor.command("magit-toggle-fold", async ({ editor, buffer }) => {
     await editor.run("magit-section-toggle")
@@ -1718,7 +1909,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!bad) return
     const good = args[1] ?? await editor.prompt("Bisect good revision: ", "", "magit-bisect-good")
     if (!good) return
-    const { out, err, code } = await git(["bisect", "start", refname(bad), refname(good)], root)
+    const { out, err, code } = await git(["bisect", "start", refname(bad), refname(good)], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git bisect start failed: ${err.trim() || code}`)
     await refresh(editor, root, 0)
     editor.message(gitOutputMessage(out, err, `Bisect started: bad ${bad}, good ${good}`))
@@ -1727,7 +1918,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bisect-good", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out, err, code } = await git(["bisect", "good"], root)
+    const { out, err, code } = await git(["bisect", "good"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git bisect good failed: ${err.trim() || code}`)
     await finishBisectStep(editor, buffer, root, out, err, "Marked current revision good")
   }, "Mark the current bisect revision as good.")
@@ -1735,7 +1926,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bisect-bad", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out, err, code } = await git(["bisect", "bad"], root)
+    const { out, err, code } = await git(["bisect", "bad"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git bisect bad failed: ${err.trim() || code}`)
     await finishBisectStep(editor, buffer, root, out, err, "Marked current revision bad")
   }, "Mark the current bisect revision as bad.")
@@ -1743,7 +1934,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bisect-skip", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out, err, code } = await git(["bisect", "skip"], root)
+    const { out, err, code } = await git(["bisect", "skip"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git bisect skip failed: ${err.trim() || code}`)
     await finishBisectStep(editor, buffer, root, out, err, "Skipped current revision")
   }, "Skip the current bisect revision.")
@@ -1751,7 +1942,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-bisect-reset", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out, err, code } = await git(["bisect", "reset"], root)
+    const { out, err, code } = await git(["bisect", "reset"], root, undefined, undefined, editor)
     if (code !== 0) return editor.message(`git bisect reset failed: ${err.trim() || code}`)
     await refresh(editor, root, 0)
     editor.message(gitOutputMessage(out, err, "Bisect reset"))
@@ -1773,26 +1964,32 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       const ans = await editor.prompt(opts.confirm)
       if (ans !== "y") { editor.message("Cancelled"); return }
     }
-    const { err, code } = await git(args, root)
+    const { err, code } = await git(args, root, undefined, undefined, editor)
     if (code !== 0) { editor.message(`git ${args[0]} failed: ${err.trim()}`); return }
     await refresh(editor, root, opts.resetPoint ? 0 : undefined)
     editor.message(ok)
   }
 
-  const branchList = async (root: string, includeRemotes = false): Promise<string[]> => {
+  const branchList = async (editor: Editor, root: string, includeRemotes = false): Promise<string[]> => {
     const args = includeRemotes
       ? ["branch", "-a", "--format=%(refname:short)"]
       : ["branch", "--list", "--format=%(refname:short)"]
-    const { out } = await git(args, root)
+    const { out } = await git(args, root, undefined, undefined, editor)
     return out.split("\n").filter(Boolean)
   }
 
   editor.command("magit-merge", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const branch = args[0] ?? await editor.completingRead("Merge branch: ", { collection: await branchList(root, true), history: "magit-merge" })
+    const branch = args[0] ?? await editor.completingRead("Merge branch: ", { collection: await branchList(editor, root, true), history: "magit-merge" })
     if (!branch) return
-    await runGit(editor, buffer, ["merge", refname(branch)], `Merged ${branch}`, { resetPoint: true })
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["merge", "--edit", refname(branch)], {
+      successMessage: `Merged ${branch}`,
+      failurePrefix: "git merge failed",
+      cancelledMessage: "Merge aborted",
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Merge another branch into the current branch.")
 
   editor.command("magit-merge-abort", async ({ editor, buffer }) => {
@@ -1802,7 +1999,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-rebase", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const onto = args[0] ?? await editor.completingRead("Rebase onto: ", { collection: await branchList(root, true), history: "magit-rebase" })
+    const onto = args[0] ?? await editor.completingRead("Rebase onto: ", { collection: await branchList(editor, root, true), history: "magit-rebase" })
     if (!onto) return
     await runGit(editor, buffer, ["rebase", refname(onto)], `Rebased onto ${onto}`, { resetPoint: true })
   }, "Rebase the current branch onto another branch.")
@@ -1812,24 +2009,25 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!root) return editor.message("Not in a Magit buffer")
     const base = args[0] ?? await editor.prompt("Interactively rebase from: ", "HEAD~5", "magit-rebase-interactive")
     if (!base) return
-    const { out, err, code } = await git(["log", "--reverse", "--format=%h %s", `${refname(base)}..HEAD`], root)
-    if (code !== 0) return editor.message(`git log failed: ${err.trim() || code}`)
-    const todo = parseGitLogForRebaseTodo(out)
-    if (!todo.trim()) return editor.message(`No commits to rebase from ${base}`)
-    const winconf = editor.currentWindowConfiguration()
-    const sourceId = buffer.id
-    const todoBuffer = editor.scratch("*git-rebase-todo*", todo, "git-rebase-mode")
-    todoBuffer.locals.set("magit-root", root)
-    todoBuffer.locals.set("magit-rebase-base", base)
-    todoBuffer.locals.set("magit-winconf", winconf)
-    todoBuffer.point = 0
-    if (sourceId !== todoBuffer.id) editor.switchToBuffer(sourceId)
-    editor.displayBufferInOtherWindow(todoBuffer.id, { select: true })
-    editor.message("Edit rebase todo, then C-c C-c to start; C-c C-k aborts")
+    const editBuffer = await startGitWithEditorFlow(editor, root, magitRebaseInteractiveArgs(base), {
+      successMessage: "Interactive rebase finished",
+      failurePrefix: "git rebase failed",
+      cancelledMessage: "Interactive rebase aborted",
+      awaitOnFinish: false,
+    })
+    if (editBuffer) editor.message("Edit rebase todo, then C-c C-c to start; C-c C-k aborts")
   }, "Start an interactive rebase using an editable git-rebase todo buffer.")
 
   editor.command("magit-rebase-continue", async ({ editor, buffer }) => {
-    await runGit(editor, buffer, ["rebase", "--continue"], "Rebase continued", { resetPoint: true })
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["rebase", "--continue"], {
+      successMessage: "Rebase continued",
+      failurePrefix: "git rebase failed",
+      cancelledMessage: "Rebase aborted",
+      awaitOnFinish: false,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Continue an in-progress rebase.")
 
   editor.command("magit-rebase-skip", async ({ editor, buffer }) => {
@@ -1893,6 +2091,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Move the current rebase todo line down.")
 
   editor.command("git-rebase-finish", async ({ editor, buffer }) => {
+    if (await finishWithEditorBuffer(editor, buffer)) return
     const root = magitRoot(buffer)
     const base = buffer.locals.get("magit-rebase-base") as string | undefined
     if (!root || !base || buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
@@ -1910,16 +2109,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.killBuffer(buffer.id)
     if (winconf) editor.restoreWindowConfiguration(winconf)
     await refresh(editor, root, 0)
-    const processText = (result.out + result.err) || `(exit ${result.code})\n`
-    const processBuffer = editor.scratch("*magit-process*", processText, "magit-revision-mode")
-    processBuffer.readOnly = true
-    processBuffer.locals.set("magit-root", root)
+    appendProcessEntry(editor, { args: result.args, cwd: root, out: result.out, err: result.err, code: result.code })
     const hasReword = /^\s*reword\s+/m.test(todoText)
     const suffix = hasReword ? "; reword keeps the original message unless the rebase stops" : ""
     editor.message(result.code === 0 ? `Interactive rebase started${suffix}` : `git rebase failed: ${result.err.trim() || result.code}${suffix}`)
   }, "Finish the git-rebase todo buffer and run git rebase -i.")
 
-  editor.command("git-rebase-abort", ({ editor, buffer }) => {
+  editor.command("git-rebase-abort", async ({ editor, buffer }) => {
+    if (isWithEditorBuffer(buffer)) {
+      await abortWithEditorEdit(editor, buffer, "Interactive rebase aborted")
+      return
+    }
     if (buffer.mode !== "git-rebase-mode") return editor.message("Not in a git-rebase todo buffer")
     const winconf = buffer.locals.get("magit-winconf") as ReturnType<Editor["currentWindowConfiguration"]> | undefined
     editor.killBuffer(buffer.id)
@@ -1942,9 +2142,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Abort an in-progress cherry-pick.")
 
   editor.command("magit-revert", async ({ editor, buffer, args }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
     const sha = args[0] ?? logShaAtPoint(buffer)
     if (!sha) return editor.message("No commit at point")
-    await runGit(editor, buffer, ["revert", "--no-edit", refname(sha)], `Reverted ${sha}`, { resetPoint: true })
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["revert", "--edit", refname(sha)], {
+      successMessage: `Reverted ${sha}`,
+      failurePrefix: "git revert failed",
+      cancelledMessage: "Revert aborted",
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Revert the commit at point.")
 
   editor.command("magit-revert-abort", async ({ editor, buffer }) => {
@@ -1957,13 +2165,19 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const name = args[0] ?? await editor.prompt("Tag name: ", "", "magit-tag")
     if (!name) return
     const rev = args[1] ?? logShaAtPoint(buffer) ?? "HEAD"
-    await runGit(editor, buffer, ["tag", refname(name), refname(rev)], `Tagged ${name}`)
+    const editBuffer = await startGitWithEditorFlow(editor, root, ["tag", "-a", refname(name), refname(rev)], {
+      successMessage: `Tagged ${name}`,
+      failurePrefix: "git tag failed",
+      cancelledMessage: "Tag cancelled",
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Create a tag at the commit at point (or HEAD).")
 
   editor.command("magit-tag-delete", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out } = await git(["tag", "--list"], root)
+    const { out } = await git(["tag", "--list"], root, undefined, undefined, editor)
     const name = args[0] ?? await editor.completingRead("Delete tag: ", { collection: out.split("\n").filter(Boolean), history: "magit-tag" })
     if (!name) return
     await runGit(editor, buffer, ["tag", "-d", refname(name)], `Deleted tag ${name}`)
@@ -1982,7 +2196,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-remote-remove", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out } = await git(["remote"], root)
+    const { out } = await git(["remote"], root, undefined, undefined, editor)
     const name = args[0] ?? await editor.completingRead("Remove remote: ", { collection: out.split("\n").filter(Boolean), history: "magit-remote" })
     if (!name) return
     await runGit(editor, buffer, ["remote", "remove", refname(name)], `Removed remote ${name}`)
@@ -1991,7 +2205,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-remote-rename", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out } = await git(["remote"], root)
+    const { out } = await git(["remote"], root, undefined, undefined, editor)
     const old = args[0] ?? await editor.completingRead("Rename remote: ", { collection: out.split("\n").filter(Boolean), history: "magit-remote" })
     if (!old) return
     const next = args[1] ?? await editor.prompt(`Rename ${old} to: `, "", "magit-remote")
@@ -2002,7 +2216,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-branch-delete", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const branch = args[0] ?? await editor.completingRead("Delete branch: ", { collection: await branchList(root), history: "magit-branch" })
+    const branch = args[0] ?? await editor.completingRead("Delete branch: ", { collection: await branchList(editor, root), history: "magit-branch" })
     if (!branch) return
     await runGit(editor, buffer, ["branch", "-d", refname(branch)], `Deleted branch ${branch}`)
   }, "Delete a branch.")
@@ -2010,7 +2224,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-branch-rename", async ({ editor, buffer, args }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const old = args[0] ?? await editor.completingRead("Rename branch: ", { collection: await branchList(root), history: "magit-branch" })
+    const old = args[0] ?? await editor.completingRead("Rename branch: ", { collection: await branchList(editor, root), history: "magit-branch" })
     if (!old) return
     const next = args[1] ?? await editor.prompt(`Rename ${old} to: `, "", "magit-branch")
     if (!next) return
@@ -2028,7 +2242,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-stash-list", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out } = await git(["stash", "list"], root)
+    const { out } = await git(["stash", "list"], root, undefined, undefined, editor)
     const buf = editor.scratch("*magit-stash-list*", out || "(no stashes)\n", "magit-revision-mode")
     buf.readOnly = true
     buf.locals.set("magit-root", root)
@@ -2043,17 +2257,44 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("magit-commit-reword", async ({ editor, buffer }) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
-    const { out } = await git(["log", "-1", "--pretty=%B"], root)
-    const msg = await editor.prompt("Reword commit: ", out.trim(), "magit-commit-reword")
-    if (msg == null || !msg.trim()) return editor.message("Reword cancelled")
-    await runGit(editor, buffer, ["commit", "--amend", "--only", "-m", msg], "Reworded commit", { resetPoint: true })
+    const editBuffer = await startGitWithEditorFlow(editor, root, magitCommitRewordArgs(), {
+      successMessage: "Reworded commit",
+      failurePrefix: "git commit --amend failed",
+      cancelledMessage: "Reword cancelled",
+      showCommitDiff: false,
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
   }, "Edit the message of HEAD without changing its tree.")
+
+  editor.command("magit-commit-fixup", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const target = await recentCommitChoice(editor, root, "Fixup commit: ")
+    if (!target) return
+    await runGit(editor, buffer, magitCommitFixupArgs(target), `Created fixup for ${target}`, { resetPoint: true })
+  }, "Create a fixup commit for a recent commit.")
+
+  editor.command("magit-commit-squash", async ({ editor, buffer }) => {
+    const root = magitRoot(buffer)
+    if (!root) return editor.message("Not in a Magit buffer")
+    const target = await recentCommitChoice(editor, root, "Squash commit: ")
+    if (!target) return
+    const editBuffer = await startGitWithEditorFlow(editor, root, magitCommitSquashArgs(target), {
+      successMessage: `Created squash for ${target}`,
+      failurePrefix: "git commit --squash failed",
+      cancelledMessage: "Squash cancelled",
+      showCommitDiff: true,
+      awaitOnFinish: true,
+    })
+    if (editBuffer) editor.message("Type C-c C-c to finish, C-c C-k to abort")
+  }, "Create a squash commit for a recent commit.")
 
   const openDiff = async (editor: Editor, buffer: BufferModel, gitArgs: string[], title: string) => {
     const root = magitRoot(buffer)
     if (!root) return editor.message("Not in a Magit buffer")
     const context = magitDiffContext(buffer)
-    const { out } = await git([...gitArgs, ...magitDiffContextArgs(context)], root)
+    const { out } = await git([...gitArgs, ...magitDiffContextArgs(context)], root, undefined, undefined, editor)
     const buf = editor.scratch(`*magit-diff: ${title}*`, out || "(no changes)\n", "magit-diff-mode")
     buf.readOnly = true
     buf.locals.set("magit-root", root)
