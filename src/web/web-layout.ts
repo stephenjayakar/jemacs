@@ -119,7 +119,7 @@ function layoutPane(
     body,
     cursor: pane.selected ? { row: cursorLine - startLine, colOffset: col - 1 } : undefined,
     terminalSurface: pane.terminalSurface,
-    footer: pane.footer?.text ? serializeThemedText(applyTheme(pane.footer.text, [], logical.theme)) : undefined,
+    footer: pane.footer?.text ? serializeThemedText(applyTheme(pane.footer.text, pane.footer.spans ?? [], logical.theme)) : undefined,
     modeline: serializeThemedText(pane.modeline),
     clickState: { startLine, gutterPrefixLen: 0 },
     bodyLineBudget: maxLines,

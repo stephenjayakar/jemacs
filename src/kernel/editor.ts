@@ -16,7 +16,7 @@ import { displaySystem, modeSystem, pointKeymaps } from "./extension-points"
 import type { HostCapabilities } from "../display/protocol"
 import type { TerminalData } from "../display/protocol"
 import type { ViewportSize } from "../display/viewport"
-import { composeTheme } from "../runtime/faces"
+import { composeTheme, defface } from "../runtime/faces"
 import { fileCompletionCandidates } from "./completion"
 import { findMatchBackward, findMatchForward, isearchPrompt, type IsearchMatch, type IsearchState } from "./isearch"
 import {
@@ -123,6 +123,9 @@ export type TransientInfix = {
   prompt?: string
   choices?: string[]
   style?: "equals"
+  level?: number
+  if?: () => boolean
+  inaptIf?: () => boolean
 }
 
 export type TransientSuffix = {
@@ -132,18 +135,24 @@ export type TransientSuffix = {
   command: string
   args?: string[]
   transient?: true | "stay" | "return"
+  level?: number
+  if?: () => boolean
+  inaptIf?: () => boolean
 }
 
 export type TransientGroup = {
   title: string
+  level?: number
   infixes?: TransientInfix[]
   suffixes?: TransientSuffix[]
+  subgroups?: TransientGroup[]
 }
 
 export type TransientDefinition = {
   name: string
   title: string
   groups: TransientGroup[]
+  defaultLevel?: number
 }
 
 export type TransientState = {
@@ -157,6 +166,7 @@ export type TransientState = {
 
 type TransientValue = boolean | string
 type TransientValueSnapshot = Record<string, TransientValue>
+export type TransientDisplay = { text: string; spans: TextSpan[] }
 type TransientEngineCommand =
   | "transient-set"
   | "transient-save"
@@ -274,7 +284,10 @@ export class Editor {
     this.selectedWindowId = rootWindow.id
     this.tabs.push({ name: "1", bufferId: scratch.id })
     defcustom("transient-values-file", "string", join(homedir(), ".jemacs", "transient.json"), "File where transient-saved values are persisted.")
+    defcustom("transient-default-level", "number", 4, "Default visibility level for transient groups and suffixes.", "transient")
     this.command("transient-resume", ({ editor }) => editor.resumeTransient(), "Resume the last suspended transient popup.")
+    this.command("transient-quit-one", ({ editor }) => editor.transientQuitOne(), "Quit the active transient popup.")
+    this.command("transient-quit-all", ({ editor }) => editor.transientQuitAll(), "Quit the active transient popup and its stack.")
     this.command("transient-set", ({ editor }) => editor.transientSet(), "Set the active transient values for this session.")
     this.command("transient-save", async ({ editor }) => editor.transientSave(), "Save the active transient values across sessions.")
     this.command("transient-reset", async ({ editor }) => editor.transientReset(), "Reset the active transient values to their defaults.")
@@ -1118,6 +1131,10 @@ export class Editor {
   }
 
   transientDisplayText(): string | null {
+    return this.transientDisplay()?.text ?? null
+  }
+
+  transientDisplay(): TransientDisplay | null {
     const state = this.transient
     if (!state) return null
     return this.formatTransient(state)
@@ -1129,10 +1146,10 @@ export class Editor {
     if (state.helpPending) return this.handleTransientHelpKey(state, key)
     const token = keyToken(key)
     const sequence = [...state.pending, token].join(" ")
-    const infix = transientInfix(state.definition, sequence)
-    const suffix = transientSuffix(state.definition, sequence)
+    const infix = transientInfix(state, sequence)
+    const suffix = transientSuffix(state, sequence)
     const hasExplicitBinding = Boolean(infix ?? suffix)
-    const hasDefinitionPrefix = transientHasPrefix(state.definition, sequence)
+    const hasDefinitionPrefix = transientHasPrefix(state, sequence)
     if (!hasExplicitBinding && token === "C-q") {
       this.transientQuitAll()
       await this.changed("transient-cancel")
@@ -1143,7 +1160,7 @@ export class Editor {
       await this.changed("transient-prefix-cancel")
       return { status: "command", command: "transient-quit-one" }
     }
-    if (!state.pending.length && !hasExplicitBinding && (token === "C-g" || token === "esc" || token === "q")) {
+    if (!state.pending.length && !hasExplicitBinding && (token === "C-g" || token === "esc")) {
       this.transientQuitOne()
       await this.changed("transient-cancel")
       return { status: "command", command: "transient-quit-one" }
@@ -1152,6 +1169,12 @@ export class Editor {
       this.suspendTransient()
       await this.changed("transient-suspend")
       return { status: "command", command: "transient-suspend" }
+    }
+    const prefixCommand = this.transientPrefixArgumentCommand(token, hasExplicitBinding || hasDefinitionPrefix)
+    if (prefixCommand) {
+      state.pending = []
+      await this.changed(`transient-${prefixCommand}`)
+      return { status: "command", command: prefixCommand }
     }
     if (!hasExplicitBinding && !hasDefinitionPrefix && (token === "C-h" || token === "?")) {
       state.pending = []
@@ -1167,36 +1190,58 @@ export class Editor {
       return { status: "command", command: engineCommand }
     }
     if (infix) {
+      const item = infix.item
       state.pending = []
+      if (infix.inapt) {
+        this.message(`Suffix ${item.label} is not applicable`)
+        await this.changed("transient-inapt-suffix")
+        return { status: "command", command: "transient-inapt-suffix" }
+      }
       state.historyIndex = null
-      if (infix.choices?.length) {
-        const current = state.values.get(infix.argument)
-        const index = typeof current === "string" ? infix.choices.indexOf(current) : -1
-        const next = index === -1 ? infix.choices[0] : infix.choices[index + 1]
-        state.values.set(infix.argument, next ?? false)
-      } else if ((infix.kind ?? "toggle") === "value") {
-        const current = state.values.get(infix.argument)
+      if (item.choices?.length) {
+        const current = state.values.get(item.argument)
+        const index = typeof current === "string" ? item.choices.indexOf(current) : -1
+        const next = index === -1 ? item.choices[0] : item.choices[index + 1]
+        state.values.set(item.argument, next ?? false)
+      } else if ((item.kind ?? "toggle") === "value") {
+        const current = state.values.get(item.argument)
         const initial = typeof current === "string" ? current : ""
-        const value = await this.prompt(infix.prompt ?? `${infix.label}: `, initial, `transient-${state.definition.name}-${infix.argument}`)
-        if (value === "") state.values.set(infix.argument, false)
-        else if (value != null) state.values.set(infix.argument, value)
+        const value = await this.prompt(item.prompt ?? `${item.label}: `, initial, `transient-${state.definition.name}-${item.argument}`)
+        if (value === "") state.values.set(item.argument, false)
+        else if (value != null) state.values.set(item.argument, value)
       } else {
-        state.values.set(infix.argument, !state.values.get(infix.argument))
+        state.values.set(item.argument, !state.values.get(item.argument))
       }
       await this.changed("transient-infix")
       return { status: "command", command: "transient-infix" }
     }
     if (suffix) {
+      const item = suffix.item
       state.pending = []
-      const args = [...transientArguments(state), ...(suffix.args ?? [])]
-      if (!suffix.transient) this.transientQuitAll("")
-      await this.run(suffix.command, args, key)
+      if (suffix.inapt) {
+        this.message(`Suffix ${item.label} is not applicable`)
+        await this.changed("transient-inapt-suffix")
+        return { status: "command", command: "transient-inapt-suffix" }
+      }
+      if (item.command === "transient-quit-one") {
+        this.transientQuitOne()
+        await this.changed("transient-cancel")
+        return { status: "command", command: item.command }
+      }
+      if (item.command === "transient-quit-all") {
+        this.transientQuitAll()
+        await this.changed("transient-cancel")
+        return { status: "command", command: item.command }
+      }
+      const args = [...transientArguments(state), ...(item.args ?? [])]
+      if (!item.transient) this.transientQuitAll("", false)
+      await this.run(item.command, args, key)
       if (args.length) this.pushTransientHistory(state.definition.name, transientValueSnapshot(state))
-      if (suffix.transient === "return" && this.transient === state) {
+      if (item.transient === "return" && this.transient === state) {
         this.transientQuitOne("")
         await this.changed("transient-return")
       }
-      return { status: "command", command: suffix.command }
+      return { status: "command", command: item.command }
     }
     if (hasDefinitionPrefix || transientEngineHasPrefix(sequence)) {
       state.pending.push(token)
@@ -1209,6 +1254,24 @@ export class Editor {
     return { status: "unmatched" }
   }
 
+  private transientPrefixArgumentCommand(token: string, shadowed: boolean): "universal-argument" | "negative-argument" | "digit-argument" | null {
+    if (shadowed) return null
+    if (token === "C-u") {
+      this.prefixArg.universalArgument()
+      return "universal-argument"
+    }
+    if (token === "C--" || token === "M--") {
+      this.prefixArg.toggleNegative()
+      return "negative-argument"
+    }
+    const digit = digitFromKey(token)
+    if (digit != null && this.prefixArg.acceptsDigitKey()) {
+      this.prefixArg.addDigit(digit)
+      return "digit-argument"
+    }
+    return null
+  }
+
   private async handleTransientHelpKey(state: TransientState, key: KeyEventLike): Promise<KeyDispatchResult> {
     const token = keyToken(key)
     if (token === "C-g") {
@@ -1219,21 +1282,21 @@ export class Editor {
     }
     state.helpPending!.push(token)
     const sequence = state.helpPending!.join(" ")
-    const infix = transientInfix(state.definition, sequence)
+    const infix = transientInfix(state, sequence)
     if (infix) {
       state.helpPending = null
-      this.message(infix.description ?? infix.label)
+      this.message(infix.item.description ?? infix.item.label)
       await this.changed("transient-help-describe")
       return { status: "command", command: "transient-help" }
     }
-    const suffix = transientSuffix(state.definition, sequence)
+    const suffix = transientSuffix(state, sequence)
     if (suffix) {
       state.helpPending = null
-      this.message(suffix.description ?? this.commands.get(suffix.command)?.description ?? suffix.label)
+      this.message(suffix.item.description ?? this.commands.get(suffix.item.command)?.description ?? suffix.item.label)
       await this.changed("transient-help-describe")
       return { status: "command", command: "transient-help" }
     }
-    if (transientHasPrefix(state.definition, sequence)) {
+    if (transientHasPrefix(state, sequence)) {
       this.message(`Describe key: ${emacsKeyDescription(sequence)}`)
       await this.changed("transient-help-prefix")
       return { status: "pending" }
@@ -1379,12 +1442,14 @@ export class Editor {
     this.transientSavedValuesFileExists = true
   }
 
-  private transientQuitOne(message = "Quit"): void {
+  private transientQuitOne(message = "Quit", clearPrefix = true): void {
+    if (clearPrefix) this.prefixArg.clear()
     this.transient = this.transientStack.pop() ?? null
     if (!this.transient && message) this.message(message)
   }
 
-  private transientQuitAll(message = "Quit"): void {
+  private transientQuitAll(message = "Quit", clearPrefix = true): void {
+    if (clearPrefix) this.prefixArg.clear()
     this.transient = null
     this.transientStack.length = 0
     if (message) this.message(message)
@@ -1397,28 +1462,22 @@ export class Editor {
     this.transientStack.length = 0
   }
 
-  private formatTransient(state: TransientState): string {
+  private formatTransient(state: TransientState): TransientDisplay {
     const { definition, values } = state
-    const lines = [definition.title]
-    if (state.pending.length) {
-      lines.push(`-- pending: ${state.pending.join(" ")} `)
+    const lines: TransientLine[] = [transientHeadingLine(definition.title)]
+    if (state.pending.length || this.prefixArg.isActive()) {
+      lines.push(transientPendingLine(state.pending, this.prefixArg.peek()))
       if (normalizeSequence(state.pending.join(" ")) === "C-x") {
-        lines.push("Common: C-x s set  C-x C-s save  C-x C-r reset  C-x p previous  C-x n next")
+        lines.push(transientCommonLine())
       }
     }
     for (const group of definition.groups) {
-      lines.push("")
-      lines.push(group.title)
-      for (const infix of group.infixes ?? []) {
-        const value = values.get(infix.argument)
-        const marker = transientInfixMarker(infix, value)
-        lines.push(` ${infix.key.padEnd(8)} ${marker} ${infix.label}`)
-      }
-      for (const suffix of group.suffixes ?? []) {
-        lines.push(` ${suffix.key.padEnd(8)} ${suffix.label}`)
-      }
+      if (!transientGroupVisible(state, group)) continue
+      lines.push(transientPlainLine(""))
+      lines.push(transientHeadingLine(group.title))
+      lines.push(...transientGroupLines(state, group, values))
     }
-    return lines.join("\n")
+    return transientDisplayFromLines(lines)
   }
 
   indentLine(buffer = this.activeBuffer): void {
@@ -1974,6 +2033,19 @@ const TRANSIENT_ENGINE_BINDINGS = new Map<string, TransientEngineCommand>([
   ["C-x n", "transient-history-next"],
 ])
 
+defface("transient-heading", { inherit: ["keyword"], bold: true }, "Face for transient popup headings.", "transient")
+defface("transient-key", { inherit: ["builtin"], bold: true }, "Face for transient keys.", "transient")
+defface("transient-argument", { inherit: ["constant"] }, "Face for transient arguments.", "transient")
+defface("transient-value", { inherit: ["string"] }, "Face for transient values.", "transient")
+defface("transient-inapt-suffix", { inherit: ["comment"], italic: true }, "Face for inapplicable transient suffixes.", "transient")
+
+const TRANSIENT_HEADING_FACE = "transient-heading" as TextSpan["face"]
+const TRANSIENT_KEY_FACE = "transient-key" as TextSpan["face"]
+const TRANSIENT_ARGUMENT_FACE = "transient-argument" as TextSpan["face"]
+const TRANSIENT_VALUE_FACE = "transient-value" as TextSpan["face"]
+const TRANSIENT_INAPT_FACE = "transient-inapt-suffix" as TextSpan["face"]
+const TRANSIENT_COLUMN_PADDING = 4
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`
@@ -1993,61 +2065,102 @@ function transientEngineHasPrefix(key: string): boolean {
   return false
 }
 
-function transientInfix(definition: TransientDefinition, key: string): TransientInfix | undefined {
-  for (const group of definition.groups) {
-    const found = group.infixes?.find(infix => normalizeSequence(infix.key) === normalizeSequence(key))
-    if (found) return found
+type TransientResolved<T extends TransientInfix | TransientSuffix> = {
+  item: T
+  inapt: boolean
+}
+
+type TransientLine = {
+  text: string
+  spans: TextSpan[]
+}
+
+type TransientLineBuilder = {
+  line: TransientLine
+  append: (text: string, face?: TextSpan["face"]) => void
+  appendLine: (line: TransientLine) => void
+}
+
+function transientInfix(state: TransientState, key: string): TransientResolved<TransientInfix> | undefined {
+  const normalized = normalizeSequence(key)
+  for (const group of transientVisibleGroups(state)) {
+    for (const infix of group.infixes ?? []) {
+      if (!transientItemVisible(state, infix)) continue
+      if (normalizeSequence(infix.key) === normalized) return { item: infix, inapt: transientItemInapt(infix) }
+    }
   }
   return undefined
 }
 
-function transientSuffix(definition: TransientDefinition, key: string): TransientSuffix | undefined {
-  for (const group of definition.groups) {
-    const found = group.suffixes?.find(suffix => normalizeSequence(suffix.key) === normalizeSequence(key))
-    if (found) return found
+function transientSuffix(state: TransientState, key: string): TransientResolved<TransientSuffix> | undefined {
+  const normalized = normalizeSequence(key)
+  for (const group of transientVisibleGroups(state)) {
+    for (const suffix of group.suffixes ?? []) {
+      if (!transientItemVisible(state, suffix)) continue
+      if (normalizeSequence(suffix.key) === normalized) return { item: suffix, inapt: transientItemInapt(suffix) }
+    }
   }
   return undefined
 }
 
-function transientHasPrefix(definition: TransientDefinition, key: string): boolean {
+function transientHasPrefix(state: TransientState, key: string): boolean {
   const prefix = `${normalizeSequence(key)} `
-  for (const group of definition.groups) {
-    if (group.infixes?.some(infix => normalizeSequence(infix.key).startsWith(prefix))) return true
-    if (group.suffixes?.some(suffix => normalizeSequence(suffix.key).startsWith(prefix))) return true
+  for (const group of transientVisibleGroups(state)) {
+    for (const infix of group.infixes ?? []) {
+      if (transientItemVisible(state, infix) && normalizeSequence(infix.key).startsWith(prefix)) return true
+    }
+    for (const suffix of group.suffixes ?? []) {
+      if (transientItemVisible(state, suffix) && normalizeSequence(suffix.key).startsWith(prefix)) return true
+    }
   }
   return false
 }
 
-function transientInfixMarker(infix: TransientInfix, value: boolean | string | undefined): string {
-  if ((infix.kind ?? "toggle") === "value" || infix.choices?.length) {
-    return typeof value === "string" && value ? `[${infix.argument}=${value}]` : "[ ]"
+function* transientVisibleGroups(state: TransientState, groups: TransientGroup[] = state.definition.groups): Generator<TransientGroup> {
+  for (const group of groups) {
+    if (!transientGroupVisible(state, group)) continue
+    yield group
+    if (group.subgroups?.length) yield* transientVisibleGroups(state, group.subgroups)
   }
-  return `[${value === true ? "*" : " "}]`
+}
+
+function transientGroupVisible(state: TransientState, group: TransientGroup): boolean {
+  return transientLevelVisible(group.level, transientActiveLevel(state.definition))
+}
+
+function transientItemVisible(state: TransientState, item: TransientInfix | TransientSuffix): boolean {
+  return transientLevelVisible(item.level, transientActiveLevel(state.definition)) && item.if?.() !== false
+}
+
+function transientItemInapt(item: TransientInfix | TransientSuffix): boolean {
+  return item.inaptIf?.() === true
+}
+
+function transientLevelVisible(level: number | undefined, activeLevel: number): boolean {
+  return level == null || level <= activeLevel
+}
+
+function transientActiveLevel(definition: TransientDefinition): number {
+  const raw = definition.defaultLevel ?? getCustom<number>("transient-default-level") ?? 4
+  if (!Number.isFinite(raw)) return 4
+  return Math.max(1, Math.min(7, Math.floor(raw)))
 }
 
 function transientDefaultValues(definition: TransientDefinition): Map<string, TransientValue> {
   const values = new Map<string, TransientValue>()
-  for (const group of definition.groups) {
-    for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
-  }
+  for (const infix of transientAllInfixes(definition)) values.set(infix.argument, infix.defaultValue ?? false)
   return values
 }
 
 function transientValueSnapshot(state: TransientState): TransientValueSnapshot {
   const snapshot: TransientValueSnapshot = {}
-  for (const group of state.definition.groups) {
-    for (const infix of group.infixes ?? []) {
-      snapshot[infix.argument] = state.values.get(infix.argument) ?? false
-    }
-  }
+  for (const infix of transientAllInfixes(state.definition)) snapshot[infix.argument] = state.values.get(infix.argument) ?? false
   return snapshot
 }
 
 function applyTransientValueSnapshot(definition: TransientDefinition, values: Map<string, TransientValue>, snapshot: TransientValueSnapshot): void {
-  for (const group of definition.groups) {
-    for (const infix of group.infixes ?? []) {
-      if (Object.hasOwn(snapshot, infix.argument)) values.set(infix.argument, snapshot[infix.argument]!)
-    }
+  for (const infix of transientAllInfixes(definition)) {
+    if (Object.hasOwn(snapshot, infix.argument)) values.set(infix.argument, snapshot[infix.argument]!)
   }
 }
 
@@ -2062,8 +2175,9 @@ function parseTransientValueSnapshot(value: unknown): TransientValueSnapshot | n
 
 function transientArguments(state: TransientState): string[] {
   const args: string[] = []
-  for (const group of state.definition.groups) {
+  for (const group of transientVisibleGroups(state)) {
     for (const infix of group.infixes ?? []) {
+      if (!transientItemVisible(state, infix) || transientItemInapt(infix)) continue
       const value = state.values.get(infix.argument)
       if (value === true) args.push(infix.argument)
       else if (typeof value === "string" && value) {
@@ -2073,4 +2187,174 @@ function transientArguments(state: TransientState): string[] {
     }
   }
   return args
+}
+
+function* transientAllInfixes(definition: TransientDefinition): Generator<TransientInfix> {
+  yield* transientAllGroupInfixes(definition.groups)
+}
+
+function* transientAllGroupInfixes(groups: TransientGroup[]): Generator<TransientInfix> {
+  for (const group of groups) {
+    yield* (group.infixes ?? [])
+    if (group.subgroups?.length) yield* transientAllGroupInfixes(group.subgroups)
+  }
+}
+
+function transientPlainLine(text: string): TransientLine {
+  return { text, spans: [] }
+}
+
+function transientHeadingLine(text: string): TransientLine {
+  const line = transientPlainLine(text)
+  if (text) line.spans.push({ start: 0, end: text.length, face: TRANSIENT_HEADING_FACE })
+  return line
+}
+
+function transientPendingLine(pending: string[], prefixArgument: number | null): TransientLine {
+  const b = transientLineBuilder()
+  b.append("-- ")
+  if (pending.length) {
+    b.append("pending: ")
+    b.append(pending.join(" "), TRANSIENT_KEY_FACE)
+    b.append(" ")
+  }
+  if (prefixArgument != null) {
+    if (pending.length) b.append(" ")
+    b.append("prefix: ")
+    b.append(String(prefixArgument), TRANSIENT_VALUE_FACE)
+    b.append(" ")
+  }
+  return b.line
+}
+
+function transientCommonLine(): TransientLine {
+  const b = transientLineBuilder()
+  const entries: Array<[string, string]> = [
+    ["C-x s", "set"],
+    ["C-x C-s", "save"],
+    ["C-x C-r", "reset"],
+    ["C-x p", "previous"],
+    ["C-x n", "next"],
+  ]
+  b.append("Common: ")
+  entries.forEach(([key, label], index) => {
+    if (index > 0) b.append("  ")
+    b.append(key, TRANSIENT_KEY_FACE)
+    b.append(` ${label}`)
+  })
+  return b.line
+}
+
+function transientGroupLines(state: TransientState, group: TransientGroup, values: Map<string, TransientValue>): TransientLine[] {
+  const lines: TransientLine[] = []
+  for (const infix of group.infixes ?? []) {
+    if (!transientItemVisible(state, infix)) continue
+    lines.push(transientInfixLine(infix, values.get(infix.argument), transientItemInapt(infix)))
+  }
+  for (const suffix of group.suffixes ?? []) {
+    if (!transientItemVisible(state, suffix)) continue
+    lines.push(transientSuffixLine(suffix, transientItemInapt(suffix)))
+  }
+  const columns = (group.subgroups ?? [])
+    .filter(subgroup => transientGroupVisible(state, subgroup))
+    .map(subgroup => [transientHeadingLine(subgroup.title), ...transientGroupLines(state, subgroup, values)])
+  if (columns.length) lines.push(...transientColumnLines(columns))
+  return lines
+}
+
+function transientInfixLine(infix: TransientInfix, value: TransientValue | undefined, inapt: boolean): TransientLine {
+  const b = transientLineBuilder()
+  b.append(" ")
+  b.append(infix.key.padEnd(8), TRANSIENT_KEY_FACE)
+  b.append(" ")
+  appendTransientInfixMarker(b, infix, value)
+  b.append(" ")
+  b.append(infix.label)
+  if (inapt) markTransientLineInapt(b.line)
+  return b.line
+}
+
+function transientSuffixLine(suffix: TransientSuffix, inapt: boolean): TransientLine {
+  const b = transientLineBuilder()
+  b.append(" ")
+  b.append(suffix.key.padEnd(8), TRANSIENT_KEY_FACE)
+  b.append(" ")
+  b.append(suffix.label)
+  if (inapt) markTransientLineInapt(b.line)
+  return b.line
+}
+
+function appendTransientInfixMarker(builder: TransientLineBuilder, infix: TransientInfix, value: TransientValue | undefined): void {
+  if ((infix.kind ?? "toggle") === "value" || infix.choices?.length) {
+    if (typeof value === "string" && value) {
+      builder.append("[")
+      builder.append(infix.argument, TRANSIENT_ARGUMENT_FACE)
+      builder.append("=")
+      builder.append(value, TRANSIENT_VALUE_FACE)
+      builder.append("]")
+    } else {
+      builder.append("[ ]")
+    }
+    return
+  }
+  builder.append("[")
+  builder.append(value === true ? "*" : " ", value === true ? TRANSIENT_VALUE_FACE : undefined)
+  builder.append("]")
+}
+
+function transientColumnLines(columns: TransientLine[][]): TransientLine[] {
+  if (!columns.length) return []
+  const widths = columns.map(column => Math.max(0, ...column.map(line => line.text.length)))
+  const height = Math.max(0, ...columns.map(column => column.length))
+  const lines: TransientLine[] = []
+  for (let row = 0; row < height; row++) {
+    const b = transientLineBuilder()
+    for (let col = 0; col < columns.length; col++) {
+      const cell = columns[col]![row] ?? transientPlainLine("")
+      b.appendLine(cell)
+      if (col < columns.length - 1) b.append(" ".repeat(widths[col]! - cell.text.length + TRANSIENT_COLUMN_PADDING))
+    }
+    lines.push(b.line)
+  }
+  return lines
+}
+
+function transientDisplayFromLines(lines: TransientLine[]): TransientDisplay {
+  let text = ""
+  const spans: TextSpan[] = []
+  let offset = 0
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      text += "\n"
+      offset++
+    }
+    for (const span of line.spans) spans.push({ ...span, start: offset + span.start, end: offset + span.end })
+    text += line.text
+    offset += line.text.length
+  })
+  return { text, spans }
+}
+
+function transientLineBuilder(): TransientLineBuilder {
+  const line: TransientLine = { text: "", spans: [] }
+  return {
+    line,
+    append(text: string, face?: TextSpan["face"]) {
+      if (!text) return
+      const start = line.text.length
+      line.text += text
+      if (face) line.spans.push({ start, end: line.text.length, face })
+    },
+    appendLine(source: TransientLine) {
+      const start = line.text.length
+      line.text += source.text
+      for (const span of source.spans) {
+        line.spans.push({ ...span, start: start + span.start, end: start + span.end })
+      }
+    },
+  }
+}
+
+function markTransientLineInapt(line: TransientLine): void {
+  if (line.text.length) line.spans.push({ start: 0, end: line.text.length, face: TRANSIENT_INAPT_FACE })
 }

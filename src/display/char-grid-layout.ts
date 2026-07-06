@@ -120,7 +120,7 @@ function layoutLeafPane(
   const bodyAndFooterLines = windowBodyLines(availableLines)
   const footerLines = footerLineCount(pane.footer?.text, bodyAndFooterLines)
   const maxLines = Math.max(1, bodyAndFooterLines - footerLines)
-  const footer = pane.footer?.text ? applyTheme(pane.footer.text, [], logical.theme) : undefined
+  const footer = pane.footer?.text ? applyTheme(pane.footer.text, pane.footer.spans ?? [], logical.theme) : undefined
   if (!pane.buffer) {
     return {
       id: leaf.id,

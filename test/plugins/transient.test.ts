@@ -63,6 +63,81 @@ test("transient opens, renders, toggles infixes, and dispatches suffix args", as
   expect(editor.minibufferCompletionDisplay).toBeNull()
 })
 
+test("bare q is not an implicit transient quit key, but explicit q bindings still work", async () => {
+  const editor = makeEditor()
+  let message = ""
+  let ran = 0
+  editor.events.on("message", ({ text }) => { message = text })
+  editor.command("explicit-q", () => { ran++ })
+
+  editor.openTransient(demoTransient)
+  const result = await editor.handleKey(parseKey("q"))
+
+  expect(result.status).toBe("unmatched")
+  expect(message).toContain("No transient binding: q")
+  expect(editor.transient?.definition.name).toBe("demo")
+
+  await keySeq(editor, "C-g")
+  editor.openTransient({
+    name: "explicit-q",
+    title: "Explicit q",
+    groups: [{ title: "Actions", suffixes: [{ key: "q", label: "quit", command: "explicit-q" }] }],
+  })
+  await keySeq(editor, "q")
+
+  expect(ran).toBe(1)
+  expect(editor.transient).toBeNull()
+})
+
+test("explicit transient quit suffix commands manipulate the transient stack", async () => {
+  const editor = makeEditor()
+  const child: TransientDefinition = {
+    name: "quit-child",
+    title: "Quit Child",
+    groups: [{
+      title: "Actions",
+      suffixes: [
+        { key: "q", label: "quit one", command: "transient-quit-one" },
+        { key: "S-q", label: "quit all", command: "transient-quit-all" },
+      ],
+    }],
+  }
+
+  editor.openTransient(parentTransient)
+  editor.openTransient(child)
+  await keySeq(editor, "q")
+  expect(editor.transient?.definition.name).toBe("parent")
+
+  editor.openTransient(child)
+  await keySeq(editor, "S-q")
+  expect(editor.transient).toBeNull()
+})
+
+test("transient prefix arguments stay open and are passed to the next suffix", async () => {
+  const editor = makeEditor()
+  let seen: number | null | undefined
+  editor.command("prefix-act", ({ prefixArgument }) => { seen = prefixArgument })
+  const definition: TransientDefinition = {
+    name: "prefix-demo",
+    title: "Prefix Demo",
+    groups: [{ title: "Actions", suffixes: [{ key: "a", label: "act", command: "prefix-act" }] }],
+  }
+
+  editor.openTransient(definition)
+  await keySeq(editor, "C-u")
+  expect(editor.transient?.definition.name).toBe("prefix-demo")
+  expect(editor.transientDisplayText()).toContain("prefix: 4")
+
+  await keySeq(editor, "3")
+  expect(editor.transient?.definition.name).toBe("prefix-demo")
+  expect(editor.transientDisplayText()).toContain("prefix: 3")
+  expect(seen).toBeUndefined()
+
+  await keySeq(editor, "a")
+  expect(seen).toBe(3)
+  expect(editor.transient).toBeNull()
+})
+
 test("transient cancellation clears popup without running a suffix", async () => {
   const editor = makeEditor()
   let ran = false
@@ -536,4 +611,117 @@ test("explicit C-h transient binding runs instead of entering help mode", async 
   expect(ran).toBe(1)
   expect(message).not.toBe("Describe key: ")
   expect(editor.transient).toBeNull()
+})
+
+test("transient levels hide and unbind entries until the active level changes", async () => {
+  const editor = makeEditor()
+  const previous = getCustom<number>("transient-default-level") ?? 4
+  let ran = 0
+  editor.command("level-high", () => { ran++ })
+  const definition: TransientDefinition = {
+    name: "levels",
+    title: "Levels",
+    groups: [
+      { title: "Base", suffixes: [{ key: "b", label: "base", command: "level-high", transient: "stay" }] },
+      { title: "Advanced", level: 5, suffixes: [{ key: "h", label: "high", command: "level-high", transient: "stay" }] },
+    ],
+  }
+
+  try {
+    setCustom("transient-default-level", 4)
+    editor.openTransient(definition)
+    expect(editor.transientDisplayText()).toContain("base")
+    expect(editor.transientDisplayText()).not.toContain("high")
+    expect((await editor.handleKey(parseKey("h"))).status).toBe("unmatched")
+    expect(ran).toBe(0)
+
+    setCustom("transient-default-level", 5)
+    expect(editor.transientDisplayText()).toContain("high")
+    await keySeq(editor, "h")
+    expect(ran).toBe(1)
+    expect(editor.transient?.definition.name).toBe("levels")
+  } finally {
+    setCustom("transient-default-level", previous)
+  }
+})
+
+test("transient if predicates hide and unbind entries on each render", async () => {
+  const editor = makeEditor()
+  let visible = false
+  let ran = 0
+  editor.command("predicate-act", () => { ran++ })
+  const definition: TransientDefinition = {
+    name: "predicate",
+    title: "Predicate",
+    groups: [{
+      title: "Actions",
+      suffixes: [{ key: "p", label: "predicate", command: "predicate-act", transient: "stay", if: () => visible }],
+    }],
+  }
+
+  editor.openTransient(definition)
+  expect(editor.transientDisplayText()).not.toContain("predicate")
+  expect((await editor.handleKey(parseKey("p"))).status).toBe("unmatched")
+  expect(ran).toBe(0)
+
+  visible = true
+  expect(editor.transientDisplayText()).toContain("predicate")
+  await keySeq(editor, "p")
+  expect(ran).toBe(1)
+  expect(editor.transient?.definition.name).toBe("predicate")
+})
+
+test("transient inapt suffix renders, warns, does not run, and stays open", async () => {
+  const editor = makeEditor()
+  let ran = 0
+  let message = ""
+  editor.events.on("message", ({ text }) => { message = text })
+  editor.command("inapt-act", () => { ran++ })
+  const definition: TransientDefinition = {
+    name: "inapt",
+    title: "Inapt",
+    groups: [{
+      title: "Actions",
+      suffixes: [{ key: "i", label: "blocked", command: "inapt-act", inaptIf: () => true }],
+    }],
+  }
+
+  editor.openTransient(definition)
+  expect(editor.transientDisplayText()).toContain("blocked")
+  await keySeq(editor, "i")
+
+  expect(message).toBe("Suffix blocked is not applicable")
+  expect(ran).toBe(0)
+  expect(editor.transient?.definition.name).toBe("inapt")
+})
+
+test("transient column groups render subgroups side by side", () => {
+  const editor = makeEditor()
+  const definition: TransientDefinition = {
+    name: "columns",
+    title: "Columns",
+    groups: [{
+      title: "Actions",
+      subgroups: [
+        { title: "Left", suffixes: [{ key: "a", label: "left action", command: "ignore" }] },
+        { title: "Right", suffixes: [{ key: "b", label: "right action", command: "ignore" }] },
+      ],
+    }],
+  }
+
+  editor.openTransient(definition)
+  const line = editor.transientDisplayText()?.split("\n").find(row => row.includes("left action") && row.includes("right action"))
+  expect(line).toBeDefined()
+})
+
+test("transient themed footer highlights key chunks", () => {
+  const editor = makeEditor()
+  editor.openTransient(demoTransient)
+
+  const model = buildDisplayModel(editor, { viewport: { rows: 12, cols: 80 } })
+  if (model.windows.kind !== "leaf") throw new Error("expected leaf")
+  const keyChunk = model.windows.pane.footer?.chunks.find(chunk => chunk.text === "a       ")
+
+  expect(keyChunk?.bold).toBe(true)
+  expect(keyChunk?.fg).toBeDefined()
 })
