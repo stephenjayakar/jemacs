@@ -5,8 +5,10 @@ import { BufferModel, inferMode } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
 import { addHook } from "../../src/kernel/hooks"
 import { Keymap } from "../../src/kernel/keymap"
+import { getTrackedAdvice } from "../../src/runtime/advice"
 import { defcustom, getCustom, setCustom } from "../../src/runtime/custom"
 import { defface, faceRemapAddRelative, FIXED_PITCH_FAMILY, VARIABLE_PITCH_FAMILY } from "../../src/runtime/faces"
+import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { defineMode, enterMode, getMode, modeFeature, type FaceName, type FontLockRange, type TextSpan } from "../../src/modes/mode"
 import { registeredTreeSitterLanguages, treeSitterFontLock } from "../../src/modes/tree-sitter"
 import { spawnProcess, writeFileText, type SpawnHandle, type SpawnOptions } from "../../src/platform/runtime"
@@ -20,6 +22,21 @@ const BLOCKQUOTE_RE = /^(\s*)>+\s?/
 const FENCED_CODE_RE = /^(`{3,}|~{3,})/
 const FENCE_LINE_RE = /^(\s*)(`{3,}|~{3,})(\S*)(\s*)$/
 const SETEXT_UNDERLINE_RE = /^(\s*)(=+|-+)\s*$/
+const MARKDOWN_GFM_LANGUAGE_HISTORY = "markdown-gfm-language-history"
+
+const DEFAULT_MARKDOWN_URI_TYPES = [
+  "acap", "cid", "data", "dav", "fax", "file", "ftp", "geo", "gopher",
+  "http", "https", "imap", "ldap", "mailto", "mid", "message", "modem",
+  "news", "nfs", "nntp", "pop", "prospero", "rtsp", "service", "sip",
+  "tel", "telnet", "tip", "urn", "vemmi", "wais",
+]
+
+const DEFAULT_GFM_CODE_LANGUAGES = [
+  "bash", "c", "clojure", "cpp", "css", "diff", "dockerfile", "elisp",
+  "emacs-lisp", "go", "html", "java", "javascript", "json", "jsx", "kotlin",
+  "lua", "markdown", "python", "ruby", "rust", "scss", "sh", "shell", "sql",
+  "swift", "tsx", "typescript", "xml", "yaml",
+]
 
 export const MARKDOWN_FOLDED_LOCAL = "markdown-folded"
 export const MARKDOWN_SUBTREE_STATUS = "markdown-cycle-subtree-status"
@@ -44,6 +61,10 @@ defcustom("markdown-code-lang-modes", "sexp", [
   ["sh", "text"],
   ["elisp", "text"],
 ], "Alist mapping fence info strings to jemacs major modes.")
+defcustom("markdown-uri-types", "sexp", DEFAULT_MARKDOWN_URI_TYPES, "Link types for syntax highlighting of URIs.")
+defcustom(MARKDOWN_GFM_LANGUAGE_HISTORY, "sexp", [] as string[], "Languages used in GFM fenced code block prompts.")
+defcustom("markdown-gfm-use-electric-backquote", "boolean", true, "When non-nil, typing ``` at BOL in GFM prompts for a fenced code language.")
+defcustom("markdown-wiki-link-search-subdirectories", "boolean", false, "When non-nil, search for wiki link targets in subdirectories.")
 defcustom("markdown-display-inline-images", "boolean", true, "Replace image links with inline placeholders in the display layer.")
 defcustom("markdown-display-remote-images", "boolean", true, "Allow remote image URLs in inline image display.")
 defcustom("markdown-hide-markup", "boolean", false, "Hide markup delimiters in the display layer (WYSIWYG-style editing).")
@@ -148,6 +169,10 @@ function markdownFontifyCodeBlocksNatively(buffer: BufferModel): boolean {
 
 function setMarkdownFontifyCodeBlocksNatively(buffer: BufferModel, value: boolean): void {
   buffer.locals.set(MARKDOWN_FONTIFY_CODE_BLOCKS, value)
+}
+
+function markdownIsGfmMode(buffer: BufferModel): boolean {
+  return buffer.mode === "gfm" || buffer.mode === "gfm-view-mode"
 }
 
 function escapeHtml(text: string): string {
@@ -603,12 +628,23 @@ function pushMarkupHide(
   ops.push({ start, end, display })
 }
 
+function markdownWordChar(ch: string | undefined): boolean {
+  return ch != null && /[0-9A-Za-z_]/.test(ch)
+}
+
+function gfmIntrawordUnderscoreMarkup(line: string, start: number, markerLen: 1 | 2, matchLen: number): boolean {
+  const closeStart = start + matchLen - markerLen
+  return (markdownWordChar(line[start - 1]) && markdownWordChar(line[start + markerLen]))
+    || (markdownWordChar(line[closeStart - 1]) && markdownWordChar(line[closeStart + markerLen]))
+}
+
 function collectInlineMarkupHides(
   line: string,
   lineStart: number,
   hideUrls: boolean,
   protectedRanges: Array<[number, number]>,
   ops: MarkupOp[],
+  gfm = false,
 ): void {
   for (const m of line.matchAll(/!?\[([^\]]*)\]\(([^)]*)\)/g)) {
     if (m.index == null) continue
@@ -653,11 +689,13 @@ function collectInlineMarkupHides(
   }
   for (const m of line.matchAll(/__(\S(?:.*?\S)?)__/g)) {
     if (m.index == null) continue
+    if (gfm && gfmIntrawordUnderscoreMarkup(line, m.index, 2, m[0].length)) continue
     pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 2, protectedRanges)
     pushMarkupHide(ops, lineStart + m.index + m[0].length - 2, lineStart + m.index + m[0].length, protectedRanges)
   }
   for (const m of line.matchAll(/~~(\S(?:.*?\S)?)~~/g)) {
     if (m.index == null) continue
+    if (!gfm) continue
     pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 2, protectedRanges)
     pushMarkupHide(ops, lineStart + m.index + m[0].length - 2, lineStart + m.index + m[0].length, protectedRanges)
   }
@@ -668,6 +706,7 @@ function collectInlineMarkupHides(
   }
   for (const m of line.matchAll(/(?<!_)_(?!_)(\S(?:.*?\S)?)_(?!_)/g)) {
     if (m.index == null) continue
+    if (gfm && gfmIntrawordUnderscoreMarkup(line, m.index, 1, m[0].length)) continue
     pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 1, protectedRanges)
     pushMarkupHide(ops, lineStart + m.index + m[0].length - 1, lineStart + m.index + m[0].length, protectedRanges)
   }
@@ -678,7 +717,7 @@ function collectInlineMarkupHides(
   }
 }
 
-function collectMarkupHides(text: string, hideUrls: boolean): MarkupOp[] {
+function collectMarkupHides(text: string, hideUrls: boolean, gfm = false): MarkupOp[] {
   const ops: MarkupOp[] = []
   const lines = text.split("\n")
   const blocks = parseFencedCodeBlocks(text)
@@ -732,7 +771,7 @@ function collectMarkupHides(text: string, hideUrls: boolean): MarkupOp[] {
     }
 
     const protectedRanges = protectedInlineCodeRanges(line, lineStart)
-    collectInlineMarkupHides(line, lineStart, hideUrls, protectedRanges, ops)
+    collectInlineMarkupHides(line, lineStart, hideUrls, protectedRanges, ops, gfm)
   }
   return mergeMarkupOps(ops)
 }
@@ -788,7 +827,7 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     for (let i = Math.max(0, a); i <= b && i < L; i++) foldHidden[i] = 1
 
   const fenced = parseFencedCodeBlocks(src)
-  const markupOps = hideMarkup ? collectMarkupHides(src, hideUrls) : []
+  const markupOps = hideMarkup ? collectMarkupHides(src, hideUrls, markdownIsGfmMode(buffer)) : []
   if (hideMarkup) {
     for (const block of fenced) {
       skipHidden[block.openLine] = 1
@@ -1063,13 +1102,46 @@ function fenceLineSpan(buffer: BufferModel, line: number): TextSpan | null {
   return { start, end, face: "string" }
 }
 
+function markdownStrikethroughSpans(text: string, range?: FontLockRange): TextSpan[] {
+  const spans: TextSpan[] = []
+  const protectedRanges: Array<readonly [number, number]> = parseFencedCodeBlocks(text).map(block => [block.bodyStart, block.bodyEnd] as const)
+  let offset = 0
+  for (const line of text.split("\n")) {
+    protectedRanges.push(...protectedInlineCodeRanges(line, offset))
+    offset += line.length + 1
+  }
+  for (const match of text.matchAll(/~~(\S(?:.*?\S)?)~~/g)) {
+    if (match.index == null) continue
+    const start = match.index
+    const end = start + match[0].length
+    if (range && (end < range.start || start > range.end)) continue
+    if (spanInsideRegions(start, end, protectedRanges)) continue
+    spans.push({ start, end: start + 2, face: "markdown-markup" as FaceName })
+    spans.push({ start: start + 2, end: end - 2, face: "markdown-strikethrough" as FaceName })
+    spans.push({ start: end - 2, end, face: "markdown-markup" as FaceName })
+  }
+  return spans
+}
+
+function gfmUnderscoreEmphasisSpan(text: string, span: TextSpan): boolean {
+  const face = String(span.face)
+  if (face !== "markdown-emphasis" && face !== "markdown-strong") return false
+  const markerLen = face === "markdown-strong" ? 2 : 1
+  const marker = "_".repeat(markerLen)
+  if (text.slice(span.start, span.start + markerLen) !== marker) return false
+  if (text.slice(span.end - markerLen, span.end) !== marker) return false
+  return gfmIntrawordUnderscoreMarkup(text, span.start, markerLen as 1 | 2, span.end - span.start)
+}
+
 function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
-  const mdLang = buffer.mode === "gfm" ? "gfm" : "markdown"
+  const gfm = markdownIsGfmMode(buffer)
+  const mdLang = gfm ? "gfm" : "markdown"
   const blocks = parseFencedCodeBlocks(buffer.text).filter(block => !range || block.bodyEnd >= range.start && block.bodyStart <= range.end)
   const native = markdownFontifyCodeBlocksNatively(buffer)
   const bodyRegions = blocks.map(b => [b.bodyStart, b.bodyEnd] as const)
 
   let spans = treeSitterFontLock(mdLang, buffer, range)
+  if (gfm) spans = spans.filter(span => !gfmUnderscoreEmphasisSpan(buffer.text, span))
   if (bodyRegions.length) {
     spans = spans.filter(s => !spanInsideRegions(s.start, s.end, bodyRegions))
   }
@@ -1097,12 +1169,13 @@ function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[
     }
   }
 
-  spans = overlayMarkdownLinkFaces(buffer.text, spans, range)
+  if (gfm) spans.push(...markdownStrikethroughSpans(buffer.text, range))
+  spans = overlayMarkdownLinkFaces(buffer.text, spans, range, gfm)
   return overlayMarkdownHeaderFaces(buffer.text, spans, range)
 }
 
-function overlayMarkdownLinkFaces(text: string, spans: TextSpan[], range?: FontLockRange): TextSpan[] {
-  const linkSpans = markdownLinks(text)
+function overlayMarkdownLinkFaces(text: string, spans: TextSpan[], range?: FontLockRange, includeBare = false): TextSpan[] {
+  const linkSpans = markdownLinks(text, includeBare)
     .filter(link => !range || (link.end >= range.start && link.start <= range.end))
     .map(link => ({ start: link.start, end: link.end, face: "markdown-link" as FaceName }))
   if (!linkSpans.length) return spans
@@ -1125,8 +1198,21 @@ function applyMarkdownFaceRemap(buffer: BufferModel): void {
   buffer.locals.set("adaptive-wrap-prefix-mode", true)
 }
 
+function applyGfmFaceRemap(buffer: BufferModel): void {
+  applyMarkdownFaceRemap(buffer)
+  buffer.locals.set("word-wrap", true)
+  buffer.locals.set("markdown-wiki-link-search-subdirectories", true)
+}
+
 function applyMarkdownViewModeEnter(buffer: BufferModel): void {
   applyMarkdownFaceRemap(buffer)
+  if (getCustom<boolean>("markdown-hide-markup-in-view-modes") ?? true) {
+    setMarkdownHideMarkup(buffer, true)
+  }
+}
+
+function applyGfmViewModeEnter(buffer: BufferModel): void {
+  applyGfmFaceRemap(buffer)
   if (getCustom<boolean>("markdown-hide-markup-in-view-modes") ?? true) {
     setMarkdownHideMarkup(buffer, true)
   }
@@ -1238,6 +1324,78 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   // markdown-toc has no default binding upstream; "T" would collide with the
   // "t" insert-table binding since key lookup case-folds shifted letters.
 }
+
+function markdownGfmKnownLanguages(): string[] {
+  const langs = new Set(DEFAULT_GFM_CODE_LANGUAGES)
+  const modeMap = getCustom<Array<[string, string]>>("markdown-code-lang-modes") ?? []
+  for (const entry of modeMap) {
+    const lang = entry[0]
+    if (typeof lang === "string" && lang) langs.add(lang)
+  }
+  return [...langs].sort((a, b) => a.localeCompare(b))
+}
+
+function rememberGfmLanguage(buffer: BufferModel, language: string): void {
+  const lang = language.trim()
+  if (!lang) return
+  const local = buffer.locals.get(MARKDOWN_GFM_LANGUAGE_HISTORY) as string[] | undefined
+  const history = local ? [...local] : [...(getCustom<string[]>(MARKDOWN_GFM_LANGUAGE_HISTORY) ?? [])]
+  const existing = history.indexOf(lang)
+  if (existing >= 0) history.splice(existing, 1)
+  history.unshift(lang)
+  buffer.locals.set(MARKDOWN_GFM_LANGUAGE_HISTORY, history)
+}
+
+async function readGfmCodeBlockLanguage(editor: Editor, buffer: BufferModel, args: string[]): Promise<string | null> {
+  const explicit = args[0]
+  const language = explicit != null
+    ? explicit
+    : await editor.completingRead("Language: ", {
+      collection: markdownGfmKnownLanguages(),
+      history: MARKDOWN_GFM_LANGUAGE_HISTORY,
+    })
+  if (language == null) return null
+  rememberGfmLanguage(buffer, language)
+  return language.trim()
+}
+
+function insertGfmCodeBlock(buffer: BufferModel, language: string, replaceLine = false): void {
+  const lang = language.trim()
+  const opening = lang ? `\`\`\`${lang}` : "```"
+  const line = buffer.lineBoundsAt()
+  const hasLineBreak = line.end < buffer.text.length && buffer.text[line.end] === "\n"
+  const block = `${opening}\n\n\`\`\`${hasLineBreak ? "" : "\n"}`
+  const bodyPointOffset = opening.length + 1
+  if (replaceLine || !line.text.trim()) {
+    buffer.replaceRange(line.start, line.end, block)
+    buffer.point = line.start + bodyPointOffset
+    return
+  }
+  const start = buffer.point
+  buffer.insert(`\n${block}`)
+  buffer.point = start + 1 + bodyPointOffset
+}
+
+async function maybeInsertElectricGfmCodeBlock(
+  editor: Editor,
+  buffer: BufferModel,
+  args: string[],
+  keyEvent: { sequence?: string } | null,
+): Promise<void> {
+  const inserted = args[0] ?? keyEvent?.sequence ?? editor.lastKeyEvent?.sequence
+  if (inserted !== "`") return
+  if (buffer.mode !== "gfm") return
+  if (!(getCustom<boolean>("markdown-gfm-use-electric-backquote") ?? true)) return
+  const line = buffer.lineBoundsAt(Math.max(0, buffer.point - 1))
+  if (buffer.point !== line.start + 3) return
+  if (buffer.text.slice(line.start, buffer.point) !== "```") return
+  const language = await readGfmCodeBlockLanguage(editor, buffer, [])
+  if (language == null) return
+  insertGfmCodeBlock(buffer, language, true)
+  editor.message("Inserted GFM code block")
+}
+
+let gfmBackquoteAdviceId: string | undefined
 
 function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   editor.command("markdown-enter-key", ({ buffer, editor }) => {
@@ -1626,12 +1784,10 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message("Inserted inline code")
   }, "Insert inline code markup.")
 
-  editor.command("markdown-insert-gfm-code-block", ({ buffer, editor }) => {
-    const line = buffer.lineBoundsAt()
-    const block = "```\n\n```\n"
-    if (line.text.trim()) buffer.insert(`\n${block}`)
-    else buffer.replaceRange(line.start, line.end, block)
-    buffer.point = buffer.text.indexOf("```\n\n") + 4
+  editor.command("markdown-insert-gfm-code-block", async ({ buffer, editor, args }) => {
+    const language = await readGfmCodeBlockLanguage(editor, buffer, args)
+    if (language == null) return
+    insertGfmCodeBlock(buffer, language)
     editor.message("Inserted GFM code block")
   }, "Insert a fenced GFM code block.")
 
@@ -1803,7 +1959,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   }, "Kill markup prefix at beginning of line.")
 
   editor.command("markdown-follow-thing-at-point", ({ buffer, editor }) => {
-    const link = linkAtPoint(buffer.text, buffer.point)
+    const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
     if (!link) { editor.message("No link at point"); return }
     if (link.kind === "reference") {
       if (link.definitionStart == null) { editor.message("No reference definition"); return }
@@ -1828,7 +1984,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       editor.message(result.message)
       return
     }
-    const link = linkAtPoint(buffer.text, buffer.point)
+    const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
     if (link) {
       if (link.kind === "reference") {
         if (link.definitionStart == null) { editor.message("No reference definition"); return }
@@ -1845,13 +2001,13 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   }, "Do what is sensible at point in Markdown.")
 
   editor.command("markdown-next-link", ({ buffer, editor }) => {
-    const next = findLink(buffer.text, buffer.point, 1)
+    const next = findLink(buffer.text, buffer.point, 1, markdownIsGfmMode(buffer))
     if (next == null) { editor.message("No next link"); return }
     buffer.point = next
   }, "Move to next Markdown link.")
 
   editor.command("markdown-previous-link", ({ buffer, editor }) => {
-    const prev = findLink(buffer.text, buffer.point, -1)
+    const prev = findLink(buffer.text, buffer.point, -1, markdownIsGfmMode(buffer))
     if (prev == null) { editor.message("No previous link"); return }
     buffer.point = prev
   }, "Move to previous Markdown link.")
@@ -1904,19 +2060,39 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
 
   editor.command("markdown-mode", ({ editor, buffer }) => editor.enterMode(buffer, "markdown"),
     "Major mode for editing Markdown files.")
+
+  editor.command("gfm-mode", ({ editor, buffer }) => editor.enterMode(buffer, "gfm"),
+    "Major mode for editing GitHub Flavored Markdown files.")
 }
 
-export function install(editor: Editor, deps: MarkdownDeps = {}): void {
+function isPluginContext(value: MarkdownDeps | PluginContext | undefined): value is PluginContext {
+  return typeof value === "object" && value !== null && "advice" in value && "command" in value
+}
+
+export function install(editor: Editor, ctx: PluginContext): void
+export function install(editor: Editor, deps?: MarkdownDeps, ctx?: PluginContext): void
+export function install(editor: Editor, depsOrCtx: MarkdownDeps | PluginContext = {}, maybeCtx?: PluginContext): void {
+  const deps = isPluginContext(depsOrCtx) ? {} : depsOrCtx
+  const ctx = isPluginContext(depsOrCtx) ? depsOrCtx : maybeCtx ?? createPluginContext(editor)
   registerTreeSitterGrammars()
   installMarkdownCommands(editor, deps)
   // Global so C-c ' also commits from the edit buffer, whose major mode is
   // the block's language and has no markdown keymap.
   editor.key("C-c '", "markdown-edit-code-block")
 
+  if (gfmBackquoteAdviceId === undefined || getTrackedAdvice(gfmBackquoteAdviceId) === undefined) {
+    gfmBackquoteAdviceId = ctx.advice("self-insert-command", {
+      after: ({ editor, buffer, args, keyEvent }) => maybeInsertElectricGfmCodeBlock(editor, buffer, args, keyEvent),
+    })
+    ctx.onDispose(() => { gfmBackquoteAdviceId = undefined })
+  }
+
   for (const [name] of MARKDOWN_HEADER_FACES) defface(name, {}, "Markdown ATX/setext header face.")
   defface("markdown-emphasis", { italic: true }, "Markdown italic emphasis.")
   defface("markdown-strong", { bold: true }, "Markdown bold emphasis.")
   defface("markdown-link", { underline: true }, "Markdown link face.")
+  defface("markdown-markup", { inherit: ["keyword"] }, "Markdown markup delimiter face.")
+  defface("markdown-strikethrough", { underline: true }, "GFM strikethrough text face.")
   const keymap = new Keymap("markdown-map")
   bindMarkdownModeMap(keymap)
 
@@ -1934,12 +2110,13 @@ export function install(editor: Editor, deps: MarkdownDeps = {}): void {
 
   const gfmKeymap = new Keymap("gfm-map")
   gfmKeymap.bind("C-c C-s d", "markdown-insert-strike-through")
+  gfmKeymap.bind("C-c C-s C", "markdown-insert-gfm-code-block")
   defineMode({
     name: "gfm",
     parent: "markdown",
     keymap: gfmKeymap,
     fontLock: markdownFontLock,
-    onEnter: applyMarkdownFaceRemap,
+    onEnter: applyGfmFaceRemap,
   })
 
   defineMode({
@@ -1951,7 +2128,7 @@ export function install(editor: Editor, deps: MarkdownDeps = {}): void {
   defineMode({
     name: "gfm-view-mode",
     parent: "gfm",
-    onEnter: applyMarkdownViewModeEnter,
+    onEnter: applyGfmViewModeEnter,
   })
 
   addHook("after-save-hook", async ({ buffer }) => {
@@ -2883,8 +3060,53 @@ type FootnoteDefinition = FootnotePosition & {
 const INLINE_OR_AUTO_LINK_RE = /!?\[[^\]]*\]\(([^)]+)\)|<((?:https?:\/\/|mailto:)[^>]+)>/g
 const REFERENCE_LINK_RE = /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g
 
-function findLink(text: string, point: number, direction: 1 | -1): number | null {
-  const matches = markdownLinks(text).map(link => ({ index: link.start }))
+function escapeRegExp(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
+}
+
+function markdownUriTypes(): string[] {
+  const raw = getCustom<string[]>("markdown-uri-types") ?? DEFAULT_MARKDOWN_URI_TYPES
+  return raw.filter(item => typeof item === "string" && item.length > 0)
+}
+
+function trimBareUrlEnd(url: string): string {
+  let out = url.replace(/[.,;:!?]+$/g, "")
+  for (;;) {
+    const last = out.at(-1)
+    if (last === ")" && (out.match(/\(/g)?.length ?? 0) < (out.match(/\)/g)?.length ?? 0)) out = out.slice(0, -1)
+    else if (last === "]" && (out.match(/\[/g)?.length ?? 0) < (out.match(/\]/g)?.length ?? 0)) out = out.slice(0, -1)
+    else if (last === "}" && (out.match(/\{/g)?.length ?? 0) < (out.match(/\}/g)?.length ?? 0)) out = out.slice(0, -1)
+    else break
+  }
+  return out
+}
+
+function markdownBareUrlLinks(text: string, covered: Array<[number, number]>): MarkdownLink[] {
+  const schemes = markdownUriTypes().map(escapeRegExp).join("|")
+  if (!schemes) return []
+  const re = new RegExp(`(^|[^\\w@])((?:${schemes}):[^\\s<>"']+)`, "gi")
+  const links: MarkdownLink[] = []
+  const codeRanges: Array<readonly [number, number]> = parseFencedCodeBlocks(text).map(block => [block.bodyStart, block.bodyEnd] as const)
+  let offset = 0
+  for (const line of text.split("\n")) {
+    codeRanges.push(...protectedInlineCodeRanges(line, offset))
+    offset += line.length + 1
+  }
+  for (const match of text.matchAll(re)) {
+    if (match.index == null) continue
+    const raw = match[2] ?? ""
+    const url = trimBareUrlEnd(raw)
+    if (!url) continue
+    const start = match.index + (match[1]?.length ?? 0)
+    const end = start + url.length
+    if (spanInsideRegions(start, end, covered) || spanInsideRegions(start, end, codeRanges)) continue
+    links.push({ start, end, kind: "auto", url })
+  }
+  return links
+}
+
+function findLink(text: string, point: number, direction: 1 | -1, includeBare = false): number | null {
+  const matches = markdownLinks(text, includeBare).map(link => ({ index: link.start }))
   if (direction === 1) {
     for (const m of matches) if (m.index > point) return m.index
     return null
@@ -2897,11 +3119,11 @@ function findLink(text: string, point: number, direction: 1 | -1): number | null
   return prev
 }
 
-function linkAtPoint(text: string, point: number): MarkdownLink | null {
-  return markdownLinks(text).find(link => point >= link.start && point <= link.end) ?? null
+function linkAtPoint(text: string, point: number, includeBare = false): MarkdownLink | null {
+  return markdownLinks(text, includeBare).find(link => point >= link.start && point <= link.end) ?? null
 }
 
-function markdownLinks(text: string): MarkdownLink[] {
+function markdownLinks(text: string, includeBare = false): MarkdownLink[] {
   const definitions = referenceDefinitionMap(text)
   const links: MarkdownLink[] = []
   for (const match of text.matchAll(INLINE_OR_AUTO_LINK_RE)) {
@@ -2927,6 +3149,10 @@ function markdownLinks(text: string): MarkdownLink[] {
       url: def?.url ?? null,
       definitionStart: def?.start,
     })
+  }
+  if (includeBare) {
+    const covered = links.map(link => [link.start, link.end] as [number, number])
+    links.push(...markdownBareUrlLinks(text, covered))
   }
   return links.sort((a, b) => a.start - b.start || a.end - b.end)
 }

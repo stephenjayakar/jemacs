@@ -87,6 +87,60 @@ test("markdown emphasis uses italic face", () => {
   expect(spans.some(span => String(span.face) === "markdown-emphasis")).toBe(true)
 })
 
+test("gfm font-lock highlights bare URL autolinks and markdown does not", () => {
+  const editor = makeEditor()
+  install(editor)
+  const text = "Visit https://example.com/a.\n"
+  const start = text.indexOf("https://")
+  const end = start + "https://example.com/a".length
+  const gfm = new BufferModel({ name: "README.md", text, mode: "gfm" })
+  const markdown = new BufferModel({ name: "doc.md", text, mode: "markdown" })
+
+  expect(editor.fontLock(gfm).some(span => String(span.face) === "markdown-link" && span.start === start && span.end === end)).toBe(true)
+  expect(editor.fontLock(markdown).some(span => String(span.face) === "markdown-link" && span.start === start && span.end === end)).toBe(false)
+})
+
+test("gfm follow command opens bare URL autolinks", async () => {
+  const opened: string[] = []
+  const editor = makeEditor()
+  install(editor, { openExternal: target => { opened.push(target) } })
+  const buffer = editor.scratch("README.md", "Visit https://example.com/a.\n", "gfm")
+  buffer.point = buffer.text.indexOf("example")
+
+  await editor.run("markdown-follow-thing-at-point")
+
+  expect(opened).toEqual(["https://example.com/a"])
+})
+
+test("gfm strikethrough font-lock marks delimiters and body", () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("README.md", "~~gone~~\n", "gfm")
+
+  const spans = editor.fontLock(buffer)
+
+  expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 0 && span.end === 2)).toBe(true)
+  expect(spans.some(span => String(span.face) === "markdown-strikethrough" && span.start === 2 && span.end === 6)).toBe(true)
+  expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 6 && span.end === 8)).toBe(true)
+})
+
+test("gfm strikethrough delimiters participate in markdown-hide-markup", () => {
+  const buffer = new BufferModel({ name: "README.md", text: "~~gone~~\n", mode: "gfm" })
+  buffer.locals.set("markdown-hide-markup", true)
+
+  expect(markdownDisplayFilter(buffer)?.text).toBe("gone\n")
+})
+
+test("gfm keeps intraword underscores literal while markdown hiding preserves existing behavior", () => {
+  const markdown = new BufferModel({ name: "doc.md", text: "foo_bar_baz\n", mode: "markdown" })
+  markdown.locals.set("markdown-hide-markup", true)
+  const gfm = new BufferModel({ name: "README.md", text: "foo_bar_baz\n", mode: "gfm" })
+  gfm.locals.set("markdown-hide-markup", true)
+
+  expect(markdownDisplayFilter(markdown)?.text).toBe("foobarbaz\n")
+  expect(markdownDisplayFilter(gfm)?.text).toBe("foo_bar_baz\n")
+})
+
 test("markdown font-lock applies proportional header faces", () => {
   const editor = makeEditor()
   install(editor)
@@ -176,6 +230,28 @@ test("markdown-mode keymap binds Emacs export preview and reference commands und
   expect(editor.keymaps.lookup("C-c C-c o")).toMatchObject({ status: "matched", command: "markdown-open" })
   expect(editor.keymaps.lookup("C-c C-c c")).toMatchObject({ status: "matched", command: "markdown-check-refs" })
   expect(editor.keymaps.lookup("C-c C-o")).toMatchObject({ status: "matched", command: "markdown-follow-thing-at-point" })
+})
+
+test("gfm-mode command enters GFM and enables visual-line locals", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "", "markdown")
+
+  await editor.run("gfm-mode")
+
+  expect(buffer.mode).toBe("gfm")
+  expect(buffer.locals.get("markdown-visual-fill-column-mode")).toBe(true)
+  expect(buffer.locals.get("word-wrap")).toBe(true)
+})
+
+test("gfm-mode keymap binds the GFM code-block insertion command", () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = new BufferModel({ name: "README.md", text: "", mode: "gfm" })
+  editor.addBuffer(buffer)
+  editor.currentBufferId = buffer.id
+
+  expect(editor.keymaps.lookup("C-c C-s C")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-code-block" })
 })
 
 describe("markdown list item parity", () => {
@@ -1003,6 +1079,17 @@ describe("markdown-view-mode", () => {
     expect(buffer.locals.get("markdown-hide-markup")).toBe(true)
     expect(markdownDisplayFilter(buffer)?.text).toBe("Title\n")
   })
+
+  test("gfm-view-mode keeps GFM visual wrapping and markup hiding", () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = new BufferModel({ name: "README.md", text: "~~gone~~\n", mode: "text" })
+    enterMode(buffer, "gfm-view-mode")
+    expect(buffer.mode).toBe("gfm-view-mode")
+    expect(buffer.locals.get("word-wrap")).toBe(true)
+    expect(buffer.locals.get("markdown-hide-markup")).toBe(true)
+    expect(markdownDisplayFilter(buffer)?.text).toBe("gone\n")
+  })
 })
 
 describe("jemacs-clear-whitespace-and-newline-and-indent", () => {
@@ -1065,6 +1152,81 @@ describe("markdown-insert-link", () => {
     expect(prompts).toEqual(["URL or [reference]: "])
     expect(buffer.text).toBe("[read](https://example.com) more\n")
     expect(buffer.markActive).toBe(false)
+  })
+})
+
+describe("markdown-insert-gfm-code-block", () => {
+  test("prompts with language completion and records GFM language history", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("README.md", "", "gfm")
+    const prompts: string[] = []
+    const histories: Array<string | undefined> = []
+    editor.completingRead = async (prompt, options) => {
+      prompts.push(prompt)
+      histories.push(options.history)
+      expect(options.collection).toContain("typescript")
+      return "typescript"
+    }
+
+    await editor.run("markdown-insert-gfm-code-block")
+
+    expect(prompts).toEqual(["Language: "])
+    expect(histories).toEqual(["markdown-gfm-language-history"])
+    expect(buffer.text).toBe("```typescript\n\n```\n")
+    expect(buffer.point).toBe("```typescript\n".length)
+    expect(buffer.locals.get("markdown-gfm-language-history")).toEqual(["typescript"])
+  })
+
+  test("electric backquote prompts on the third BOL backtick in gfm only", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("README.md", "", "gfm")
+    let prompts = 0
+    editor.completingRead = async () => {
+      prompts += 1
+      return "ts"
+    }
+
+    await editor.handleKey({ name: "`", sequence: "`" })
+    await editor.handleKey({ name: "`", sequence: "`" })
+    await editor.handleKey({ name: "`", sequence: "`" })
+
+    expect(prompts).toBe(1)
+    expect(buffer.text).toBe("```ts\n\n```\n")
+    expect(buffer.point).toBe("```ts\n".length)
+
+    const markdown = editor.scratch("doc.md", "", "markdown")
+    await editor.handleKey({ name: "`", sequence: "`" })
+    await editor.handleKey({ name: "`", sequence: "`" })
+    await editor.handleKey({ name: "`", sequence: "`" })
+
+    expect(prompts).toBe(1)
+    expect(markdown.text).toBe("```")
+  })
+
+  test("markdown-gfm-use-electric-backquote disables electric backquote", async () => {
+    const before = getCustom<boolean>("markdown-gfm-use-electric-backquote")
+    setCustom("markdown-gfm-use-electric-backquote", false)
+    try {
+      const editor = makeEditor()
+      install(editor)
+      const buffer = editor.scratch("README.md", "", "gfm")
+      let prompts = 0
+      editor.completingRead = async () => {
+        prompts += 1
+        return "ts"
+      }
+
+      await editor.handleKey({ name: "`", sequence: "`" })
+      await editor.handleKey({ name: "`", sequence: "`" })
+      await editor.handleKey({ name: "`", sequence: "`" })
+
+      expect(prompts).toBe(0)
+      expect(buffer.text).toBe("```")
+    } finally {
+      setCustom("markdown-gfm-use-electric-backquote", before ?? true)
+    }
   })
 })
 
