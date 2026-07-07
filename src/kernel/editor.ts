@@ -389,7 +389,7 @@ export class Editor {
     if (!leaf) return
     this.selectWindow(windowId)
     const buffer = this.buffers.get(leaf.bufferId)
-    if (!buffer || buffer.readOnly && buffer.kind !== "minibuffer") return
+    if (!buffer) return
     buffer.point = point
     buffer.deactivateMark()
     this.windowLayout = setWindowLeafPoint(this.windowLayout, windowId, point)
