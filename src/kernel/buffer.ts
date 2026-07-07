@@ -19,6 +19,7 @@ export type SaveContext = {
 }
 
 export type UndoOp = { from: number; to: number; removed: string; inserted: string; point: number }
+export type BufferRestriction = { start: number; end: number }
 type Op = UndoOp
 type UndoNode = {
   ops: Op[]
@@ -78,6 +79,7 @@ export class BufferModel {
   /** Tree node at which text matches disk. */
   private savedNode: UndoNode = this.undoRoot
   private backedUp = false
+  private _restriction: BufferRestriction | null = null
 
   constructor(args: { id?: string; name: string; text?: string; path?: string; kind?: BufferKind; mode?: string }) {
     this.id = args.id ?? crypto.randomUUID()
@@ -106,9 +108,31 @@ export class BufferModel {
   get text(): string { return this._text }
   get lineStarts(): readonly number[] { return this._lineStarts }
   get lineCount(): number { return this._lineStarts.length }
+  get pointMin(): number { return this._restriction?.start ?? 0 }
+  get pointMax(): number { return this._restriction?.end ?? this._text.length }
+  get isNarrowed(): boolean { return this.pointMin !== 0 || this.pointMax !== this._text.length }
+  get restriction(): BufferRestriction | null {
+    return this.isNarrowed ? { start: this.pointMin, end: this.pointMax } : null
+  }
+
+  narrowToRegion(start: number, end: number): void {
+    const len = this._text.length
+    const a = clamp(Math.min(start, end), 0, len)
+    const b = clamp(Math.max(start, end), 0, len)
+    this._restriction = a === 0 && b === len ? null : { start: a, end: b }
+    this._point = this.clampPoint(this._point)
+    if (this.mark != null) this.mark = this.clampPoint(this.mark)
+  }
+
+  widen(): void {
+    this._restriction = null
+    this._point = this.clampPoint(this._point)
+    if (this.mark != null) this.mark = this.clampPoint(this.mark)
+  }
 
   /** 0-indexed line containing `offset`. */
   lineAt(offset: number): number {
+    offset = this.clampPoint(offset)
     const ls = this._lineStarts
     let lo = 0, hi = ls.length - 1
     while (lo < hi) {
@@ -122,8 +146,10 @@ export class BufferModel {
   lineBounds(line: number): [number, number] {
     const ls = this._lineStarts
     const i = clamp(line, 0, ls.length - 1)
-    const start = ls[i]!
-    const end = i + 1 < ls.length ? ls[i + 1]! - 1 : this._text.length
+    const rawStart = ls[i]!
+    const rawEnd = i + 1 < ls.length ? ls[i + 1]! - 1 : this._text.length
+    const start = clamp(rawStart, this.pointMin, this.pointMax)
+    const end = clamp(rawEnd, this.pointMin, this.pointMax)
     return [start, end]
   }
 
@@ -154,13 +180,15 @@ export class BufferModel {
     const markDirty = opts.markDirty ?? true
     if (a === b && !repl) return ""
     this.assertWritable(markDirty)
+    if ((opts.snapshot ?? true) && markDirty) this.assertInsideRestriction(a, b)
     const removed = this._text.slice(a, b)
     if (opts.snapshot ?? true) this.record(a, b, removed, repl)
     this.onSplice?.({ kind: "splice", bufferId: this.id, from: a, to: b, text: repl, seq: 0 }, opts)
     this.onTextChange?.({ start: a, end: b, text: repl })
     this._text = this._text.slice(0, a) + repl + this._text.slice(b)
     this._spliceLineStarts(a, b, removed, repl)
-    this._point = clamp(this._point <= a ? this._point : this._point >= b ? this._point + repl.length - (b - a) : a, 0, this._text.length)
+    this.adjustRestriction(a, b, repl.length)
+    this._point = this.clampPoint(this._point <= a ? this._point : this._point >= b ? this._point + repl.length - (b - a) : a)
     this.adjustMark(a, b, repl.length)
     this.deactivateMark()
     if (markDirty) this.dirty = true
@@ -190,12 +218,12 @@ export class BufferModel {
   }
 
   deleteBackward(): void {
-    if (this._point <= 0) return
+    if (this._point <= this.pointMin) return
     this._splice(this._point - 1, this._point, "")
   }
 
   deleteForward(): void {
-    if (this._point >= this._text.length) return
+    if (this._point >= this.pointMax) return
     this._splice(this._point, this._point + 1, "")
   }
 
@@ -206,10 +234,10 @@ export class BufferModel {
   }
 
   get point(): number { return this._point }
-  set point(n: number) { this._point = n; this.goalColumn = null }
+  set point(n: number) { this._point = this.clampPoint(n); this.goalColumn = null }
 
   move(delta: number): void {
-    this.point = clamp(this.point + delta, 0, this.text.length)
+    this.point = this.point + delta
   }
 
   moveLine(delta: number): void {
@@ -217,7 +245,7 @@ export class BufferModel {
     const goal = this.goalColumn ?? this._point - this._lineStarts[cur]!
     const next = clamp(cur + delta, 0, this._lineStarts.length - 1)
     const [start, end] = this.lineBounds(next)
-    this._point = start + Math.min(goal, end - start)
+    this._point = this.clampPoint(start + Math.min(goal, Math.max(0, end - start)))
     this.goalColumn = goal
   }
 
@@ -232,26 +260,26 @@ export class BufferModel {
   }
 
   moveToBufferStart(): void {
-    this.point = 0
+    this.point = this.pointMin
   }
 
   moveToBufferEnd(): void {
-    this.point = this.text.length
+    this.point = this.pointMax
   }
 
   moveWord(delta: number): void {
     const fwd = (this.locals.get("word-forward-regexp") as string | undefined) ?? "\\W*\\w+"
     const bwd = (this.locals.get("word-backward-regexp") as string | undefined) ?? "\\w+"
     if (delta > 0) {
-      const match = new RegExp(fwd).exec(this.text.slice(this.point))
-      this.point = match ? this.point + match.index + match[0].length : this.text.length
+      const match = new RegExp(fwd).exec(this._text.slice(this.point, this.pointMax))
+      this.point = match ? this.point + match.index + match[0].length : this.pointMax
       return
     }
 
-    const before = this.text.slice(0, this.point)
+    const before = this._text.slice(this.pointMin, this.point)
     const matches = [...before.matchAll(new RegExp(bwd, "g"))]
     const previous = matches.at(-1)
-    this.point = previous?.index ?? 0
+    this.point = previous?.index != null ? this.pointMin + previous.index : this.pointMin
   }
 
   setMark(): void {
@@ -294,12 +322,14 @@ export class BufferModel {
 
   selectedText(): string {
     if (this.mark == null || this.mark === this.point) return ""
-    const [a, b] = [this.mark, this.point].sort((x, y) => x - y)
+    const [rawA, rawB] = [this.mark, this.point].sort((x, y) => x - y)
+    const a = clamp(rawA, this.pointMin, this.pointMax)
+    const b = clamp(rawB, this.pointMin, this.pointMax)
     return this.text.slice(a, b)
   }
 
   selectedOrAll(): string {
-    return this.selectedText() || this.text
+    return this.selectedText() || this.text.slice(this.pointMin, this.pointMax)
   }
 
   async save(ctx: SaveContext = {}): Promise<void> {
@@ -535,18 +565,19 @@ export class BufferModel {
   }
 
   lineBoundsAt(point = this.point): { start: number; end: number; text: string } {
-    const start = point <= 0 ? 0 : this.text.lastIndexOf("\n", point - 1) + 1
+    point = this.clampPoint(point)
+    const start = Math.max(this.pointMin, point <= 0 ? 0 : this.text.lastIndexOf("\n", point - 1) + 1)
     const newline = this.text.indexOf("\n", point)
-    const end = newline === -1 ? this.text.length : newline
+    const end = Math.min(this.pointMax, newline === -1 ? this.text.length : newline)
     return { start, end, text: this.text.slice(start, end) }
   }
 
   symbolBoundsAt(point = this.point): { start: number; end: number; text: string } {
     const isSymbol = (ch: string) => /[A-Za-z0-9_]/.test(ch)
-    let start = clamp(point, 0, this.text.length)
+    let start = this.clampPoint(point)
     let end = start
-    while (start > 0 && isSymbol(this.text[start - 1]!)) start--
-    while (end < this.text.length && isSymbol(this.text[end]!)) end++
+    while (start > this.pointMin && isSymbol(this.text[start - 1]!)) start--
+    while (end < this.pointMax && isSymbol(this.text[end]!)) end++
     return { start, end, text: this.text.slice(start, end) }
   }
 
@@ -554,11 +585,31 @@ export class BufferModel {
     if (this.mark == null) return
     if (this.mark > to) this.mark += inserted - (to - from)
     else if (this.mark > from) this.mark = from
-    this.mark = clamp(this.mark, 0, this._text.length)
+    this.mark = this.clampPoint(this.mark)
   }
 
   private assertWritable(markDirty: boolean): void {
     if (markDirty && this.readOnly) throw new Error(`Buffer ${this.name} is read-only`)
+  }
+
+  private assertInsideRestriction(from: number, to: number): void {
+    if (!this.isNarrowed) return
+    if (from < this.pointMin || to > this.pointMax) throw new Error(`Cannot edit outside narrowed region in ${this.name}`)
+  }
+
+  private clampPoint(n: number): number {
+    return clamp(Math.trunc(Number.isFinite(n) ? n : this.pointMin), this.pointMin, this.pointMax)
+  }
+
+  private adjustRestriction(from: number, to: number, inserted: number): void {
+    if (!this._restriction) return
+    const replEnd = from + inserted
+    const start = transformRestrictionStart(this._restriction.start, from, to, inserted)
+    const end = transformRestrictionEnd(this._restriction.end, from, to, replEnd, inserted)
+    const len = this._text.length
+    const a = clamp(Math.min(start, end), 0, len)
+    const b = clamp(Math.max(start, end), 0, len)
+    this._restriction = a === 0 && b === len ? null : { start: a, end: b }
   }
 
   private record(from: number, to: number, removed: string, inserted: string): void {
@@ -588,6 +639,25 @@ export class BufferModel {
     const path: UndoNode[] = []
     for (let n: UndoNode | null = node; n; n = n.parent) path.push(n)
     return path
+  }
+}
+
+export function withSavedRestriction<T>(buffer: BufferModel, fn: () => T): T {
+  const saved = buffer.restriction
+  const restore = () => {
+    if (saved) buffer.narrowToRegion(saved.start, saved.end)
+    else buffer.widen()
+  }
+  try {
+    const result = fn()
+    if (isPromiseLike(result)) {
+      return result.finally(restore) as T
+    }
+    restore()
+    return result
+  } catch (error) {
+    restore()
+    throw error
   }
 }
 
@@ -691,6 +761,22 @@ function isNonnegativeInteger(n: unknown): n is number {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n))
+}
+
+function transformRestrictionStart(point: number, from: number, to: number, inserted: number): number {
+  if (point <= from) return point
+  if (point >= to) return point + inserted - (to - from)
+  return from
+}
+
+function transformRestrictionEnd(point: number, from: number, to: number, replEnd: number, inserted: number): number {
+  if (point < from) return point
+  if (point >= to) return point + inserted - (to - from)
+  return replEnd
+}
+
+function isPromiseLike<T>(value: T): value is T & { finally(onfinally?: () => void): PromiseLike<unknown> } {
+  return value != null && typeof value === "object" && "finally" in value && typeof value.finally === "function"
 }
 
 function scanLineStarts(text: string): number[] {

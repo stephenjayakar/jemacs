@@ -11,7 +11,7 @@ import {
   windowBodyLines,
   type ViewportSize,
 } from "./viewport"
-import { displayTextForBuffer, paneWrapLayout } from "./display-wrap"
+import { displayFilterForBuffer, displayTextForBuffer, paneWrapLayout } from "./display-wrap"
 import { computeLineVisualRows, computeWrappedLineRows, hasNonUnitVisualRows, visibleLineCountForBudget } from "./visual-line-height"
 
 defcustom("next-screen-context-lines", "number", 2,
@@ -54,7 +54,8 @@ export function scrollWindowByLines(editor: Editor, lines: number): void {
   if (delta === 0) return
 
   const buffer = editor.currentBuffer
-  const lineCount = buffer.text.split("\n").length
+  const view = displayView(buffer)
+  const lineCount = view.text.split("\n").length
   if (lineCount === 0) return
 
   const bodyBudget = selectedWindowBodyBudget(editor)
@@ -63,12 +64,12 @@ export function scrollWindowByLines(editor: Editor, lines: number): void {
   const newStart = Math.max(0, Math.min(maxStart, leaf.startLine + delta))
   editor.setSelectedWindowStartLine(newStart)
 
-  const oldPointLine = buffer.lineCol().line - 1
+  const oldPointLine = pointLineCol(view.text, view.map(buffer.point)).line - 1
   const visibleAfter = visibleLinesAtStart(newStart, bodyBudget, lineCount, visualRows)
   const topLine = newStart
   const bottomLine = newStart + visibleAfter - 1
   const newPointLine = Math.max(topLine, Math.min(bottomLine, oldPointLine))
-  setBufferPointToLine(buffer, newPointLine, buffer.lineCol().col)
+  setBufferPointToDisplayLine(buffer, view, newPointLine, pointLineCol(view.text, view.map(buffer.point)).col)
 }
 
 function runScrollCommand(editor: Editor, arg: number | null, direction: 1 | -1): void {
@@ -97,7 +98,8 @@ function windowScroll(editor: Editor, prefixArg: number | null, direction: 1 | -
   const leaf = editor.selectedWindowLeaf()
   if (!leaf) return
   const buffer = editor.currentBuffer
-  const lineCount = buffer.text.split("\n").length
+  const view = displayView(buffer)
+  const lineCount = view.text.split("\n").length
   if (lineCount === 0) return
 
   const bodyBudget = selectedWindowBodyBudget(editor)
@@ -108,7 +110,7 @@ function windowScroll(editor: Editor, prefixArg: number | null, direction: 1 | -
     ? direction * Math.max(1, bodyBudget - context)
     : prefixArg! * direction
 
-  const oldPointLine = buffer.lineCol().line - 1
+  const oldPointLine = pointLineCol(view.text, view.map(buffer.point)).line - 1
   const startLine = scrollAnchorStartLine(oldPointLine, bodyBudget, lineCount, visualRows)
 
   if (n < 0 && startLine === 0) throw new ScrollBoundary("beginning")
@@ -132,7 +134,7 @@ function windowScroll(editor: Editor, prefixArg: number | null, direction: 1 | -
     if (bottomMargin <= oldPointLine) newPointLine = bottomMargin
   }
 
-  setBufferPointToLine(buffer, newPointLine, buffer.lineCol().col)
+  setBufferPointToDisplayLine(buffer, view, newPointLine, pointLineCol(view.text, view.map(buffer.point)).col)
 }
 
 export function selectedWindowBodyBudget(editor: Editor): number {
@@ -251,12 +253,32 @@ function maxStartLine(_bodyBudget: number, lineCount: number, _visualRows?: read
   return Math.max(0, lineCount - 1)
 }
 
-function setBufferPointToLine(buffer: BufferModel, lineIndex: number, col: number): void {
-  const lines = buffer.text.split("\n")
+function displayView(buffer: BufferModel): { text: string; map: (n: number) => number; unmap: (n: number) => number } {
+  const filter = displayFilterForBuffer(buffer)
+  return {
+    text: filter?.text ?? buffer.text,
+    map: filter?.map ?? ((n: number) => Math.max(0, Math.min(n, buffer.text.length))),
+    unmap: filter?.unmap ?? ((n: number) => Math.max(0, Math.min(n, buffer.text.length))),
+  }
+}
+
+function setBufferPointToDisplayLine(
+  buffer: BufferModel,
+  view: { text: string; unmap: (n: number) => number },
+  lineIndex: number,
+  col: number,
+): void {
+  const lines = view.text.split("\n")
   const targetLine = Math.max(0, Math.min(lines.length - 1, lineIndex))
   let offset = 0
   for (let i = 0; i < targetLine; i++) offset += lines[i]!.length + 1
-  buffer.point = Math.max(0, Math.min(buffer.text.length, offset + Math.min(col - 1, lines[targetLine]!.length)))
+  buffer.point = view.unmap(Math.max(0, Math.min(view.text.length, offset + Math.min(col - 1, lines[targetLine]!.length))))
+}
+
+function pointLineCol(text: string, point: number): { line: number; col: number } {
+  const before = text.slice(0, Math.max(0, Math.min(point, text.length)))
+  const lines = before.split("\n")
+  return { line: lines.length, col: lines.at(-1)!.length + 1 }
 }
 
 /** @internal */

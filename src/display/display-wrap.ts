@@ -7,9 +7,37 @@ import { gutterPrefixLen } from "./click-to-point"
 const MARKDOWN_FILL_COLUMN = "markdown-fill-column"
 const MARKDOWN_VISUAL_FILL = "markdown-visual-fill-column-mode"
 
+export type DisplayFilterResult = { text: string; map: (n: number) => number; unmap?: (n: number) => number }
+
 /** Buffer text projected through the mode display filter (if any). */
 export function displayTextForBuffer(buffer: BufferModel): string {
-  return modeFeature(buffer.mode, "displayFilter")?.(buffer)?.text ?? buffer.text
+  return displayFilterForBuffer(buffer)?.text ?? buffer.text
+}
+
+export function displayFilterForBuffer(buffer: BufferModel): DisplayFilterResult | null {
+  return applyRestrictionDisplayFilter(buffer, modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null)
+}
+
+export function applyRestrictionDisplayFilter(buffer: BufferModel, filter: DisplayFilterResult | null): DisplayFilterResult | null {
+  if (!buffer.isNarrowed) return filter
+  const start = buffer.pointMin
+  const end = buffer.pointMax
+  const baseText = filter?.text ?? buffer.text
+  const baseMap = filter?.map ?? ((n: number) => Math.max(0, Math.min(n, buffer.text.length)))
+  const baseUnmap = filter?.unmap
+  const displayStart = Math.max(0, Math.min(baseMap(start), baseText.length))
+  const displayEnd = Math.max(displayStart, Math.min(baseMap(end), baseText.length))
+  const text = baseText.slice(displayStart, displayEnd)
+  return {
+    text,
+    map: n => Math.max(0, Math.min(displayEnd, baseMap(Math.max(start, Math.min(end, n)))) - displayStart),
+    unmap: n => {
+      const local = Math.max(0, Math.min(n, text.length))
+      const displayPoint = displayStart + local
+      const raw = baseUnmap ? baseUnmap(displayPoint) : start + local
+      return Math.max(start, Math.min(end, raw))
+    },
+  }
 }
 
 export type PaneWrapLayout = {

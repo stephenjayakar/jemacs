@@ -1714,8 +1714,8 @@ export class Editor {
     const buffer = this.buffers.get(state.bufferId)
     if (!buffer) return
     const match = state.direction === 1
-      ? findMatchForward(buffer.text, state.string, buffer.point, state.regexp ?? false)
-      : findMatchBackward(buffer.text, state.string, buffer.point, state.regexp ?? false)
+      ? findRestrictedMatchForward(buffer, state.string, buffer.point, state.regexp ?? false)
+      : findRestrictedMatchBackward(buffer, state.string, buffer.point, state.regexp ?? false)
     if (match == null) {
       this.message(`Search failed: ${state.string}`)
       return
@@ -1755,8 +1755,8 @@ export class Editor {
       return
     }
     const match = state.direction === 1
-      ? findMatchForward(buffer.text, string, state.startPoint, state.regexp ?? false)
-      : findMatchBackward(buffer.text, string, state.startPoint, state.regexp ?? false)
+      ? findRestrictedMatchForward(buffer, string, state.startPoint, state.regexp ?? false)
+      : findRestrictedMatchBackward(buffer, string, state.startPoint, state.regexp ?? false)
     if (match == null) {
       state.match = undefined
       this.message(`Failing I-search: ${string}`)
@@ -2357,4 +2357,16 @@ function transientLineBuilder(): TransientLineBuilder {
 
 function markTransientLineInapt(line: TransientLine): void {
   if (line.text.length) line.spans.push({ start: 0, end: line.text.length, face: TRANSIENT_INAPT_FACE })
+}
+
+function findRestrictedMatchForward(buffer: BufferModel, string: string, from: number, regexp: boolean): IsearchMatch | null {
+  const match = findMatchForward(buffer.text, string, Math.max(buffer.pointMin, from), regexp)
+  if (!match || match.end > buffer.pointMax) return null
+  return match
+}
+
+function findRestrictedMatchBackward(buffer: BufferModel, string: string, before: number, regexp: boolean): IsearchMatch | null {
+  const match = findMatchBackward(buffer.text, string, Math.min(buffer.pointMax, before), regexp)
+  if (!match || match.start < buffer.pointMin) return null
+  return match
 }

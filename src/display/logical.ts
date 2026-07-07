@@ -11,6 +11,7 @@ import { applyTheme, type Theme } from "./theme"
 import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
 import { TERMINAL_SURFACE_LOCAL, type TerminalSurfaceModel } from "./terminal-surface"
+import { applyRestrictionDisplayFilter, type DisplayFilterResult } from "./display-wrap"
 
 /** Plugin-contributed modeline segments (Emacs `mode-line-misc-info`). Each fn
  *  returns a string appended after the minor-mode lighters; empty string = nothing. */
@@ -204,13 +205,13 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     }
   }
 
-  const point = selected ? buffer.point : leaf.point
-  const fontLockSpans = [...editor.fontLock(buffer, visibleFontLockRange(buffer, leaf))]
+  const point = selected ? buffer.point : Math.max(buffer.pointMin, Math.min(buffer.pointMax, leaf.point))
+  const fontLockSpans = clipSpansToRestriction([...editor.fontLock(buffer, visibleFontLockRange(buffer, leaf))], buffer)
   const spans = [...fontLockSpans]
   if (selected && editor.isearch) {
     const match = isearchMatchSpan(buffer, editor.isearch)
-    if (match) spans.push(match)
-    spans.push(...isearchLazyHighlightSpans(buffer, editor.isearch))
+    if (match && match.end > buffer.pointMin && match.start < buffer.pointMax) spans.push(clipSpanToRestriction(match, buffer))
+    spans.push(...isearchLazyHighlightSpans(buffer, editor.isearch, buffer.pointMin, buffer.pointMax))
   }
   const filt = safeDisplayFilter(buffer)
   const displayOffsets = filt ? evalDisplayOffsets(filt.map, point, buffer.mark, spans) : undefined
@@ -252,12 +253,13 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
 function visibleFontLockRange(buffer: BufferModel, leaf: WindowLeaf): FontLockRange {
   const rows = numberLocal(buffer, "window-body-rows") ?? 80
   const margin = Math.max(80, rows * 4)
-  const startLine = Math.max(0, leaf.startLine - margin)
-  const endLine = Math.min(buffer.lineCount, leaf.startLine + rows + margin)
-  const start = buffer.lineStarts[startLine] ?? 0
-  const end = endLine < buffer.lineCount
+  const baseLine = buffer.lineAt(buffer.pointMin)
+  const startLine = Math.max(0, baseLine + leaf.startLine - margin)
+  const endLine = Math.min(buffer.lineCount, baseLine + leaf.startLine + rows + margin)
+  const start = Math.max(buffer.pointMin, buffer.lineStarts[startLine] ?? 0)
+  const end = Math.max(start, Math.min(buffer.pointMax, endLine < buffer.lineCount
     ? buffer.lineStarts[endLine]!
-    : buffer.text.length
+    : buffer.text.length))
   return { startLine, endLine, start, end }
 }
 
@@ -268,12 +270,27 @@ function numberLocal(buffer: BufferModel, key: string): number | null {
 
 /** Guard the mode's `displayFilter` so a buggy plugin degrades to identity
  *  instead of taking the frame down (t-audit2-ab15abf8). */
-function safeDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null {
+function safeDisplayFilter(buffer: BufferModel): DisplayFilterResult | null {
   try {
-    return modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null
+    return applyRestrictionDisplayFilter(buffer, modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null)
   } catch (err) {
     console.error(`display-filter for mode '${buffer.mode}' threw:`, err)
-    return null
+    return applyRestrictionDisplayFilter(buffer, null)
+  }
+}
+
+function clipSpansToRestriction(spans: TextSpan[], buffer: BufferModel): TextSpan[] {
+  if (!buffer.isNarrowed) return spans
+  return spans
+    .filter(span => span.end > buffer.pointMin && span.start < buffer.pointMax)
+    .map(span => clipSpanToRestriction(span, buffer))
+}
+
+function clipSpanToRestriction<T extends TextSpan>(span: T, buffer: BufferModel): T {
+  return {
+    ...span,
+    start: Math.max(buffer.pointMin, span.start),
+    end: Math.min(buffer.pointMax, span.end),
   }
 }
 

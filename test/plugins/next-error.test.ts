@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
 import { addHook } from "../../src/kernel/hooks"
+import { getMode } from "../../src/modes/mode"
 import {
   install,
   parseGrepOutput,
@@ -67,7 +68,16 @@ test("install registers commands and M-g n / M-g p bindings", () => {
   expect(editor.commands.get("first-error")).toBeDefined()
   expect(editor.commands.get("compile-goto-error")).toBeDefined()
   expect(editor.commands.get("grep")?.description).toContain("COMMAND-ARGS")
+  expect(editor.commands.get("grep-mode")).toBeDefined()
   expect(editor.commands.get("rgrep")?.description).toContain("Recursively grep")
+  const grepMode = getMode("grep-mode")
+  expect(grepMode).toBeDefined()
+  expect(grepMode?.keymap?.get("return")).toBe("compile-goto-error")
+  expect(grepMode?.keymap?.get("n")).toBe("next-error-buffer-next")
+  expect(grepMode?.keymap?.get("p")).toBe("next-error-buffer-previous")
+  expect(grepMode?.keymap?.get("q")).toBe("quit-window")
+  expect(grepMode?.keymap?.get("g")).toBe("grep-rerun")
+  expect(getMode("grep")?.parent).toBe("grep-mode")
   expect(editor.keymap.get("M-g n")).toBe("next-error")
   expect(editor.keymap.get("M-g M-n")).toBe("next-error")
   expect(editor.keymap.get("M-g p")).toBe("previous-error")
@@ -176,6 +186,26 @@ test("RET in *grep* runs compile-goto-error and syncs the location index", async
   expect(editor.currentBuffer.path).toBe(fileA)
 })
 
+test("n and p in grep-mode move between matches without visiting files", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const locs = fixtureLocations()
+  setLocationList(editor, locs)
+  const grepText = locs.map(l => `${l.file}:${l.line}:${l.col}:${l.text}`).join("\n") + "\n"
+  const grep = editor.scratch("*grep*", grepText, "grep")
+  grep.kind = "grep"
+  grep.locals.set("next-error-locations", new Map(locs.map((loc, i) => [i + 1, loc])))
+
+  grep.point = 0
+  await editor.handleKey({ name: "n", sequence: "n" })
+  expect(editor.currentBuffer).toBe(grep)
+  expect(grep.text.slice(grep.point).startsWith(`${fileA}:4:3`)).toBe(true)
+
+  await editor.handleKey({ name: "p", sequence: "p" })
+  expect(editor.currentBuffer).toBe(grep)
+  expect(grep.text.slice(grep.point).startsWith(`${fileA}:2:1`)).toBe(true)
+})
+
 test("counsel-ag is redefined to populate the location list", async () => {
   const editor = makeEditor()
   install(editor)
@@ -208,6 +238,31 @@ test("grep runs a user grep command in the current buffer directory", async () =
   expect(editor.currentBuffer.text).toContain("a.txt:2:beta")
   expect(locationList(editor)).toEqual([
     { file: fileA, line: 2, col: 1, text: "beta" },
+  ])
+})
+
+test("g in grep-mode reruns the stored grep command", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const rerunFile = join(dir, "rerun.txt")
+  await writeFile(rerunFile, "alpha\nbeta\ngamma\n")
+  await editor.openFile(rerunFile)
+
+  await editor.run("grep", ["grep -nH beta rerun.txt"])
+  const grep = editor.currentBuffer
+  expect(grep.name).toBe("*grep*")
+  expect(grep.text).toContain("rerun.txt:2:beta")
+  expect(grep.text).not.toContain("rerun.txt:3:beta")
+
+  await writeFile(rerunFile, "alpha\nbeta\nbeta\n")
+  await editor.handleKey({ name: "g", sequence: "g" })
+
+  expect(editor.currentBuffer.id).toBe(grep.id)
+  expect(editor.currentBuffer.text).toContain("rerun.txt:2:beta")
+  expect(editor.currentBuffer.text).toContain("rerun.txt:3:beta")
+  expect(locationList(editor)).toEqual([
+    { file: rerunFile, line: 2, col: 1, text: "beta" },
+    { file: rerunFile, line: 3, col: 1, text: "beta" },
   ])
 })
 
