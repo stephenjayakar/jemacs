@@ -97,6 +97,7 @@
     "dired",
     "dockerfile-mode",
     "emacs-lisp-mode",
+    "eshell-mode",
     "go",
     "go-mod-mode",
     "go-sum-mode",
@@ -115,6 +116,7 @@
     "makefile-bsdmake-mode",
     "makefile-gmake-mode",
     "makefile-mode",
+    "messages-buffer-mode",
     "minibuffer",
     "nxml-mode",
     "occur-mode",
@@ -134,6 +136,7 @@
     "text",
     "toml-mode",
     "typescript",
+    "vc-dir-mode",
     "wdired",
     "xml-mode",
     "yaml"
@@ -142,14 +145,11 @@
     "c-or-c++-mode",
     "c-ts-mode",
     "css-ts-mode",
-    "eshell-mode",
     "ielm",
     "inferior-lisp-mode",
-    "messages-buffer-mode",
     "nroff-mode",
     "objc-mode",
     "toml-ts-mode",
-    "vc-dir-mode",
     "xref--xref-buffer-mode"
   ]
 }
