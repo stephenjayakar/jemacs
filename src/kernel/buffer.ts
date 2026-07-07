@@ -598,7 +598,7 @@ async function fileModtime(path: string): Promise<number | undefined> {
 export function inferMode(path: string, text = ""): string {
   if (/\.(js|mjs|cjs|jsx)$/.test(path)) return "javascript"
   if (/\.(ts|mts|cts|tsx)$/.test(path)) return "typescript"
-  if (/\.(html?|xhtml)$/.test(path)) return "html"
+  if (/\.html?$/.test(path)) return "html"
   if (/\.java$/.test(path)) return "java"
   if (/\.json$/.test(path)) return "json"
   if (/\.(c|h)$/.test(path)) return "c"
@@ -627,6 +627,11 @@ export function inferMode(path: string, text = ""): string {
   if (/\.(cc|cpp|cxx|hh|hpp|hxx|c\+\+|ipp)$/.test(path)) return "c++-mode"
   if (/\.(lisp|lsp|cl|asd)$/.test(path)) return "lisp-mode"
   if (/\.(scm|ss|sld)$/.test(path)) return "scheme-mode"
+  if (/\.(xml|svg|xhtml|plist|rss|xsl|xsd|wsdl)$/i.test(path)) return "xml-mode"
+  if (/\.rst$/.test(path)) return "rst-mode"
+  if (/\.(tex|ltx)$/.test(path)) return "latex-mode"
+  if (/\.(sty|cls)$/.test(path)) return "tex-mode"
+  if (/\.bib$/.test(path)) return "bibtex-mode"
   if (/\.reg$/i.test(path)) return "conf-windows-mode"
   if (/\.(ini|conf|cfg|properties|service|desktop|editorconfig)$/i.test(path)
     || /(^|\/)\.env(?:\.[\w.-]+)?$/.test(path)

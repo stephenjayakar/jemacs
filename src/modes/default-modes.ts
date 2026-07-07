@@ -17,6 +17,10 @@ import { installMakefileMode } from "./makefile"
 import { installDockerfileMode } from "./dockerfile"
 import { installCppMode } from "./cpp"
 import { installLispModes } from "./lisp"
+import { installXmlMode } from "./xml"
+import { installOutlineMode } from "./outline"
+import { installRstMode } from "./rst"
+import { installTexModes } from "./tex"
 
 export function installDefaultModes(): void {
   installLinumMode()
@@ -37,6 +41,10 @@ export function installDefaultModes(): void {
   installDockerfileMode()
   installCppMode()
   installLispModes()
+  installXmlMode()
+  installOutlineMode()
+  installRstMode()
+  installTexModes()
   installBufferListMode()
   installDiredMode()
 }

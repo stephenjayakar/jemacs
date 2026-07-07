@@ -56,6 +56,22 @@ test("inferMode routes conf-family files", () => {
   expect(inferMode("legacy.reg")).toBe("conf-windows-mode")
 })
 
+test("inferMode routes xml family files", () => {
+  expect(inferMode("pom.xml")).toBe("xml-mode")
+  expect(inferMode("icon.svg")).toBe("xml-mode")
+  expect(inferMode("Info.plist")).toBe("xml-mode")
+  expect(inferMode("feed.rss")).toBe("xml-mode")
+  expect(inferMode("page.xhtml")).toBe("xml-mode")
+})
+
+test("inferMode routes rst, tex, and bibtex files", () => {
+  expect(inferMode("docs/index.rst")).toBe("rst-mode")
+  expect(inferMode("paper.tex")).toBe("latex-mode")
+  expect(inferMode("macros.sty")).toBe("tex-mode")
+  expect(inferMode("article.cls")).toBe("tex-mode")
+  expect(inferMode("refs.bib")).toBe("bibtex-mode")
+})
+
 test("inferMode still falls back to text", () => {
   expect(inferMode("notes.txt")).toBe("text")
   expect(inferMode("LICENSE")).toBe("text")
