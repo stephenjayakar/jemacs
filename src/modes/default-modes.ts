@@ -21,6 +21,9 @@ import { installXmlMode } from "./xml"
 import { installOutlineMode } from "./outline"
 import { installRstMode } from "./rst"
 import { installTexModes } from "./tex"
+import { installCmakeMode } from "./cmake"
+import { installGoModModes } from "./go-mod"
+import { installLogModes } from "./log"
 
 export function installDefaultModes(): void {
   installLinumMode()
@@ -45,6 +48,9 @@ export function installDefaultModes(): void {
   installOutlineMode()
   installRstMode()
   installTexModes()
+  installCmakeMode()
+  installGoModModes()
+  installLogModes()
   installBufferListMode()
   installDiredMode()
 }

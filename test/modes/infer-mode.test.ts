@@ -72,6 +72,23 @@ test("inferMode routes rst, tex, and bibtex files", () => {
   expect(inferMode("refs.bib")).toBe("bibtex-mode")
 })
 
+test("inferMode routes cmake and go module files", () => {
+  expect(inferMode("CMakeLists.txt")).toBe("cmake-mode")
+  expect(inferMode("cmake/utils.cmake")).toBe("cmake-mode")
+  expect(inferMode("go.mod")).toBe("go-mod-mode")
+  expect(inferMode("go.work")).toBe("go-mod-mode")
+  expect(inferMode("go.sum")).toBe("go-sum-mode")
+  expect(inferMode("main.go")).toBe("go")
+})
+
+test("inferMode routes changelog and commit message files", () => {
+  expect(inferMode("ChangeLog")).toBe("change-log-mode")
+  expect(inferMode("lib/ChangeLog.2")).toBe("change-log-mode")
+  expect(inferMode(".git/COMMIT_EDITMSG")).toBe("log-edit-mode")
+  expect(inferMode(".git/MERGE_MSG")).toBe("log-edit-mode")
+  expect(inferMode(".git/COMMIT_EDITMSG", "diff --git a/x b/x\n")).toBe("diff-mode")
+})
+
 test("inferMode still falls back to text", () => {
   expect(inferMode("notes.txt")).toBe("text")
   expect(inferMode("LICENSE")).toBe("text")

@@ -632,6 +632,11 @@ export function inferMode(path: string, text = ""): string {
   if (/\.(tex|ltx)$/.test(path)) return "latex-mode"
   if (/\.(sty|cls)$/.test(path)) return "tex-mode"
   if (/\.bib$/.test(path)) return "bibtex-mode"
+  if (/(^|\/)CMakeLists\.txt$/.test(path) || /\.cmake$/.test(path)) return "cmake-mode"
+  if (/(^|\/)go\.(mod|work)$/.test(path)) return "go-mod-mode"
+  if (/(^|\/)go\.sum$/.test(path)) return "go-sum-mode"
+  if (/(^|\/)ChangeLog(\.\d+)?$/.test(path)) return "change-log-mode"
+  if (/(^|\/)(COMMIT_EDITMSG|MERGE_MSG|TAG_EDITMSG|NOTES_EDITMSG)$/.test(path)) return "log-edit-mode"
   if (/\.reg$/i.test(path)) return "conf-windows-mode"
   if (/\.(ini|conf|cfg|properties|service|desktop|editorconfig)$/i.test(path)
     || /(^|\/)\.env(?:\.[\w.-]+)?$/.test(path)
