@@ -671,7 +671,8 @@ export function inferMode(path: string, text = ""): string {
   if (/\.html?$/.test(path)) return "html"
   if (/\.java$/.test(path)) return "java"
   if (/\.json$/.test(path)) return "json"
-  if (/\.(c|h)$/.test(path)) return "c"
+  if (/\.c$/.test(path)) return "c"
+  if (/\.h$/.test(path)) return cOrCpp(text)
   if (/\.ya?ml$/.test(path)) return "yaml"
   if (/README\.md$/i.test(path)) return "gfm"
   if (/\.(?:md|markdown|mkd|mdown|mkdn|mdwn)$/i.test(path)) return "markdown"
@@ -713,6 +714,16 @@ export function inferMode(path: string, text = ""): string {
     || /(^|\/)\.(gitconfig|gitattributes|gitmodules|npmrc|hgrc)$/.test(path)) return "conf-mode"
   if (isShellScriptPath(path) || isShellShebang(text)) return "sh-mode"
   return "text"
+}
+
+function cOrCpp(text: string): "c" | "c++-mode" {
+  const sample = text.slice(0, 2048)
+  // C++ indicators: class/namespace declarations, template< or template <,
+  // scope resolution (::/std::), extern "C++", common C++ library includes,
+  // and access labels (public:/private:/protected:).
+  return /\bclass\s+|\bnamespace\s+|\btemplate\s*<|::|\bstd::|\bextern\s+"C\+\+"|^\s*#\s*include\s*<(?:algorithm|array|bitset|chrono|deque|exception|filesystem|forward_list|fstream|functional|future|initializer_list|iomanip|ios|iosfwd|iostream|istream|iterator|limits|list|map|memory|mutex|new|numeric|ostream|queue|random|regex|set|sstream|stack|stdexcept|streambuf|string|string_view|thread|tuple|type_traits|typeindex|typeinfo|unordered_map|unordered_set|utility|valarray|variant|vector)>|^\s*(?:public|private|protected)\s*:/m.test(sample)
+    ? "c++-mode"
+    : "c"
 }
 
 function isShellScriptPath(path: string): boolean {

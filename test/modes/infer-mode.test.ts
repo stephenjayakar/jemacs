@@ -26,13 +26,17 @@ test("inferMode routes dockerfiles", () => {
   expect(inferMode("app.dockerfile")).toBe("dockerfile-mode")
 })
 
-test("inferMode routes c++ extensions and keeps c/h on c", () => {
+test("inferMode routes c++ extensions and sniffs c headers", () => {
   expect(inferMode("main.cpp")).toBe("c++-mode")
   expect(inferMode("main.cc")).toBe("c++-mode")
   expect(inferMode("util.hpp")).toBe("c++-mode")
   expect(inferMode("util.hh")).toBe("c++-mode")
   expect(inferMode("main.c")).toBe("c")
-  expect(inferMode("util.h")).toBe("c")
+  expect(inferMode("util.h", "#ifndef UTIL_H\n#define UTIL_H\nint util(void);\n#endif\n")).toBe("c")
+  expect(inferMode("empty.h", "")).toBe("c")
+  expect(inferMode("namespace.h", "namespace foo {\nint value();\n}\n")).toBe("c++-mode")
+  expect(inferMode("class.h", "class Bar {\npublic:\n  int value();\n};\n")).toBe("c++-mode")
+  expect(inferMode("string.h", "#include <string>\nstd::string value();\n")).toBe("c++-mode")
 })
 
 test("inferMode routes lisp and scheme sources", () => {
