@@ -618,6 +618,19 @@ export function inferMode(path: string, text = ""): string {
   if (/(^|\/)Jenkinsfile$/.test(path)) return "jenkinsfile"
   if (/\.exs?$/.test(path)) return "elixir"
   if (/\.prisma$/.test(path)) return "prisma"
+  if (/\.css$/.test(path)) return "css-mode"
+  if (/\.scss$/.test(path)) return "scss-mode"
+  if (/\.sass$/.test(path)) return "sass-mode"
+  if (/\.toml$/.test(path)) return "toml-mode"
+  if (/(^|\/)(?:GNU|BSD)?[Mm]akefile$/.test(path) || /\.(mk|mak)$/.test(path)) return "makefile-mode"
+  if (/(^|\/)Dockerfile(?:\.[\w.-]+)?$/.test(path) || /\.dockerfile$/.test(path)) return "dockerfile-mode"
+  if (/\.(cc|cpp|cxx|hh|hpp|hxx|c\+\+|ipp)$/.test(path)) return "c++-mode"
+  if (/\.(lisp|lsp|cl|asd)$/.test(path)) return "lisp-mode"
+  if (/\.(scm|ss|sld)$/.test(path)) return "scheme-mode"
+  if (/\.reg$/i.test(path)) return "conf-windows-mode"
+  if (/\.(ini|conf|cfg|properties|service|desktop|editorconfig)$/i.test(path)
+    || /(^|\/)\.env(?:\.[\w.-]+)?$/.test(path)
+    || /(^|\/)\.(gitconfig|gitattributes|gitmodules|npmrc|hgrc)$/.test(path)) return "conf-mode"
   if (isShellScriptPath(path) || isShellShebang(text)) return "sh-mode"
   return "text"
 }

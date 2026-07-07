@@ -10,6 +10,13 @@ import { installShellScriptMode } from "./shell-script"
 import { installConfigModes } from "./generic"
 import { installEmacsLispMode } from "./emacs-lisp"
 import { installDiffMode } from "./diff"
+import { installCssMode } from "./css"
+import { installTomlMode } from "./toml"
+import { installConfMode } from "./conf"
+import { installMakefileMode } from "./makefile"
+import { installDockerfileMode } from "./dockerfile"
+import { installCppMode } from "./cpp"
+import { installLispModes } from "./lisp"
 
 export function installDefaultModes(): void {
   installLinumMode()
@@ -23,6 +30,13 @@ export function installDefaultModes(): void {
   installPythonMode()
   installShellScriptMode()
   installDiffMode()
+  installCssMode()
+  installTomlMode()
+  installConfMode()
+  installMakefileMode()
+  installDockerfileMode()
+  installCppMode()
+  installLispModes()
   installBufferListMode()
   installDiredMode()
 }
