@@ -21,7 +21,12 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   occurMap.bind("enter", "occur-mode-goto-occurrence")
   occurMap.bind("return", "occur-mode-goto-occurrence")
   occurMap.bind("C-m", "occur-mode-goto-occurrence")
+  occurMap.bind("e", "occur-edit-mode")
   defineMode({ name: "occur-mode", parent: "text", keymap: occurMap })
+
+  const occurEditMap = new Keymap("occur-edit-mode-map")
+  occurEditMap.bind("C-c C-c", "occur-cease-edit")
+  defineMode({ name: "occur-edit-mode", parent: "text", keymap: occurEditMap })
 
   const moveChar = (buffer: BufferModel, editor: Editor, delta: number) => {
     const target = buffer.point + delta
@@ -926,6 +931,50 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     editor.switchToBuffer(source.id)
     source.point = pointAtLine(source.text, target.line)
   }, "Visit the occurrence at point.")
+
+  editor.command("occur-edit-mode", ({ buffer, editor }) => {
+    if (buffer.mode !== "occur-mode") {
+      editor.message("Not in an Occur buffer")
+      return
+    }
+    buffer.readOnly = false
+    buffer.mode = "occur-edit-mode"
+    editor.message("Edit the Occur buffer, then apply with C-c C-c")
+  }, "Make the Occur buffer editable; occur-cease-edit applies edits to the source buffer.")
+
+  editor.command("occur-cease-edit", ({ buffer, editor }) => {
+    if (buffer.mode !== "occur-edit-mode") {
+      editor.message("Not in Occur edit mode")
+      return
+    }
+    const targets = (buffer.locals.get("occur-targets") as Array<{ bufferId: string; line: number } | null> | undefined) ?? []
+    const lines = buffer.text.replace(/\n$/, "").split("\n")
+    if (lines.length !== targets.length) {
+      editor.message("Occur buffer line count changed; cannot apply edits")
+      return
+    }
+    let applied = 0
+    let skipped = 0
+    for (let i = 0; i < lines.length; i++) {
+      const target = targets[i]
+      if (!target) continue
+      const match = /^\d+: /.exec(lines[i]!)
+      if (!match) { skipped++; continue }
+      const replacement = lines[i]!.slice(match[0].length)
+      const source = editor.buffers.get(target.bufferId)
+      if (!source || target.line > source.lineCount) { skipped++; continue }
+      const start = source.lineStarts[target.line - 1]!
+      const end = target.line < source.lineCount ? source.lineStarts[target.line]! - 1 : source.text.length
+      if (source.text.slice(start, end) === replacement) continue
+      source.replaceRange(start, end, replacement)
+      applied++
+    }
+    buffer.mode = "occur-mode"
+    buffer.readOnly = true
+    editor.message(skipped
+      ? `Applied ${applied} edit${applied === 1 ? "" : "s"}; skipped ${skipped} unparseable line${skipped === 1 ? "" : "s"}`
+      : `Applied ${applied} edit${applied === 1 ? "" : "s"}`)
+  }, "Apply Occur buffer edits back to the source buffer and leave edit mode.")
 
   editor.command("sort-lines", ({ buffer, editor, prefixArgument }) => {
     const region = lineSortRegion(buffer)

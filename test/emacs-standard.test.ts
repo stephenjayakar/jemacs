@@ -212,6 +212,43 @@ test("occur lists matching lines and RET jumps to the source line", async () => 
   expect(source.lineCol().line).toBe(3)
 })
 
+test("occur-edit-mode applies edited lines back to the source buffer", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const source = editor.scratch("notes.txt", "alpha\nbeta\nalphabet\ngamma\n")
+
+  await editor.run("occur", ["alpha"])
+  const occur = editor.currentBuffer
+  expect(occur.readOnly).toBe(true)
+
+  await editor.run("occur-edit-mode")
+  expect(occur.mode).toBe("occur-edit-mode")
+  expect(occur.readOnly).toBe(false)
+
+  occur.setText(occur.text.replace("3: alphabet", "3: ALPHABET soup"), false)
+  await editor.run("occur-cease-edit")
+
+  expect(source.text).toBe("alpha\nbeta\nALPHABET soup\ngamma\n")
+  expect(occur.mode).toBe("occur-mode")
+  expect(occur.readOnly).toBe(true)
+})
+
+test("occur-cease-edit refuses to apply after line count changes", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const source = editor.scratch("notes.txt", "alpha\nbeta\nalphabet\ngamma\n")
+
+  await editor.run("occur", ["alpha"])
+  const occur = editor.currentBuffer
+  await editor.run("occur-edit-mode")
+
+  occur.setText(occur.text.replace("3: alphabet\n", ""), false)
+  await editor.run("occur-cease-edit")
+
+  expect(source.text).toBe("alpha\nbeta\nalphabet\ngamma\n")
+  expect(occur.mode).toBe("occur-edit-mode")
+})
+
 test("sort-lines sorts region ascending and descending with prefix", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
