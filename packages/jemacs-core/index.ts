@@ -18,6 +18,13 @@ export * from "../../src/kernel/prefix-argument"
 export * from "../../src/kernel/register"
 export * from "../../src/kernel/transient-mark"
 
+// Modes and platform services used by out-of-tree packages. Keeping these on
+// the barrel lets packages import @jemacs/core without knowing the core
+// checkout's filesystem layout.
+export * from "../../src/modes/mode"
+export * from "../../src/modes/minor-mode"
+export * from "../../src/platform/runtime"
+
 // Runtime — eval/plugin surface (defcustom, defineMode, addHook, addAdvice, …)
 // plus the per-plugin disposable registration context.
 export * from "../../src/runtime/jemacs-runtime"

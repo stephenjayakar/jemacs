@@ -8,6 +8,30 @@ This is a work-in-progress and doesn't have a major release yet. Lots of rough e
 
 We've implemented some default plugins in `plugins/`. You can find additional ones in https://github.com/stephenjayakar/jemacs-packages/.
 
+## Install
+
+The core installs independently of user config and packages:
+
+```bash
+./scripts/install.sh
+```
+
+By default this links the current checkout at
+`${XDG_DATA_HOME:-~/.local/share}/jemacs` and installs the launcher at
+`~/.local/bin/jemacs`. The checkout may live anywhere; neither the core nor the
+launcher assumes sibling config/package repositories.
+
+User-owned files remain under `~/.jemacs`:
+
+```text
+~/.jemacs/init.ts       startup config
+~/.jemacs/packages/     out-of-tree packages
+~/.jemacs/*.json        persisted editor state
+```
+
+The config and packages repositories each provide their own `scripts/install.sh`.
+Set `JEMACS_HOME` or `BIN_DIR` to override the core installation paths.
+
 ## Run
 
 **Terminal (default):**
