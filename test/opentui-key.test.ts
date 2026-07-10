@@ -33,8 +33,10 @@ test("OpenTUI translates macOS Option digits and punctuation to Meta keys", () =
 
 test("OpenTUI marks macOS Option-Shift compositions with shift", () => {
   expect(keyToken(keyEventFromOpentui(opentuiKey("Œ")))).toBe("M-S-q")
-  expect(keyEventFromOpentui(opentuiKey("˘"))).toMatchObject({ name: ".", sequence: ".", meta: true, shift: true })
-  expect(keyEventFromOpentui(opentuiKey("¿"))).toMatchObject({ name: "/", sequence: "/", meta: true, shift: true })
+  expect(keyToken(keyEventFromOpentui(opentuiKey("ﬁ")))).toBe("M-%")
+  expect(keyToken(keyEventFromOpentui(opentuiKey("¯")))).toBe("M-<")
+  expect(keyToken(keyEventFromOpentui(opentuiKey("˘")))).toBe("M->")
+  expect(keyToken(keyEventFromOpentui(opentuiKey("¿")))).toBe("M-?")
 })
 
 test("OpenTUI leaves modified and multi-character sequences untouched", () => {

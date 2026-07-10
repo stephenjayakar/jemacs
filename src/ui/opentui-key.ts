@@ -45,6 +45,13 @@ export const MAC_US_OPTION_CHARACTER_MAP: ReadonlyMap<string, MacOptionCharacter
   ...MAC_US_OPTION_SHIFT_CHARACTERS.map(([char, key]) => [char, { key, shift: true }] as const),
 ])
 
+const MAC_US_SHIFTED_PRINTABLE_KEYS: ReadonlyMap<string, string> = new Map([
+  ["1", "!"], ["2", "@"], ["3", "#"], ["4", "$"], ["5", "%"],
+  ["6", "^"], ["7", "&"], ["8", "*"], ["9", "("], ["0", ")"],
+  ["-", "_"], ["=", "+"], ["[", "{"], ["]", "}"], ["\\", "|"],
+  [";", ":"], ["'", "\""], [",", "<"], [".", ">"], ["/", "?"],
+])
+
 // macOS dead keys produce no immediate character, so a terminal event cannot
 // recover them here: Option+`, Option+e, Option+i, Option+n, Option+u.
 // Users who need those as Meta chords should enable Option-as-Meta in Terminal.
@@ -54,12 +61,14 @@ function translateMacOptionCharacter(key: KeyEventLike): KeyEventLike {
   if (key.sequence == null || key.sequence.length !== 1) return key
   const mapping = MAC_US_OPTION_CHARACTER_MAP.get(key.sequence)
   if (!mapping) return key
+  const shiftedKey = mapping.shift ? MAC_US_SHIFTED_PRINTABLE_KEYS.get(mapping.key) : undefined
+  const translatedKey = shiftedKey ?? mapping.key
   return {
     ...key,
-    name: mapping.key,
-    sequence: mapping.key,
+    name: translatedKey,
+    sequence: translatedKey,
     meta: true,
-    shift: mapping.shift || undefined,
+    shift: (mapping.shift && !shiftedKey) || undefined,
   }
 }
 
