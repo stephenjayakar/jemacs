@@ -11,7 +11,14 @@ import { jtermRawMap } from "./keymap-adapter"
 import { keyToPtyBytes } from "./key-encode"
 
 export { keyToPtyBytes } from "./key-encode"
-export { JTermSession, spawnSession, makeXTerm } from "./session"
+export {
+  JTermSession,
+  attachTransportSession,
+  spawnPtyTransport,
+  spawnSession,
+  makeXTerm,
+} from "./session"
+export type { JTermSessionOptions, JTermTransport, JTermTransportOptions } from "./session"
 export { jtermSpans } from "./session"
 export type { XTermInstance } from "./session"
 export { JTermRawMap, jtermRawMap } from "./keymap-adapter"
