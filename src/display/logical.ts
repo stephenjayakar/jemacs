@@ -6,7 +6,7 @@ import { isearchLazyHighlightSpans, isearchMatchSpan } from "../kernel/isearch"
 import { type ChildFrameParameters, type WindowLeaf, type WindowNode } from "../kernel/window"
 import { diagnosticsForBuffer } from "../lsp/diagnostics"
 import { positionToPoint } from "../lsp/positions"
-import { modeFeature, type FontLockRange, type TableSurfaceModel, type TextSpan } from "../modes/mode"
+import { modeFeature, type FontLockRange, type GutterDecoration, type TableSurfaceModel, type TextSpan } from "../modes/mode"
 import { applyTheme, type Theme } from "./theme"
 import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
@@ -72,6 +72,7 @@ export type LogicalPane = {
   tableSurface?: TableSurfaceModel
   readOnly: boolean
   showLineNumbers: boolean
+  gutterDecorations?: GutterDecoration[]
   textScale: number
   locals: ReadonlyMap<string, unknown>
 }
@@ -200,6 +201,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
       footer: footer ?? undefined,
       readOnly: false,
       showLineNumbers: false,
+      gutterDecorations: [],
       textScale: 1,
       locals: emptyLocals,
     }
@@ -245,6 +247,7 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     tableSurface: safeTableSurface(buffer),
     readOnly: buffer.readOnly,
     showLineNumbers: buffer.kind !== "minibuffer" && editor.showLineNumbers(buffer),
+    gutterDecorations: editor.gutterDecorations(buffer),
     textScale: textScaleFactor(buffer),
     locals,
   }

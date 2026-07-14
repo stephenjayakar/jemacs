@@ -1,10 +1,11 @@
-import type { TextSpan } from "../modes/mode"
+import type { GutterDecoration, TextSpan } from "../modes/mode"
 import { getCustom } from "../runtime/custom"
 
 export type LineNumberFormat = {
   text: string
   prefixLen: number
   firstLine: number
+  decorationSpans: TextSpan[]
 }
 
 export type DisplayLineNumbersType = true | "relative" | "visual"
@@ -31,14 +32,29 @@ export function formatWithLineNumbers(
   firstLine: number,
   type: DisplayLineNumbersType = true,
   currentLine = firstLine,
+  decorations: GutterDecoration[] = [],
 ): LineNumberFormat {
   const lines = visible.split("\n")
   const width = lineNumberWidth(firstLine, lines.length, type, currentLine)
   const prefixLen = width + GUTTER_SEPARATOR.length
+  const decorationSpans: TextSpan[] = []
+  let offset = 0
   const text = lines
-    .map((line, index) => `${lineNumberText(firstLine + index, type, currentLine).padStart(width, " ")}${GUTTER_SEPARATOR}${line}`)
+    .map((line, index) => {
+      const lineNumber = firstLine + index
+      const decoration = decorations.find(item => item.line === lineNumber)
+      const glyph = (decoration?.glyph ?? " ").slice(0, 1)
+      const formatted = `${lineNumberText(lineNumber, type, currentLine).padStart(width, " ")} ${glyph}${line}`
+      if (decoration) decorationSpans.push({
+        start: offset + prefixLen - 1,
+        end: offset + prefixLen,
+        face: decoration.face,
+      })
+      offset += formatted.length + 1
+      return formatted
+    })
     .join("\n")
-  return { text, prefixLen, firstLine }
+  return { text, prefixLen, firstLine, decorationSpans }
 }
 
 function lineNumberWidth(

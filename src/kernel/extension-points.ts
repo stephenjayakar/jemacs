@@ -63,6 +63,15 @@ export type TextSpan = {
   style?: FaceStyle
 }
 
+export type GutterDecoration = {
+  /** One-based source line. */
+  line: number
+  glyph: string
+  face: FaceName
+  priority?: number
+  title?: string
+}
+
 export type FontLockRange = {
   /** 0-indexed first line included in the requested highlight window. */
   startLine: number

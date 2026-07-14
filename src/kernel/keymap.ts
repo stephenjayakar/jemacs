@@ -69,8 +69,12 @@ export class KeymapStack {
 
     for (const { name, keymap } of this.maps()) {
       const command = keymap.get(normalized)
+      const prefix = keymap.hasPrefix(normalized)
+      // A keymap cannot meaningfully execute an exact binding when the same
+      // sequence also prefixes longer bindings. Treat it as a prefix, matching
+      // Emacs's define-key behavior when a plugin claims a former command key.
+      if (prefix) return { status: "pending", mapName: name }
       if (command) return { status: "matched", command, mapName: name }
-      if (keymap.hasPrefix(normalized)) return { status: "pending", mapName: name }
     }
 
     return { status: "unmatched", sequence: normalized }

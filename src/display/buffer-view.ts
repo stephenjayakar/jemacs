@@ -1,5 +1,5 @@
 import type { BufferModel } from "../kernel/buffer"
-import type { TextSpan } from "../modes/mode"
+import type { GutterDecoration, TextSpan } from "../modes/mode"
 import {
   adjustSpansForLineNumbers,
   displayLineNumbersType,
@@ -24,6 +24,7 @@ export function visibleStyledText(
     buffer?: BufferModel
     maxLines?: number
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
   },
   lineBudget?: number,
 ): ThemedText {
@@ -42,6 +43,7 @@ export function visibleStyledTextFromStart(
     buffer?: BufferModel
     maxLines?: number
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
     mark?: number | null
     markActive?: boolean
     showCursor?: boolean
@@ -63,6 +65,7 @@ function styledRegion(
     theme: Theme
     buffer?: BufferModel
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
     showCursor?: boolean
   },
 ): ThemedText {
@@ -94,7 +97,7 @@ function styledRegion(
   const firstLine = firstVisibleLineNumber(region.visibleStart, text)
   const visibleLineCount = visible.split("\n").length
   const cursorLine = text.slice(0, Math.min(point, text.length)).split("\n").length
-  const format = formatWithLineNumbers(visible, firstLine, displayLineNumbersType(), cursorLine)
+  const format = formatWithLineNumbers(visible, firstLine, displayLineNumbersType(), cursorLine, options.gutterDecorations)
   const currentLineIndex = options.showCursor
     && cursorLine >= firstLine
     && cursorLine < firstLine + visibleLineCount
@@ -112,6 +115,7 @@ function styledRegion(
     : []
   const displaySpans = [
     ...gutterSpans(format.text, format.prefixLen, currentLineIndex),
+    ...format.decorationSpans,
     ...adjustSpansForLineNumbers(contentSpans, visible, format.prefixLen),
     ...regionSpans,
   ]

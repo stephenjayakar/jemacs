@@ -65,6 +65,10 @@ export const spawn = stub("child_process.spawn")
 export const spawnSync = stub("child_process.spawnSync")
 export const exec = stub("child_process.exec")
 
+// node:net
+export const createConnection = stub("net.createConnection")
+export const createServer = stub("net.createServer")
+
 // node:url — Bun's browser polyfill lacks fileURLToPath/pathToFileURL.
 // Browser `import.meta.url` is an http(s) URL, so map both to/from pathname.
 export function fileURLToPath(url: string | URL): string {

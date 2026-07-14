@@ -7,7 +7,7 @@ import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
-export type { CompletionCandidate, FaceName, FontLockRange, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
+export type { CompletionCandidate, FaceName, FontLockRange, GutterDecoration, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
 
 export type Mode = {
   name: string

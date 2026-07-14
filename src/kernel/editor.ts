@@ -8,6 +8,7 @@ import { digitFromKey, PrefixArgumentState } from "./prefix-argument"
 import type {
   CompletionCandidate,
   FontLockRange,
+  GutterDecoration,
   MinorModeSpec as MinorMode,
   TextSpan,
   Theme,
@@ -36,6 +37,7 @@ import {
   setWindowLeafDedicated,
   setWindowLeafPoint,
   setWindowLeafStartLine,
+  setWindowSplitRatioForLeaf,
   splitWindowLeaf,
   type ChildFrameRecord,
   type ChildFrameParameters,
@@ -193,6 +195,7 @@ export class Editor {
   readonly buffers = new Map<string, BufferModel>()
   private readonly fontLockCache = new WeakMap<BufferModel, { text: string; key: string; spans: TextSpan[] }>()
   private readonly overlaySources: Array<(buffer: BufferModel) => TextSpan[]> = []
+  private readonly gutterDecorationSources: Array<(buffer: BufferModel) => GutterDecoration[]> = []
   readonly commands = new CommandRegistry()
   readonly keymap = new Keymap("global-map")
   readonly minibufferKeymap = new Keymap("minibuffer-local-map")
@@ -1541,8 +1544,27 @@ export class Editor {
 
   /** Register a span producer consulted on every render (minor-mode overlays
    *  like smerge/show-paren) — kept out of the text-keyed font-lock cache. */
-  addOverlaySource(fn: (buffer: BufferModel) => TextSpan[]): void {
+  addOverlaySource(fn: (buffer: BufferModel) => TextSpan[]): () => void {
     this.overlaySources.push(fn)
+    return () => {
+      const index = this.overlaySources.indexOf(fn)
+      if (index >= 0) this.overlaySources.splice(index, 1)
+    }
+  }
+
+  /** Register one-based line decorations rendered in the line-number gutter. */
+  addGutterDecorationSource(fn: (buffer: BufferModel) => GutterDecoration[]): () => void {
+    this.gutterDecorationSources.push(fn)
+    return () => {
+      const index = this.gutterDecorationSources.indexOf(fn)
+      if (index >= 0) this.gutterDecorationSources.splice(index, 1)
+    }
+  }
+
+  gutterDecorations(buffer: BufferModel): GutterDecoration[] {
+    return this.gutterDecorationSources
+      .flatMap(source => source(buffer))
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
   }
 
   setTheme(theme: Theme): void {
@@ -1560,6 +1582,10 @@ export class Editor {
   splitWindowBelow(): void { void this.splitSelectedWindow("vertical") }
   /** @deprecated Compat shim — call `mutateWindowLayout` with `splitWindowLeaf`, or `run("split-window-right")`. */
   splitWindowRight(): void { void this.splitSelectedWindow("horizontal") }
+
+  setWindowSplitRatio(windowId: string, ratio: number): void {
+    this.mutateWindowLayout(layout => setWindowSplitRatioForLeaf(layout, windowId, ratio), "set-window-split-ratio")
+  }
 
   private splitSelectedWindow(orientation: "vertical" | "horizontal"): string {
     const buffer = this.currentBuffer

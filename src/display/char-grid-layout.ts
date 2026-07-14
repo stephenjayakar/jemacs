@@ -175,6 +175,8 @@ function layoutLeafPane(
   const dFontLockSpans = map
     ? pane.fontLockSpans.map(s => ({ ...s, start: map(s.start), end: map(s.end) }))
     : pane.fontLockSpans
+  const gutterDecorations = pane.gutterDecorations ?? []
+  const showGutter = pane.showLineNumbers || gutterDecorations.length > 0
   const dLines = dText.split("\n")
   const lineCount = dLines.length
   let startLine = Math.max(0, Math.min(pane.startLine, lineCount - 1))
@@ -183,7 +185,7 @@ function layoutLeafPane(
     dText,
     pane.locals,
     availableCols,
-    pane.showLineNumbers,
+    showGutter,
     startLine,
     maxLines,
     cursorLine + 1,
@@ -215,7 +217,7 @@ function layoutLeafPane(
     ? visibleLineCountForBudget(startLine, maxLines, lineCount, visualRows)
     : maxLines
   const syncSpans = bufferHighlightSpans(pane.point, mark, pane.spans)
-  const clickState = windowClickState(dText, startLine, displayLines, pane.showLineNumbers, cursorLine + 1)
+  const clickState = windowClickState(dText, startLine, displayLines, showGutter, cursorLine + 1)
   if (pane.displayUnmap) clickState.displayToBuffer = pane.displayUnmap
   // Hosts hard-wrap overflowing rows at column 0, which paints continuation
   // text into the next line's gutter (t-16be1a86). Pre-wrap here so every
@@ -225,7 +227,7 @@ function layoutLeafPane(
     dText,
     pane.locals,
     availableCols,
-    pane.showLineNumbers,
+    showGutter,
     startLine,
     displayLines,
     cursorLine + 1,
@@ -244,7 +246,8 @@ function layoutLeafPane(
       theme: logical.theme,
       buffer: pane.buffer,
       maxLines: displayLines,
-      showLineNumbers: pane.showLineNumbers,
+      showLineNumbers: showGutter,
+      gutterDecorations,
       showCursor: pane.selected,
     }),
     wrapCols,
