@@ -18,15 +18,22 @@ export type KeyLookupResult =
 
 export class Keymap {
   private bindings = new Map<string, string>()
+  private eagerBindings = new Set<string>()
 
   constructor(readonly name = "keymap") {}
 
-  bind(sequence: string, commandName: string): void {
+  bind(sequence: string, commandName: string, options: { eager?: boolean } = {}): void {
     const norm = normalizeSequence(sequence)
     this.bindings.set(norm, commandName)
+    if (options.eager) this.eagerBindings.add(norm)
+    else this.eagerBindings.delete(norm)
     // Emacs ESC-is-Meta: any M-<k> binding is also reachable as `esc <k>`.
     const escForm = metaToEscPrefix(norm)
-    if (escForm !== norm) this.bindings.set(escForm, commandName)
+    if (escForm !== norm) {
+      this.bindings.set(escForm, commandName)
+      if (options.eager) this.eagerBindings.add(escForm)
+      else this.eagerBindings.delete(escForm)
+    }
   }
 
   get(sequence: string): string | undefined {
@@ -36,6 +43,10 @@ export class Keymap {
   hasPrefix(sequence: string): boolean {
     const normalized = normalizeSequence(sequence)
     return [...this.bindings.keys()].some(k => k.startsWith(normalized + " "))
+  }
+
+  isEager(sequence: string): boolean {
+    return this.eagerBindings.has(normalizeSequence(sequence))
   }
 
   all(): Array<[string, string]> {
@@ -70,6 +81,10 @@ export class KeymapStack {
     for (const { name, keymap } of this.maps()) {
       const command = keymap.get(normalized)
       const prefix = keymap.hasPrefix(normalized)
+      // Some commands (notably Transient prefix launchers) install their own
+      // temporary keymap. Run those eagerly, then let the temporary map own
+      // subsequent keys even when compatibility bindings also use this prefix.
+      if (command && keymap.isEager(normalized)) return { status: "matched", command, mapName: name }
       // A keymap cannot meaningfully execute an exact binding when the same
       // sequence also prefixes longer bindings. Treat it as a prefix, matching
       // Emacs's define-key behavior when a plugin claims a former command key.
