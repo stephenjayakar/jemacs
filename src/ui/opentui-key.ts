@@ -72,9 +72,23 @@ function translateMacOptionCharacter(key: KeyEventLike): KeyEventLike {
   }
 }
 
+// Enhanced terminal protocols can report the physical base key plus Shift
+// instead of the resulting printable character. For example, modifyOtherKeys
+// encodes M-< as comma+Meta+Shift; restore "<" so it cannot collapse to M-,.
+function translateShiftedPrintableCharacter(key: KeyEventLike): KeyEventLike {
+  if (!key.shift || key.name.length !== 1) return key
+  const shiftedKey = MAC_US_SHIFTED_PRINTABLE_KEYS.get(key.name)
+  if (!shiftedKey) return key
+  return {
+    ...key,
+    name: shiftedKey,
+    sequence: key.sequence === key.name ? shiftedKey : key.sequence,
+  }
+}
+
 /** Convert an OpenTUI key event into the kernel key representation. */
 export function keyEventFromOpentui(key: KeyEvent): KeyEventLike {
-  return canonicalizeKeyEvent(translateMacOptionCharacter({
+  const event = translateMacOptionCharacter({
     name: key.name,
     sequence: key.sequence,
     raw: key.raw,
@@ -82,5 +96,6 @@ export function keyEventFromOpentui(key: KeyEvent): KeyEventLike {
     meta: key.meta || key.option,
     shift: key.shift,
     super: key.super,
-  }))
+  })
+  return canonicalizeKeyEvent(translateShiftedPrintableCharacter(event))
 }

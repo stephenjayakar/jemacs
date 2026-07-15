@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { KeyEvent } from "@opentui/core"
+import { parseKeypress, type KeyEvent } from "@opentui/core"
 import { keyToken } from "../src/kernel/keymap"
 import { getCustom, setCustom } from "../src/runtime/custom"
 import { keyEventFromOpentui, MAC_US_OPTION_CHARACTER_MAP } from "../src/ui/opentui-key"
@@ -37,6 +37,14 @@ test("OpenTUI marks macOS Option-Shift compositions with shift", () => {
   expect(keyToken(keyEventFromOpentui(opentuiKey("¯")))).toBe("M-<")
   expect(keyToken(keyEventFromOpentui(opentuiKey("˘")))).toBe("M->")
   expect(keyToken(keyEventFromOpentui(opentuiKey("¿")))).toBe("M-?")
+})
+
+test("OpenTUI restores shifted punctuation from enhanced terminal protocols", () => {
+  const parsed = parseKeypress("\x1b[27;4;44~", { useKittyKeyboard: true })
+  expect(parsed).not.toBeNull()
+  const metaShiftComma = parsed as KeyEvent
+  expect(keyEventFromOpentui(metaShiftComma)).toMatchObject({ name: "<", sequence: "<", meta: true, shift: true })
+  expect(keyToken(keyEventFromOpentui(metaShiftComma))).toBe("M-<")
 })
 
 test("OpenTUI leaves modified and multi-character sequences untouched", () => {
