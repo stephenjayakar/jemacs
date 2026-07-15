@@ -104,8 +104,13 @@ export async function openWithEditorBuffer(
   request: WithEditorRequest,
   options: { root: string; winconf?: ReturnType<Editor["currentWindowConfiguration"]>; awaitOnFinish?: boolean } ,
 ): Promise<BufferModel> {
-  const text = await readFileText(request.filePath)
+  const sourceText = await readFileText(request.filePath)
   const rebaseTodo = isRebaseTodoPath(request.filePath)
+  // Git can invoke the editor with its comment template beginning at byte 0.
+  // git-commit-mode presents an editable message line before those comments;
+  // otherwise typing at point produces "subject# Please enter...".
+  const insertedMessageLine = !rebaseTodo && sourceText.startsWith("#")
+  const text = insertedMessageLine ? `\n${sourceText}` : sourceText
   const name = rebaseTodo ? "*git-rebase-todo*" : "*COMMIT_EDITMSG*"
   const mode = rebaseTodo ? "git-rebase-mode" : "magit-commit"
   const buffer = editor.scratch(name, text, mode)
@@ -116,7 +121,7 @@ export async function openWithEditorBuffer(
   buffer.locals.set("comment-start", "#")
   buffer.locals.set(WITH_EDITOR_REQUEST_LOCAL, request)
   buffer.locals.set(WITH_EDITOR_AWAIT_ON_FINISH_LOCAL, options.awaitOnFinish ?? !rebaseTodo)
-  buffer.point = firstEditablePoint(text)
+  buffer.point = insertedMessageLine ? 0 : firstEditablePoint(text)
   return buffer
 }
 

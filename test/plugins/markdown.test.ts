@@ -476,7 +476,7 @@ describe("markdown-cycle", () => {
     expect(buffer.text).toBe("    parent\n    child\n")
   })
 
-  test("first TAB on a line already at previous indentation is a no-op", async () => {
+  test("first TAB on a line already at previous indentation cycles onward", async () => {
     const editor = makeEditor()
     install(editor)
     const buffer = editor.scratch("doc.md", "    parent\n    child\n", "markdown")
@@ -484,10 +484,10 @@ describe("markdown-cycle", () => {
 
     await keySeq(editor, "TAB")
 
-    expect(buffer.text).toBe("    parent\n    child\n")
+    expect(buffer.text).toBe("    parent\n        child\n")
   })
 
-  test("TAB after moving point does not cycle", async () => {
+  test("TAB after moving point still cycles because this-command is markdown-cycle", async () => {
     const editor = makeEditor()
     install(editor)
     const buffer = editor.scratch("doc.md", "    parent\n    child\n", "markdown")
@@ -497,7 +497,19 @@ describe("markdown-cycle", () => {
     await keySeq(editor, "C-f")
     await keySeq(editor, "TAB")
 
-    expect(buffer.text).toBe("    parent\n    child\n")
+    expect(buffer.text).toBe("    parent\nchild\n")
+  })
+
+  test("TAB on a flat checklist matches Emacs' 2, 4, 8, 0 cycle", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- [ ] first\n- [ ] second\n", "markdown")
+    buffer.point = buffer.text.indexOf("- [ ] second")
+
+    for (const indent of [2, 4, 8, 0]) {
+      await keySeq(editor, "TAB")
+      expect(buffer.lineBoundsAt().text.match(/^\s*/)?.[0].length).toBe(indent)
+    }
   })
 
   test("TAB on heading folds subtree instead of indenting", async () => {

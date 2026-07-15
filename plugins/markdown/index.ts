@@ -73,6 +73,7 @@ defcustom("markdown-hide-markup-in-view-modes", "boolean", true, "Enable hidden 
 defcustom("markdown-command", "string", "markdown", "External Markdown processor used by `markdown-export`.")
 defcustom("markdown-open-command", "string", process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open", "External command used by `markdown-open`.")
 defcustom("markdown-indent-on-enter", "string", "indent", "RET behavior in markdown buffers: `indent` or `indent-and-new-item`.")
+defcustom("markdown-trim-trailing-whitespace-on-enter", "boolean", false, "Trim trailing whitespace from the previous line after RET.")
 defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries when soft wrapping.")
 
 const MARKDOWN_HIDE_MARKUP = "markdown-hide-markup"
@@ -949,17 +950,32 @@ function trackIndentCommand(buffer: BufferModel, name: string): void {
   buffer.locals.set(MARKDOWN_LAST_INDENT, { name, point: buffer.point })
 }
 
-function lastIndentCommand(buffer: BufferModel): string | null {
-  const last = buffer.locals.get(MARKDOWN_LAST_INDENT) as { name: string; point: number } | undefined
-  return last?.name ?? null
-}
+function markdownListDepthBefore(text: string, lineStart: number): number {
+  const lines = text.slice(0, lineStart).split("\n")
+  const levels: number[] = []
+  let previousBlank = true
 
-// Emacs cycles only when `last-command` was also markdown-cycle; any other
-// command resets it. The kernel has no last-command, so approximate: the
-// previous TAB must have been markdown-cycle AND point must not have moved.
-function repeatedMarkdownCycle(buffer: BufferModel): boolean {
-  const last = buffer.locals.get(MARKDOWN_LAST_INDENT) as { name: string; point: number } | undefined
-  return last?.name === "markdown-cycle" && last.point === buffer.point
+  for (const line of lines) {
+    const marker = line.match(LIST_RE)
+    const indent = line.match(/^\s*/)?.[0].length ?? 0
+    const startsBaseline = ATX_HEADER_RE.test(line.trim())
+      || SETEXT_UNDERLINE_RE.test(line.trim())
+      || (indent === 0 && !marker && previousBlank && line.trim().length > 0)
+    if (startsBaseline) levels.length = 0
+
+    if (marker) {
+      if (!levels.length) levels.push(indent)
+      else if (indent >= levels[0]! + TAB_WIDTH) levels.unshift(indent)
+      else if (indent < levels[0]!) {
+        while (levels.length > 1 && indent < levels[1]! + TAB_WIDTH) levels.shift()
+      }
+    } else if (levels.length && indent < levels[0]!) {
+      while (levels.length > 1 && indent < levels[1]! + TAB_WIDTH) levels.shift()
+    }
+    previousBlank = line.trim().length === 0
+  }
+
+  return levels.length
 }
 
 export function markdownCalcIndents(text: string, lineStart: number): number[] {
@@ -983,6 +999,10 @@ export function markdownCalcIndents(text: string, lineStart: number): number[] {
     if (match) positions.push((match[1]?.length ?? 0) + 2)
   }
   if (FENCED_CODE_RE.test(line.trim())) positions.push(prevIndent + TAB_WIDTH)
+  // `markdown-pre-indentation` contributes one four-column block plus one
+  // for each enclosing list level. This is why TAB on a flat list cycles
+  // through 0, marker-width, 4, 8 instead of wrapping at column 4.
+  positions.push(TAB_WIDTH * (1 + markdownListDepthBefore(text, lineStart)))
   positions.push(prevIndent + TAB_WIDTH)
   if (prevIndent > TAB_WIDTH) positions.push(prevIndent - TAB_WIDTH)
 
@@ -1400,6 +1420,14 @@ let gfmBackquoteAdviceId: string | undefined
 function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   editor.command("markdown-enter-key", ({ buffer, editor }) => {
     trackIndentCommand(buffer, "markdown-enter-key")
+    const lineBefore = buffer.lineAt(buffer.point)
+    const trimPreviousLine = () => {
+      if (!(getCustom<boolean>("markdown-trim-trailing-whitespace-on-enter") ?? false)) return
+      const [start, end] = buffer.lineBounds(lineBefore)
+      const text = buffer.text.slice(start, end)
+      const trimmed = text.replace(/\s+$/, "")
+      if (trimmed.length < text.length) buffer.replaceRange(start + trimmed.length, end, "")
+    }
     const line = buffer.lineBoundsAt()
     const emptyList = markdownEmptyListItem(line.text)
     if (emptyList) {
@@ -1407,15 +1435,18 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       buffer.replaceRange(line.start, line.end, "")
       buffer.point = line.start
       if (!hasLineBreak) buffer.insert("\n")
+      trimPreviousLine()
       return
     }
     if ((getCustom<string>("markdown-indent-on-enter") ?? "indent") === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
       insertMarkdownListItem(buffer)
+      trimPreviousLine()
       editor.message("Inserted list item")
       return
     }
     buffer.insert("\n")
     markdownIndentLine(buffer)
+    trimPreviousLine()
     editor.message("New line")
   }, "Insert a newline and indent like `markdown-mode`.")
 
@@ -1473,7 +1504,10 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       return
     }
 
-    buffer.locals.set(MARKDOWN_CYCLE_REPEAT, repeatedMarkdownCycle(buffer))
+    // GNU markdown-mode's `markdown-indent-line` cycles whenever the current
+    // command is `markdown-cycle`, including the first TAB. The old boolean
+    // only cycled after a preceding TAB, leaving Jemacs one step behind.
+    buffer.locals.set(MARKDOWN_CYCLE_REPEAT, true)
     try {
       await editor.run("indent-for-tab-command")
     } finally {

@@ -9,11 +9,13 @@ import {
   createWithEditorSession,
   gitCommitFontLock,
   install,
+  magitGitFailureDetail,
   magitCommitFixupArgs,
   magitCommitRewordArgs,
   magitCommitSquashArgs,
   magitRebaseInteractiveArgs,
   renderProcessEntries,
+  openWithEditorBuffer,
 } from "../../plugins/magit"
 
 const temps: string[] = []
@@ -43,6 +45,31 @@ test("with-editor helper reports the target file and exits ok after reply", asyn
   } finally {
     await session.dispose()
   }
+})
+
+test("commit editor inserts an editable line before a byte-zero Git comment template", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-with-editor-template-"))
+  temps.push(dir)
+  const target = join(dir, "COMMIT_EDITMSG")
+  await writeFile(target, "# Please enter the commit message\n# Changes to be committed:\n")
+  const editor = makeEditor()
+
+  const buffer = await openWithEditorBuffer(editor, {
+    id: "request-test",
+    filePath: target,
+    replyPath: join(dir, "reply"),
+  }, { root: dir })
+
+  expect(buffer.text).toStartWith("\n# Please enter")
+  expect(buffer.point).toBe(0)
+  buffer.insert("subject")
+  expect(buffer.text).toStartWith("subject\n# Please enter")
+})
+
+test("Magit failure detail includes stdout before falling back to a numeric exit code", () => {
+  expect(magitGitFailureDetail({ out: "nothing added to commit\n", err: "", code: 1 })).toBe("nothing added to commit")
+  expect(magitGitFailureDetail({ out: "", err: "hook rejected commit\n", code: 1 })).toBe("hook rejected commit")
+  expect(magitGitFailureDetail({ out: "", err: "", code: 1 })).toBe("1")
 })
 
 test("commit and rebase argv builders match editor-backed Magit flows", () => {

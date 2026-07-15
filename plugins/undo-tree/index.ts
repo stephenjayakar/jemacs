@@ -8,6 +8,7 @@ import { defineMode, type FaceName, type TextSpan } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { defface } from "../../src/runtime/faces"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
+import { listWindowLeaves } from "../../src/kernel/window"
 
 const VISUALIZER_STATE = "undo-tree-visualizer-state"
 const VISUALIZER_SPANS = "undo-tree-visualizer-spans"
@@ -223,6 +224,12 @@ function renderVisualizer(editor: Editor, visualizer: BufferModel): boolean {
   visualizer.locals.set(VISUALIZER_SPANS, rendered.spans)
   visualizer.locals.set(VISUALIZER_NODE_RANGES, rendered.nodeRanges)
   replaceReadOnly(visualizer, rendered.text)
+  const treeWidth = Math.max(1, ...rendered.text.split("\n").map(line => line.length))
+  // The display layer's visual-fill locals work for any buffer. GNU
+  // undo-tree uses the full visualizer window but centers the drawn tree.
+  visualizer.locals.set("markdown-visual-fill-column-mode", true)
+  visualizer.locals.set("markdown-visual-fill-column-center-text", true)
+  visualizer.locals.set("markdown-fill-column", treeWidth)
   invalidateFontLock(editor, visualizer)
   visualizer.point = rendered.currentPoint
   visualizer.readOnly = true
@@ -299,8 +306,14 @@ function setParentToVisualizerPoint(editor: Editor, visualizer: BufferModel, poi
 function quitVisualizer(editor: Editor, buffer: BufferModel): void {
   const state = visualizerState(buffer)
   const parentId = state?.parentBufferId
+  if (editor.currentBuffer.id === buffer.id && listWindowLeaves(editor.windowLayout).length > 1) {
+    editor.deleteWindow()
+  }
   editor.killBuffer(buffer.id)
-  if (parentId && editor.buffers.has(parentId)) editor.switchToBuffer(parentId)
+  if (!parentId || !editor.buffers.has(parentId)) return
+  const parentWindow = listWindowLeaves(editor.windowLayout).find(leaf => leaf.bufferId === parentId)
+  if (parentWindow) editor.selectWindow(parentWindow.id)
+  else editor.switchToBuffer(parentId)
 }
 
 function switchBranch(parent: BufferModel, delta: number): boolean {
@@ -374,6 +387,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   visualizerMap.bind("return", "undo-tree-visualizer-quit")
   visualizerMap.bind("RET", "undo-tree-visualizer-quit")
   visualizerMap.bind("q", "undo-tree-visualizer-quit")
+  visualizerMap.bind("S-q", "undo-tree-visualizer-quit")
   visualizerMap.bind("C-q", "undo-tree-visualizer-abort")
   visualizerMap.bind("t", "undo-tree-visualizer-toggle-timestamps")
   visualizerMap.bind("d", "undo-tree-visualizer-toggle-diff")

@@ -47,8 +47,11 @@ ensure_gui_build() {
 gui=0
 filtered=()
 for arg in "$@"; do
-  if [[ "$arg" == "--gui" || "$arg" == "--smoke-gui" ]]; then
+  if [[ "$arg" == "--gui" ]]; then
     gui=1
+  elif [[ "$arg" == "--smoke-gui" ]]; then
+    gui=1
+    filtered+=("$arg")
   else
     filtered+=("$arg")
   fi
@@ -57,6 +60,9 @@ done
 if [[ "$gui" -eq 1 ]]; then
   ensure_gui_build
   cd "${JEMACS_HOME}"
+  # Bash 3.2 treats an empty array expansion as an unset variable under -u.
+  # No filename is a valid GUI invocation, so relax nounset only for exec.
+  set +u
   if command -v electron >/dev/null 2>&1; then
     exec electron dist/electron/bootstrap.mjs "${filtered[@]}"
   else

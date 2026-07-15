@@ -115,6 +115,20 @@ async function git(
   return runGitLogged(args, cwd, { stdin, env, editor })
 }
 
+export function magitGitFailureDetail(result: { out: string; err: string; code: number | null }): string {
+  const details = [result.err.trim(), result.out.trim()].filter(Boolean)
+  return details.join("\n") || String(result.code ?? "signal")
+}
+
+async function hasStagedChanges(root: string): Promise<{ staged: boolean; dirty: boolean; error?: string }> {
+  const staged = await git(["diff", "--cached", "--quiet", "--exit-code"], root)
+  if (staged.code === 1) return { staged: true, dirty: true }
+  if (staged.code !== 0) return { staged: false, dirty: false, error: magitGitFailureDetail(staged) }
+  const status = await git(["status", "--porcelain"], root)
+  if (status.code !== 0) return { staged: false, dirty: false, error: magitGitFailureDetail(status) }
+  return { staged: false, dirty: status.out.trim().length > 0 }
+}
+
 type FileChange = { file: string; xy: string; oldFile?: string; unmerged?: boolean }
 
 /** Minimal porcelain=v2 reader: just the XY state and path of ordinary/renamed/untracked entries. */
@@ -1453,6 +1467,11 @@ async function showCommitDiff(editor: Editor, commitBuffer: BufferModel): Promis
   diffBuf.point = 0
   editor.switchToBuffer(commitBuffer.id)
   editor.displayBufferInOtherWindow(diffBuf.id, { select: false })
+  // Splitting and displaying the staged diff must not restore a stale window
+  // point onto the first comment.  Keep both the buffer and its selected
+  // window at the editable message line created by with-editor.
+  commitBuffer.point = 0
+  editor.setSelectedWindowPoint(0)
   editor.message("Showing staged diff for commit")
   return true
 }
@@ -1873,7 +1892,7 @@ async function finalizeWithEditorProcess(editor: Editor, processInfo: MagitWithE
     await refresh(editor, processInfo.root, processInfo.resetPoint ? 0 : undefined)
     editor.message(processInfo.successMessage)
   } else {
-    editor.message(`${processInfo.failurePrefix}: ${result.err.trim() || result.code}`)
+    editor.message(`${processInfo.failurePrefix}: ${magitGitFailureDetail(result)}`)
   }
   return result
 }
@@ -2697,6 +2716,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message("Not in a Magit buffer")
       return
     }
+    const state = await hasStagedChanges(root)
+    if (state.error) {
+      editor.message(`Cannot inspect staged changes: ${state.error}`)
+      return
+    }
+    if (!state.staged) {
+      editor.message(state.dirty
+        ? "Nothing staged; stage changes with s before committing"
+        : "Nothing to commit; working tree clean")
+      return
+    }
     const signoff = args.includes("--signoff") ? ["--signoff"] : []
     const editBuffer = await startGitWithEditorFlow(editor, root, ["commit", ...signoff], {
       successMessage: "Committed",
@@ -2721,9 +2751,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       return
     }
     const extra = (buffer.locals.get("magit-commit-args") as string[] | undefined) ?? []
-    const { err, code } = await git(["commit", ...extra.filter(arg => arg === "--signoff"), "-F", "-"], root, msg, undefined, editor)
+    const { out, err, code } = await git(["commit", ...extra.filter(arg => arg === "--signoff"), "-F", "-"], root, msg, undefined, editor)
     if (code !== 0) {
-      editor.message(`git commit failed: ${err.trim()}`)
+      editor.message(`git commit failed: ${magitGitFailureDetail({ out, err, code })}`)
       return
     }
     const winconf = buffer.locals.get("magit-winconf") as ReturnType<Editor["currentWindowConfiguration"]> | undefined
