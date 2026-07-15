@@ -1,5 +1,15 @@
 # TODO
 
+## Emacs parity pass (2026-07-14)
+
+- [x] Match GNU `markdown-mode` RET and repeated/nested TAB behavior; keep Stephen's trailing-whitespace cleanup.
+- [x] Make Markdown `C-s [` search for a literal bracket in TUI and GUI.
+- [x] Make Markdown checkbox clicks and click-to-cursor mapping agree in TUI and GUI.
+- [x] Match Stephen's `undo-tree` startup, centered visualizer, and quit-to-parent behavior.
+- [x] Verify `gptel` and TRAMP through the installed configuration.
+- [x] Fix and live-test the Magit staged-commit workflow.
+- [x] Stabilize tmux control-mode panes and preserve `other-window` navigation.
+
 ## Bugs (from deep hunt — see file:line for each)
 
 ### High — corrupts buffer / desyncs LSP

@@ -72,7 +72,7 @@ defcustom("markdown-hide-urls", "boolean", false, "Compose link URLs to a single
 defcustom("markdown-hide-markup-in-view-modes", "boolean", true, "Enable hidden markup in markdown-view-mode and gfm-view-mode.")
 defcustom("markdown-command", "string", "markdown", "External Markdown processor used by `markdown-export`.")
 defcustom("markdown-open-command", "string", process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open", "External command used by `markdown-open`.")
-defcustom("markdown-indent-on-enter", "string", "indent", "RET behavior in markdown buffers: `indent` or `indent-and-new-item`.")
+defcustom("markdown-indent-on-enter", "sexp", true, "RET behavior in markdown buffers: nil inserts a raw newline, t indents, and `indent-and-new-item` continues lists.")
 defcustom("markdown-trim-trailing-whitespace-on-enter", "boolean", false, "Trim trailing whitespace from the previous line after RET.")
 defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries when soft wrapping.")
 
@@ -1420,6 +1420,7 @@ let gfmBackquoteAdviceId: string | undefined
 function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   editor.command("markdown-enter-key", ({ buffer, editor }) => {
     trackIndentCommand(buffer, "markdown-enter-key")
+    const indentOnEnter = getCustom<boolean | string>("markdown-indent-on-enter") ?? true
     const lineBefore = buffer.lineAt(buffer.point)
     const trimPreviousLine = () => {
       if (!(getCustom<boolean>("markdown-trim-trailing-whitespace-on-enter") ?? false)) return
@@ -1430,7 +1431,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     }
     const line = buffer.lineBoundsAt()
     const emptyList = markdownEmptyListItem(line.text)
-    if (emptyList) {
+    if (indentOnEnter === "indent-and-new-item" && emptyList) {
       const hasLineBreak = line.end < buffer.text.length && buffer.text[line.end] === "\n"
       buffer.replaceRange(line.start, line.end, "")
       buffer.point = line.start
@@ -1438,14 +1439,14 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       trimPreviousLine()
       return
     }
-    if ((getCustom<string>("markdown-indent-on-enter") ?? "indent") === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
+    if (indentOnEnter === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
       insertMarkdownListItem(buffer)
       trimPreviousLine()
       editor.message("Inserted list item")
       return
     }
     buffer.insert("\n")
-    markdownIndentLine(buffer)
+    if (indentOnEnter !== false) markdownIndentLine(buffer)
     trimPreviousLine()
     editor.message("New line")
   }, "Insert a newline and indent like `markdown-mode`.")

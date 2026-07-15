@@ -300,7 +300,7 @@ describe("markdown list item parity", () => {
   })
 
   test("RET continues non-empty lists when markdown-indent-on-enter is indent-and-new-item", async () => {
-    const before = getCustom<string>("markdown-indent-on-enter")
+    const before = getCustom<boolean | string>("markdown-indent-on-enter")
     setCustom("markdown-indent-on-enter", "indent-and-new-item")
     try {
       const editor = makeEditor()
@@ -312,19 +312,47 @@ describe("markdown list item parity", () => {
 
       expect(buffer.text).toBe("- one\n- ")
     } finally {
-      setCustom("markdown-indent-on-enter", before ?? "indent")
+      setCustom("markdown-indent-on-enter", before ?? true)
+    }
+  })
+
+  test("markdown-indent-on-enter implements Emacs nil and t semantics", async () => {
+    const before = getCustom<boolean | string>("markdown-indent-on-enter")
+    try {
+      const editor = makeEditor()
+      install(editor)
+      const buffer = editor.scratch("doc.md", "    parent", "markdown")
+      buffer.point = buffer.text.length
+
+      setCustom("markdown-indent-on-enter", false)
+      await editor.run("markdown-enter-key")
+      expect(buffer.text).toBe("    parent\n")
+
+      buffer.setText("    parent", false, false)
+      buffer.point = buffer.text.length
+      setCustom("markdown-indent-on-enter", true)
+      await editor.run("markdown-enter-key")
+      expect(buffer.text).toBe("    parent\n    ")
+    } finally {
+      setCustom("markdown-indent-on-enter", before ?? true)
     }
   })
 
   test("RET on an empty checkbox item removes the marker", async () => {
-    const editor = makeEditor()
-    install(editor)
-    const buffer = editor.scratch("doc.md", "- [ ] \n", "markdown")
-    buffer.point = buffer.text.indexOf("[ ]") + 2
+    const before = getCustom<boolean | string>("markdown-indent-on-enter")
+    setCustom("markdown-indent-on-enter", "indent-and-new-item")
+    try {
+      const editor = makeEditor()
+      install(editor)
+      const buffer = editor.scratch("doc.md", "- [ ] \n", "markdown")
+      buffer.point = buffer.text.indexOf("[ ]") + 2
 
-    await keySeq(editor, "RET")
+      await keySeq(editor, "RET")
 
-    expect(buffer.text).toBe("\n")
+      expect(buffer.text).toBe("\n")
+    } finally {
+      setCustom("markdown-indent-on-enter", before ?? true)
+    }
   })
 })
 
