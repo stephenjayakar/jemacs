@@ -77,12 +77,20 @@ async function main(): Promise<void> {
   await installUserConfig(editor, evaluator)
   await loadCustomFile(editor, evaluator)
 
-  const file = args.files[0]
-  if (file) await editor.openFile(file)
-
   const host = new ElectronHost()
   const binding = await runJemacsCore(editor, host)
   host.onRendererReady(() => binding.present())
+
+  // Bind the window before visiting a command-line file so TRAMP can display
+  // host-key and password prompts during startup.
+  const file = args.files[0]
+  if (file) {
+    try {
+      await editor.openFile(file)
+    } catch (error) {
+      editor.message(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   if (argv.includes("--smoke-gui")) {
     await runGuiSmokeTest(editor, host)

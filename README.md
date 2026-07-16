@@ -53,6 +53,27 @@ bun run dev:gui
 
 Both hosts share the same kernel (`src/kernel/`), display model (`src/display/`), and bootstrap (`src/run.ts`).
 
+### Remote files over SSH
+
+Use Emacs TRAMP filenames with `C-x C-f` or as a command-line file. Jemacs
+prompts for new host keys and passwords in the minibuffer and reuses SSH
+connections:
+
+```text
+/ssh:user@example.com:/home/user/file.txt
+/ssh:user@example.com#2222:/home/user/file.txt
+```
+
+A persistent local Docker target is available for real SSH/filesystem testing.
+It listens only on localhost; its password is intentionally test-only.
+
+```bash
+scripts/tramp-ssh-target.sh start   # prints the filename and credentials
+scripts/tramp-ssh-target.sh test    # real transport/editor integration test
+scripts/tramp-ssh-target.sh reset   # recreate its named filesystem volume
+scripts/tramp-ssh-target.sh stop
+```
+
 Optional: native OpenTUI editor surface for the selected window (no font-lock in that pane):
 
 ```bash

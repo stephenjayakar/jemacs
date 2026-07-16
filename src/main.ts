@@ -44,7 +44,6 @@ async function main(): Promise<void> {
   await loadCustomFile(editor, evaluator)
 
   const file = args.files[0]
-  if (file) await editor.openFile(file)
 
   // Out-of-band buffer probe for the layer-3 shadow integration test and
   // scripts/shadow-pair.sh: lets a test read A's in-memory text without a UI.
@@ -61,6 +60,9 @@ async function main(): Promise<void> {
   })
 
   if (serveStdio) {
+    // A stdio authority has no interactive host of its own, so its initial
+    // buffers must still be opened before they are announced to the shadow.
+    if (file) await editor.openFile(file)
     const link = new StdioLink(process.stdin, process.stdout, {
       role: "authority",
       onClose: () => { editor.running = false; process.exit(0) },
@@ -83,10 +85,23 @@ async function main(): Promise<void> {
     host.attachEditor(editor)
     console.log(`Web: http://127.0.0.1:${host.port}/`)
     await runJemacs(editor, host)
+    if (file) await openStartupFile(editor, file)
     return
   }
 
+  // Start the host before visiting the command-line file. Remote files may
+  // need SSH host-key/password prompts, which cannot be answered until a UI is
+  // bound to the editor.
   await runJemacs(editor, await createDefaultHost())
+  if (file) await openStartupFile(editor, file)
+}
+
+async function openStartupFile(editor: Editor, file: string): Promise<void> {
+  try {
+    await editor.openFile(file)
+  } catch (error) {
+    editor.message(error instanceof Error ? error.message : String(error))
+  }
 }
 
 /** Jail root for the shadow web host: explicit `--fsRoot` wins; otherwise the
