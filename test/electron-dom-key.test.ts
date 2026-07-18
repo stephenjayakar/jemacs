@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomModifierOnlyKey } from "../src/electron/dom-key"
+import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomModifierOnlyKey, isDomPasteShortcut } from "../src/electron/dom-key"
 import { keyToken } from "../src/kernel/keymap"
 
 test("domKeyName maps DOM special keys to Emacs-style names", () => {
@@ -18,6 +18,13 @@ test("mac Option+v is Meta, Command+v is Super", () => {
   expect(mods({ metaKey: true })).toEqual({ super: true })
   expect(keyToken(domKeyFromKeyboardEvent({ key: "v", code: "KeyV", ctrlKey: false, metaKey: false, altKey: true, shiftKey: false }, "mac"))).toBe("M-v")
   expect(keyToken(domKeyFromKeyboardEvent({ key: "v", code: "KeyV", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }, "mac"))).toBe("s-v")
+})
+
+test("mac Command+V is reserved for host clipboard paste", () => {
+  const event = { key: "v", ctrlKey: false, metaKey: true, altKey: false }
+  expect(isDomPasteShortcut(event, "mac")).toBe(true)
+  expect(isDomPasteShortcut({ ...event, altKey: true }, "mac")).toBe(false)
+  expect(isDomPasteShortcut(event, "other")).toBe(false)
 })
 
 test("non-mac Alt+v is Meta, Win/Meta+v is Super", () => {

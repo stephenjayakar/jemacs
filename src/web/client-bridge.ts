@@ -187,6 +187,9 @@ window.jemacs = {
     ws.send(JSON.stringify(payload))
     applyOptimisticCaret(payload)
   },
+  readClipboardText(): Promise<string> {
+    return navigator.clipboard.readText().catch(() => "")
+  },
   ready(): void { /* no-op: server pushes on auth */ },
 }
 

@@ -26,6 +26,17 @@ export function isDomModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Meta" || key === "Alt" || key === "Control"
 }
 
+export function isDomPasteShortcut(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey">,
+  platform: DomKeyPlatform,
+): boolean {
+  return platform === "mac"
+    && event.key.toLowerCase() === "v"
+    && event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+}
+
 /** Physical key from KeyboardEvent.code (Option on macOS alters event.key, not the code). */
 export function domKeyNameFromCode(code: string): string | null {
   const letter = /^Key([A-Z])$/.exec(code)

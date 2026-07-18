@@ -1,6 +1,6 @@
 import type { SerializedDisplayModel } from "../display/serialize"
 import { DOM_FRAME_ROW_PX, presentDomFrame } from "../display/dom-frame"
-import { domKeyFromKeyboardEvent, isDomModifierOnlyKey } from "./dom-key"
+import { domKeyFromKeyboardEvent, domKeyPlatform, isDomModifierOnlyKey, isDomPasteShortcut } from "./dom-key"
 import { XtermPaneRegistry } from "./xterm-panes"
 
 const titleEl = document.getElementById("jemacs-title")!
@@ -17,6 +17,7 @@ declare global {
       onDisplay(handler: (model: SerializedDisplayModel) => void): () => void
       onTerminalData(handler: (payload: unknown) => void): () => void
       sendInput(payload: unknown): void
+      readClipboardText(): string | Promise<string>
       ready(): void
     }
   }
@@ -35,10 +36,15 @@ function present(model: SerializedDisplayModel): void {
     xtermPanes,
   )
 }
-
-document.addEventListener("keydown", event => {
+document.addEventListener("keydown", async event => {
   if (event.defaultPrevented) return
   if (isDomModifierOnlyKey(event.key)) return
+  if (isDomPasteShortcut(event, domKeyPlatform(navigator.userAgent))) {
+    event.preventDefault()
+    const text = await window.jemacs.readClipboardText()
+    if (text) window.jemacs.sendInput({ type: "paste", text })
+    return
+  }
   window.jemacs.sendInput({ type: "key", key: domKeyFromKeyboardEvent(event) })
   event.preventDefault()
 })

@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld("jemacs", {
   sendInput(payload: unknown): void {
     ipcRenderer.send("jemacs:input", payload)
   },
+  readClipboardText(): Promise<string> {
+    return ipcRenderer.invoke("jemacs:read-clipboard")
+  },
   ready(): void {
     ipcRenderer.send("jemacs:ready")
   },

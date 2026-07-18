@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron"
+import { app, BrowserWindow, clipboard, ipcMain } from "electron"
 import path from "node:path"
 import { serializeDisplayModel, type SerializedDisplayModel } from "../display/serialize"
 import type {
@@ -111,6 +111,7 @@ export class ElectronHost implements UiHost {
     ipcMain.on("jemacs:input", (_event, payload: NormalizedInput) => {
       for (const handler of this.inputHandlers) void handler(payload)
     })
+    ipcMain.handle("jemacs:read-clipboard", () => clipboard.readText())
     ipcMain.on("jemacs:ready", event => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (win) win.setTitle("Jemacs")
