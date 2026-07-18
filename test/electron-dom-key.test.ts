@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomModifierOnlyKey, isDomPasteShortcut } from "../src/electron/dom-key"
+import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomHideShortcut, isDomModifierOnlyKey, isDomPasteShortcut } from "../src/electron/dom-key"
 import { keyToken } from "../src/kernel/keymap"
 
 test("domKeyName maps DOM special keys to Emacs-style names", () => {
@@ -21,10 +21,18 @@ test("mac Option+v is Meta, Command+v is Super", () => {
 })
 
 test("mac Command+V is reserved for host clipboard paste", () => {
-  const event = { key: "v", ctrlKey: false, metaKey: true, altKey: false }
+  const event = { key: "v", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }
   expect(isDomPasteShortcut(event, "mac")).toBe(true)
   expect(isDomPasteShortcut({ ...event, altKey: true }, "mac")).toBe(false)
+  expect(isDomPasteShortcut({ ...event, shiftKey: true }, "mac")).toBe(false)
   expect(isDomPasteShortcut(event, "other")).toBe(false)
+})
+
+test("mac Command+H is reserved for hiding the Electron application", () => {
+  const event = { key: "h", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }
+  expect(isDomHideShortcut(event, "mac")).toBe(true)
+  expect(isDomHideShortcut({ ...event, shiftKey: true }, "mac")).toBe(false)
+  expect(isDomHideShortcut(event, "other")).toBe(false)
 })
 
 test("non-mac Alt+v is Meta, Win/Meta+v is Super", () => {

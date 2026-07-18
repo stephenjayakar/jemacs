@@ -1,6 +1,6 @@
 import type { SerializedDisplayModel } from "../display/serialize"
 import { DOM_FRAME_ROW_PX, presentDomFrame } from "../display/dom-frame"
-import { domKeyFromKeyboardEvent, domKeyPlatform, isDomModifierOnlyKey, isDomPasteShortcut } from "./dom-key"
+import { domKeyFromKeyboardEvent, domKeyPlatform, isDomHideShortcut, isDomModifierOnlyKey, isDomPasteShortcut } from "./dom-key"
 import { XtermPaneRegistry } from "./xterm-panes"
 
 const titleEl = document.getElementById("jemacs-title")!
@@ -18,6 +18,7 @@ declare global {
       onTerminalData(handler: (payload: unknown) => void): () => void
       sendInput(payload: unknown): void
       readClipboardText(): string | Promise<string>
+      hideApplication?(): void
       ready(): void
     }
   }
@@ -43,6 +44,11 @@ document.addEventListener("keydown", async event => {
     event.preventDefault()
     const text = await window.jemacs.readClipboardText()
     if (text) window.jemacs.sendInput({ type: "paste", text })
+    return
+  }
+  if (window.jemacs.hideApplication && isDomHideShortcut(event, domKeyPlatform(navigator.userAgent))) {
+    event.preventDefault()
+    window.jemacs.hideApplication()
     return
   }
   window.jemacs.sendInput({ type: "key", key: domKeyFromKeyboardEvent(event) })

@@ -112,6 +112,7 @@ export class ElectronHost implements UiHost {
       for (const handler of this.inputHandlers) void handler(payload)
     })
     ipcMain.handle("jemacs:read-clipboard", () => clipboard.readText())
+    ipcMain.on("jemacs:hide-application", () => app.hide())
     ipcMain.on("jemacs:ready", event => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (win) win.setTitle("Jemacs")
