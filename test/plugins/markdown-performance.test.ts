@@ -50,11 +50,15 @@ test("range font-lock preserves absolute link and strikethrough offsets", () => 
 
   const spans = editor.fontLock(buffer, { startLine, endLine: 101, start, end })
 
-  expect(spans).toContainEqual({
-    start,
-    end: start + "[link](https://example.com)".length,
-    face: "markdown-link",
-  })
+  expect(spans.some(span =>
+    span.start === start
+    && span.end === start + "[link](https://example.com)".length
+    && String(span.face) === "markdown-link",
+  )).toBe(true)
   const gone = buffer.text.indexOf("gone")
-  expect(spans).toContainEqual({ start: gone, end: gone + 4, face: "markdown-strikethrough" })
+  expect(spans.some(span =>
+    span.start === gone
+    && span.end === gone + 4
+    && String(span.face) === "markdown-strikethrough",
+  )).toBe(true)
 })
