@@ -4,13 +4,13 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Editor } from "./kernel/editor"
 import { findProjectRoot } from "./lsp/project-root"
-import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
+import { bindGuiKeybindings, installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
 import { installDefaultModes } from "./modes/default-modes"
 import { installLspMode } from "./lsp/install"
 import { installXref } from "./xref/install"
 import { runJemacs } from "./run"
-import { createDefaultHost } from "./ui/select-host"
+import { createDefaultHost, wantsGuiHost } from "./ui/select-host"
 import { installBuiltinPlugins } from "../plugins/builtin"
 import { attachAuthority } from "./shadow/shadow"
 import { StdioLink } from "./shadow/stdio-link"
@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   if (fsRootIdx >= 0 && Bun.argv[fsRootIdx + 1] != null) ignored.add(Bun.argv[fsRootIdx + 1]!)
   const args = parseStartupArgs(Bun.argv, ignored)
   const evaluator = installDefaultConfig(editor)
+  if (wantsGuiHost()) bindGuiKeybindings(editor)
   for (const config of args.configs) await loadStartupConfig(editor, evaluator, config)
   installLspMode(editor)
   installDefaultHooks(editor)

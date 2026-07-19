@@ -19,6 +19,7 @@ import { installDiffCommands } from "../modes/diff"
 import { installOutlineCommands } from "../modes/outline"
 import { installPythonShellCommands } from "../modes/python-shell"
 
+export { bindGuiKeybindings } from "./default-bindings"
 export { installDefaultHooks, installLspDeferredHooks } from "./install-hooks"
 export { LSP_AUTO_MODES, LSP_AUTO_EXTENSIONS, shouldAutoStartLsp } from "./lsp-auto-modes"
 

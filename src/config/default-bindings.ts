@@ -9,6 +9,11 @@ export function bindDefaultKeybindings(editor: Editor): void {
   bindMinibufferKeys(editor)
 }
 
+/** GUI-only convenience bindings layered on after the shared defaults. */
+export function bindGuiKeybindings(editor: Editor): void {
+  editor.key("s-s", "save-buffer")
+}
+
 function bindGlobalKeys(editor: Editor): void {
   editor.key("left", "backward-char")
   editor.key("right", "forward-char")
