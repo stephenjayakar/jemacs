@@ -177,12 +177,17 @@ function highlightInlineRegion(
   walkInline(tree.rootNode)
 }
 
-function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCtor): TextSpan[] {
+function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCtor, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
   if (!markdownInlineLanguage) return spans
   const inlineParser = parserForInline("markdown-inline", markdownInlineLanguage, ParserCtor)
 
   const walkBlock = (node: SyntaxNode): void => {
+    // The display layer asks for a viewport-sized range.  Prune whole
+    // subtrees before visiting Markdown's many inline nodes; walking the full
+    // document here made every C-v proportional to file size even though the
+    // parser tree itself was already cached.
+    if (range && (node.endIndex < range.start || node.startIndex > range.end)) return
     switch (node.type) {
       case "atx_heading": {
         const marker = node.children.find(child => child.type.startsWith("atx_h"))
@@ -243,11 +248,40 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
       default:
         break
     }
-    for (const child of node.children) walkBlock(child)
+    walkChildrenInRange(node, range, walkBlock)
   }
 
   walkBlock(root)
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
+/** Visit only children intersecting a byte range without materializing
+ * `node.children`.  Markdown documents commonly have one root child per
+ * paragraph; allocating and linearly scanning that entire array was still an
+ * O(document) cost after subtree pruning was added. */
+function walkChildrenInRange(
+  node: SyntaxNode,
+  range: FontLockRange | undefined,
+  visit: (child: SyntaxNode) => void,
+): void {
+  if (!range) {
+    for (const child of node.children) visit(child)
+    return
+  }
+  let lo = 0
+  let hi = node.childCount
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    const child = node.child(mid)
+    if (child && child.endIndex < range.start) lo = mid + 1
+    else hi = mid
+  }
+  for (let i = lo; i < node.childCount; i++) {
+    const child = node.child(i)
+    if (!child) continue
+    if (child.startIndex > range.end) break
+    visit(child)
+  }
 }
 
 function hybridFontLock(
@@ -302,11 +336,11 @@ export function registerTreeSitterGrammars(): void {
   })
   registerTreeSitterLanguage("markdown", {
     language: Markdown as Language,
-    highlight: (root, text = "") => highlightMarkdown(root, text, ParserCtor),
+    highlight: (root, text = "", range) => highlightMarkdown(root, text, ParserCtor, range),
   })
   registerTreeSitterLanguage("gfm", {
     language: Markdown as Language,
-    highlight: (root, text = "") => highlightMarkdown(root, text, ParserCtor),
+    highlight: (root, text = "", range) => highlightMarkdown(root, text, ParserCtor, range),
   })
   registered = true
 }

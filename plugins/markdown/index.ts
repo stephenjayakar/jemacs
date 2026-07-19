@@ -79,6 +79,16 @@ defcustom("word-wrap", "boolean", false, "Wrap display lines at word boundaries 
 const MARKDOWN_HIDE_MARKUP = "markdown-hide-markup"
 const MARKDOWN_HIDE_URLS = "markdown-hide-urls"
 const MARKDOWN_FONTIFY_CODE_BLOCKS = "markdown-fontify-code-blocks-natively"
+
+const fencedBlockCache = new WeakMap<BufferModel, { text: string; blocks: FencedCodeBlock[] }>()
+
+function fencedCodeBlocksFor(buffer: BufferModel): FencedCodeBlock[] {
+  const cached = fencedBlockCache.get(buffer)
+  if (cached?.text === buffer.text) return cached.blocks
+  const blocks = parseFencedCodeBlocks(buffer.text)
+  fencedBlockCache.set(buffer, { text: buffer.text, blocks })
+  return blocks
+}
 const LIST_BULLET = "•"
 const URL_COMPOSE_CHAR = "↪"
 
@@ -1122,23 +1132,28 @@ function fenceLineSpan(buffer: BufferModel, line: number): TextSpan | null {
   return { start, end, face: "string" }
 }
 
-function markdownStrikethroughSpans(text: string, range?: FontLockRange): TextSpan[] {
+function markdownStrikethroughSpans(
+  text: string,
+  range?: FontLockRange,
+  protectedRanges: Array<readonly [number, number]> = [],
+): TextSpan[] {
   const spans: TextSpan[] = []
-  const protectedRanges: Array<readonly [number, number]> = parseFencedCodeBlocks(text).map(block => [block.bodyStart, block.bodyEnd] as const)
-  let offset = 0
-  for (const line of text.split("\n")) {
+  const start = range?.start ?? 0
+  const end = range?.end ?? text.length
+  const slice = text.slice(start, end)
+  let offset = start
+  for (const line of slice.split("\n")) {
     protectedRanges.push(...protectedInlineCodeRanges(line, offset))
     offset += line.length + 1
   }
-  for (const match of text.matchAll(/~~(\S(?:.*?\S)?)~~/g)) {
+  for (const match of slice.matchAll(/~~(\S(?:.*?\S)?)~~/g)) {
     if (match.index == null) continue
-    const start = match.index
-    const end = start + match[0].length
-    if (range && (end < range.start || start > range.end)) continue
-    if (spanInsideRegions(start, end, protectedRanges)) continue
-    spans.push({ start, end: start + 2, face: "markdown-markup" as FaceName })
-    spans.push({ start: start + 2, end: end - 2, face: "markdown-strikethrough" as FaceName })
-    spans.push({ start: end - 2, end, face: "markdown-markup" as FaceName })
+    const matchStart = start + match.index
+    const matchEnd = matchStart + match[0].length
+    if (spanInsideRegions(matchStart, matchEnd, protectedRanges)) continue
+    spans.push({ start: matchStart, end: matchStart + 2, face: "markdown-markup" as FaceName })
+    spans.push({ start: matchStart + 2, end: matchEnd - 2, face: "markdown-strikethrough" as FaceName })
+    spans.push({ start: matchEnd - 2, end: matchEnd, face: "markdown-markup" as FaceName })
   }
   return spans
 }
@@ -1156,7 +1171,7 @@ function gfmUnderscoreEmphasisSpan(text: string, span: TextSpan): boolean {
 function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
   const gfm = markdownIsGfmMode(buffer)
   const mdLang = gfm ? "gfm" : "markdown"
-  const blocks = parseFencedCodeBlocks(buffer.text).filter(block => !range || block.bodyEnd >= range.start && block.bodyStart <= range.end)
+  const blocks = fencedCodeBlocksFor(buffer).filter(block => !range || block.bodyEnd >= range.start && block.bodyStart <= range.end)
   const native = markdownFontifyCodeBlocksNatively(buffer)
   const bodyRegions = blocks.map(b => [b.bodyStart, b.bodyEnd] as const)
 
@@ -1189,15 +1204,26 @@ function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[
     }
   }
 
-  if (gfm) spans.push(...markdownStrikethroughSpans(buffer.text, range))
-  spans = overlayMarkdownLinkFaces(buffer.text, spans, range, gfm)
+  if (gfm) spans.push(...markdownStrikethroughSpans(buffer.text, range, bodyRegions))
+  spans = overlayMarkdownLinkFaces(buffer.text, spans, range, gfm, bodyRegions)
   return overlayMarkdownHeaderFaces(buffer.text, spans, range)
 }
 
-function overlayMarkdownLinkFaces(text: string, spans: TextSpan[], range?: FontLockRange, includeBare = false): TextSpan[] {
-  const linkSpans = markdownLinks(text, includeBare)
-    .filter(link => !range || (link.end >= range.start && link.start <= range.end))
-    .map(link => ({ start: link.start, end: link.end, face: "markdown-link" as FaceName }))
+function overlayMarkdownLinkFaces(
+  text: string,
+  spans: TextSpan[],
+  range?: FontLockRange,
+  includeBare = false,
+  protectedRanges: ReadonlyArray<readonly [number, number]> = [],
+): TextSpan[] {
+  // Link faces do not depend on resolving reference definitions.  On a
+  // viewport request, scan only that slice and translate offsets back to the
+  // buffer instead of running several document-wide regexes on every page.
+  const offset = range?.start ?? 0
+  const source = range ? text.slice(range.start, range.end) : text
+  const linkSpans = markdownLinks(source, includeBare)
+    .map(link => ({ start: offset + link.start, end: offset + link.end, face: "markdown-link" as FaceName }))
+    .filter(span => !spanInsideRegions(span.start, span.end, protectedRanges))
   if (!linkSpans.length) return spans
   return [...spans, ...linkSpans].sort((a, b) => a.start - b.start || a.end - b.end)
 }
