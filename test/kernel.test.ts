@@ -1503,6 +1503,20 @@ test("python mode supports indentation, defun navigation, font-lock, and TAB com
   expect(spans.some(span => span.face === "string" && buffer.text.slice(span.start, span.end) === "'hi'")).toBe(true)
 })
 
+test("python mode indents after Return following a block opener", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await installStephenConfig(editor)
+  const buffer = editor.scratch("fibo.py", "def fibo(n):", "python")
+  buffer.point = buffer.text.length
+
+  await editor.handleKey({ name: "return" })
+
+  expect(buffer.text).toBe("def fibo(n):\n    ")
+})
+
 test("tree-sitter font-lock highlights javascript, html, and java modes", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   const { install: installTreeSitterGrammars } = await import("../plugins/tree-sitter-grammars")
