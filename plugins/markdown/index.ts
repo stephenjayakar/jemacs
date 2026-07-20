@@ -1356,6 +1356,7 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c '", "markdown-edit-code-block")
   keymap.bind("C-c C-s f", "markdown-insert-footnote")
   keymap.bind("C-c C-s q", "markdown-insert-blockquote")
+  keymap.bind("C-c C-s [", "markdown-insert-gfm-checkbox")
   keymap.bind("C-c C-s -", "markdown-insert-hr")
   keymap.bind("C-c C-s 1", "markdown-insert-header-atx-1")
   keymap.bind("C-c C-s 2", "markdown-insert-header-atx-2")

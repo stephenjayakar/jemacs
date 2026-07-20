@@ -213,9 +213,21 @@ test("markdown-mode keymap binds Emacs movement and promotion arrows", () => {
   expect(editor.keymaps.lookup("C-c down")).toMatchObject({ status: "matched", command: "markdown-move-down" })
   expect(editor.keymaps.lookup("C-c C-s t")).toMatchObject({ status: "matched", command: "markdown-insert-table" })
   expect(editor.keymaps.lookup("C-c C-s f")).toMatchObject({ status: "matched", command: "markdown-insert-footnote" })
+  expect(editor.keymaps.lookup("C-c C-s [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x [")).toMatchObject({ status: "matched", command: "markdown-insert-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-x C-x")).toMatchObject({ status: "matched", command: "markdown-toggle-gfm-checkbox" })
   expect(editor.keymaps.lookup("C-c C-d")).toMatchObject({ status: "matched", command: "markdown-do" })
+})
+
+test("markdown-mode C-c C-s [ inserts a GFM checkbox like Emacs", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("doc.md", "- task", "markdown")
+  buffer.point = buffer.text.length
+
+  await keySeq(editor, "C-c", "C-s", "[")
+
+  expect(buffer.text).toBe("- [ ] task")
 })
 
 test("markdown-mode keymap binds Emacs export preview and reference commands under C-c C-c", () => {
