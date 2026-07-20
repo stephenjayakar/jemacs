@@ -30,6 +30,41 @@ test("buffer insert/delete/undo", () => {
   expect(b.text).toBe("aZbc")
 })
 
+test("BufferModel exposes canonical state as Emacs buffer-local variables", () => {
+  const b = new BufferModel({
+    name: "example.ts",
+    path: "/work/src/example.ts",
+    kind: "file",
+    mode: "typescript",
+  })
+
+  expect(b.locals.get("buffer-file-name")).toBe("/work/src/example.ts")
+  expect(b.locals.get("default-directory")).toBe("/work/src/")
+  expect(b.locals.get("major-mode")).toBe("typescript")
+  expect(b.locals.get("mode-name")).toBe("typescript")
+  expect(b.locals.get("buffer-read-only")).toBe(false)
+})
+
+test("Emacs buffer-local variables track BufferModel state changes", () => {
+  const b = new BufferModel({ name: "notes", mode: "text" })
+
+  expect(b.locals.get("buffer-file-name")).toBeNull()
+
+  b.path = "/tmp/notes.md"
+  b.kind = "file"
+  b.mode = "markdown"
+  b.readOnly = true
+
+  expect(b.locals.get("buffer-file-name")).toBe("/tmp/notes.md")
+  expect(b.locals.get("default-directory")).toBe("/tmp/")
+  expect(b.locals.get("major-mode")).toBe("markdown")
+  expect(b.locals.get("mode-name")).toBe("markdown")
+  expect(b.locals.get("buffer-read-only")).toBe(true)
+
+  b.kind = "scratch"
+  expect(b.locals.get("buffer-file-name")).toBeNull()
+})
+
 test("keymap handles multi-key command sequences", () => {
   const km = new Keymap()
   km.bind("C-x C-s", "save-buffer")

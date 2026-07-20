@@ -1,5 +1,5 @@
 import { dirname, basename } from "node:path"
-import { cp, fileExists, mkdir, readFileText, stat, writeFileText } from "../platform/runtime"
+import { cp, cwd, fileExists, mkdir, readFileText, stat, writeFileText } from "../platform/runtime"
 import { resolveBackupPath, type BackupDirectoryAlist } from "./backup-path"
 import { isTransientMarkModeEnabled } from "./transient-mark"
 import type { ShadowLink } from "../shadow/link"
@@ -49,9 +49,9 @@ export type UndoTreeNodeView = {
 
 export class BufferModel {
   readonly id: string
-  name: string
-  path?: string
-  kind: BufferKind
+  private _name: string
+  private _path?: string
+  private _kind: BufferKind
   private _text: string
   /** Offsets of line starts (lineStarts[0] === 0). Incrementally maintained in `_splice`. */
   private _lineStarts!: number[]
@@ -60,8 +60,8 @@ export class BufferModel {
   mark: number | null = null
   markActive = false
   dirty = false
-  readOnly = false
-  mode = "text"
+  private _readOnly = false
+  private _mode = "text"
   /** mtimeMs of the visited file at last load/save; undefined if never read from disk. */
   visitedFileModtime?: number
   readonly minorModes = new Set<string>()
@@ -83,12 +83,57 @@ export class BufferModel {
 
   constructor(args: { id?: string; name: string; text?: string; path?: string; kind?: BufferKind; mode?: string }) {
     this.id = args.id ?? crypto.randomUUID()
-    this.name = args.name
+    this._name = args.name
     this._text = args.text ?? ""
     this._lineStarts = scanLineStarts(this._text)
-    this.path = args.path
-    this.kind = args.kind ?? (args.path ? "file" : "scratch")
-    this.mode = args.mode ?? inferMode(args.path ?? args.name, this._text)
+    this._path = args.path
+    this._kind = args.kind ?? (args.path ? "file" : "scratch")
+    this._mode = args.mode ?? inferMode(args.path ?? args.name, this._text)
+    this.syncEmacsVariables()
+  }
+
+  get name(): string { return this._name }
+  set name(value: string) { this._name = value }
+
+  get path(): string | undefined { return this._path }
+  set path(value: string | undefined) {
+    this._path = value
+    this.syncFileVariables()
+  }
+
+  get kind(): BufferKind { return this._kind }
+  set kind(value: BufferKind) {
+    this._kind = value
+    this.syncFileVariables()
+  }
+
+  get readOnly(): boolean { return this._readOnly }
+  set readOnly(value: boolean) {
+    this._readOnly = value
+    this.locals.set("buffer-read-only", value)
+  }
+
+  get mode(): string { return this._mode }
+  set mode(value: string) {
+    this._mode = value
+    this.locals.set("major-mode", value)
+    this.locals.set("mode-name", value)
+  }
+
+  /** Keep Emacs' automatically buffer-local variables backed by canonical
+   *  BufferModel state. Plugins can consequently use the same `locals` path
+   *  for built-in variables and their own buffer-local variables. */
+  private syncEmacsVariables(): void {
+    this.syncFileVariables()
+    this.locals.set("major-mode", this._mode)
+    this.locals.set("mode-name", this._mode)
+    this.locals.set("buffer-read-only", this._readOnly)
+  }
+
+  private syncFileVariables(): void {
+    this.locals.set("buffer-file-name", this._kind === "file" ? this._path ?? null : null)
+    const directory = this.directory() ?? cwd()
+    this.locals.set("default-directory", directory.endsWith("/") ? directory : `${directory}/`)
   }
 
   static async fromFile(path: string): Promise<BufferModel> {
