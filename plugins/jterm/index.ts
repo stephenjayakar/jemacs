@@ -58,11 +58,15 @@ async function spawnTerminalBuffer(editor: Editor, opts: {
   cwd?: string
   env?: Record<string, string>
 }): Promise<BufferModel> {
+  // Capture the invoking buffer's directory before scratch() switches the
+  // editor to the new terminal buffer. Otherwise the fallback would always
+  // see the scratch buffer and use the editor process directory.
+  const cwd = opts.cwd ?? editor.currentBuffer.directory() ?? process.cwd()
   const buffer = editor.scratch(opts.name, "", JTERM_MODE)
-  if (opts.cwd) buffer.locals.set("default-directory", opts.cwd)
+  buffer.locals.set("default-directory", cwd)
   const { rows, cols } = bodyDims(buffer)
   const session = await spawnSession(editor, buffer, opts.argv, {
-    cwd: opts.cwd,
+    cwd,
     env: opts.env,
     rows,
     cols,
