@@ -61,7 +61,6 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["hi-lock", () => import("./hi-lock")],
   ["eshell", () => import("./eshell")],
   ["jterm", () => import("./jterm")],
-  ["jdap", () => import("./jdap")],
   ["avy", () => import("./avy")],
   ["register-text", () => import("./register-text")],
   ["rectangle-mark", () => import("./rectangle-mark")],

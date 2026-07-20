@@ -49,8 +49,3 @@ export * from "../../src/display/theme"
 // Disambiguate: kernel/extension-points also declares FaceStyle/Theme; the
 // display/theme versions are the canonical public types.
 export type { FaceStyle, Theme } from "../../src/display/theme"
-
-// Debug Adapter Protocol extension and launch-configuration APIs.
-export * from "../../src/dap/api"
-export * from "../../src/dap/types"
-export * from "../../src/dap/config"
