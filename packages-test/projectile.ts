@@ -1,21 +1,22 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { makeEditor } from "../plugins/helper"
-import { install as installVertico } from "../../plugins/vertico"
-import { install as installCompile } from "../../plugins/compile"
-import { install as installNextError } from "../../plugins/next-error"
-import { install as installPersist } from "../../plugins/persist"
-import { getCustom, setCustom } from "../../src/runtime/custom"
-import { spawnProcess } from "../../src/platform/runtime"
-import {
+import { makeEditor } from "../test/plugins/helper"
+import { install as installVertico } from "../plugins/vertico"
+import { install as installCompile } from "../plugins/compile"
+import { install as installNextError } from "../plugins/next-error"
+import { install as installPersist } from "../plugins/persist"
+import { getCustom, setCustom } from "../src/runtime/custom"
+import { spawnProcess } from "../src/platform/runtime"
+const packagesDir = process.env.JEMACS_PACKAGES ?? join(homedir(), ".jemacs", "packages")
+const {
   install,
   projectileProjectFiles,
   projectileProjectRoot,
   projectileKnownProjects,
   resetProjectileStateForTests,
-} from "../../../jemacs-packages/projectile/projectile"
+} = await import(join(packagesDir, "projectile/projectile.ts"))
 
 let dir: string
 let repo: string

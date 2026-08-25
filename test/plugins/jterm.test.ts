@@ -6,6 +6,7 @@ import { setCustom } from "../../src/runtime/custom"
 import { currentKill } from "../../src/runtime/kill-ring"
 import {
   install,
+  attachTransportSession,
   makeXTerm,
   sessions,
   jtermRawMap,
@@ -427,5 +428,28 @@ describe("jterm: writeRaw microtask batching", () => {
     session.writeRaw("c")
     await Promise.resolve()
     expect(pty.chunks).toEqual(["ab", "c"])
+  })
+})
+
+describe("jterm: external transports", () => {
+  test("attachTransportSession preserves the transport alias and ordered feed settling", async () => {
+    const editor = makeEditor()
+    const buffer = new BufferModel({ name: "*external-jterm*", kind: "scratch" })
+    const transport = fakePty()
+    const session = attachTransportSession(editor, buffer, transport, { rows: 4, cols: 20, label: "external" })
+
+    expect(session.transport).toBe(transport)
+    expect(session.pty).toBe(transport)
+    const first = session.feed("hello")
+    const second = session.feed(" world")
+    await Promise.all([first, second])
+    expect(buffer.text).toBe("hello world")
+
+    session.resize(6, 30)
+    expect(transport.resizes).toEqual([[6, 30]])
+    session.writeRaw("input")
+    await Promise.resolve()
+    expect(transport.sent).toBe("input")
+    session.dispose()
   })
 })

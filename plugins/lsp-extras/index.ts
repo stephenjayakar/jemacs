@@ -10,13 +10,15 @@ import {
   lspMakeRenameParams,
   lspMakeTextDocumentIdentifier,
 } from "../../src/lsp/lsp-protocol"
-import { formatLocation, normalizeLocations, type ResolvedLocation } from "../../src/lsp/locations"
+import { normalizeLocations, type ResolvedLocation } from "../../src/lsp/locations"
 import { gotoResolvedLocation } from "../../src/lsp/navigation"
 import { pointToPosition, positionToPoint, uriToPath } from "../../src/lsp/positions"
 import { xrefPushMark } from "../../src/xref/history"
+import { installXrefMode } from "../../src/xref/install"
 import { allClients, supportsBuffer } from "../../src/lsp/client"
 import { clientInstallCmds } from "../../src/lsp/clients"
 import { shadowState } from "../../src/shadow/shadow"
+import { setLocationList, type ErrorLocation } from "../next-error"
 
 function activeWorkspaces(editor: Editor, buffer: BufferModel): LspWorkspace[] {
   return editor.lsp?.bufferWorkspaces(buffer).filter(w => w.status === "initialized") ?? []
@@ -104,13 +106,61 @@ export async function applyWorkspaceEdit(editor: Editor, wedit: WorkspaceEdit): 
   return result
 }
 
-function locationLine(editor: Editor, loc: ResolvedLocation): string {
+function locationText(editor: Editor, loc: ResolvedLocation): string {
   const path = uriToPath(loc.uri)
   const buffer = findBufferForPath(editor, path)
-  const label = formatLocation(path, loc.range)
-  if (!buffer) return label
+  if (!buffer) return ""
   const start = positionToPoint(buffer.text, loc.range.start)
-  return `${label}: ${buffer.lineBoundsAt(start).text.trim()}`
+  return buffer.lineBoundsAt(start).text.trim()
+}
+
+function xrefErrorLocation(editor: Editor, loc: ResolvedLocation): ErrorLocation {
+  return {
+    file: uriToPath(loc.uri),
+    line: loc.range.start.line + 1,
+    col: loc.range.start.character + 1,
+    text: locationText(editor, loc),
+  }
+}
+
+function displayXrefBuffer(editor: Editor, locations: ResolvedLocation[]): BufferModel {
+  installXrefMode()
+  const errorLocations = locations.map(loc => xrefErrorLocation(editor, loc))
+  setLocationList(editor, errorLocations)
+
+  const groups = new Map<string, ErrorLocation[]>()
+  for (const loc of errorLocations) {
+    const group = groups.get(loc.file) ?? []
+    group.push(loc)
+    groups.set(loc.file, group)
+  }
+
+  const lines: string[] = []
+  const byLine = new Map<number, ErrorLocation>()
+  let lineNumber = 0
+  let firstHitLine = 0
+  for (const [file, locs] of groups) {
+    if (lines.length) {
+      lines.push("")
+      lineNumber++
+    }
+    lines.push(file)
+    lineNumber++
+    for (const loc of locs) {
+      const suffix = loc.text ? ` ${loc.text}` : ""
+      lines.push(`  ${loc.line}:${loc.col}:${suffix}`)
+      lineNumber++
+      byLine.set(lineNumber, loc)
+      if (!firstHitLine) firstHitLine = lineNumber
+    }
+  }
+
+  const buf = editor.scratch("*xref*", lines.join("\n") + "\n", "xref-mode")
+  buf.readOnly = true
+  buf.locals.set("next-error-locations", byLine)
+  if (firstHitLine) buf.point = buf.lineStarts[firstHitLine - 1] ?? 0
+  editor.message(`Found ${errorLocations.length} references`)
+  return buf
 }
 
 async function lspHover(editor: Editor, buffer: BufferModel): Promise<void> {
@@ -215,12 +265,7 @@ async function lspFindReferences(editor: Editor, buffer: BufferModel): Promise<v
     await gotoResolvedLocation(editor, collected[0]!)
     return
   }
-  const labels = collected.map(loc => locationLine(editor, loc))
-  editor.scratch("*xref*", labels.join("\n"), "text")
-  const choice = await editor.completingRead("LSP reference: ", { collection: labels, history: "lsp-references" })
-  if (!choice) return
-  const index = labels.indexOf(choice)
-  await gotoResolvedLocation(editor, collected[index >= 0 ? index : 0]!)
+  displayXrefBuffer(editor, collected)
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {

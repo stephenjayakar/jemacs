@@ -9,9 +9,11 @@ import type {
   SerializedWindowNode,
 } from "../display/serialize"
 import { serializeThemedText } from "../display/serialize"
+import { cursorIsBlock } from "../display/cursor-type"
 import { applyTheme } from "../display/theme"
+import { unitalicizeCharAt } from "../display/themed-text"
 import { contentAreaLines, visibleTextRegionFromStart, windowBodyLines, type ViewportSize } from "../display/viewport"
-import { textWithCursor } from "../ui/text-display"
+import { regionSpanWithCursor, textWithCursor } from "../ui/text-display"
 import type { TextSpan } from "../modes/mode"
 
 /** Row budget when the caller passes no viewport (browser-shadow path renders
@@ -28,9 +30,12 @@ export function webLayout(logical: LogicalModel, viewport: ViewportSize = { rows
     ? Math.max(1, logical.completion.text.split("\n").length)
     : 0
   const rows = viewport.rows > 0 ? viewport.rows : FALLBACK_ROWS
-  const areaLines = Math.max(2, contentAreaLines(rows) - completionLines - logical.overlayRows)
+  const areaLines = Math.max(2, contentAreaLines(rows) - completionLines - logical.overlayRows - (logical.tabBar ? 1 : 0))
   return {
     title: serializeThemedText(logical.title),
+    tabBar: logical.tabBar
+      ? serializeThemedText(applyTheme(logical.tabBar.text, logical.tabBar.spans, logical.theme))
+      : undefined,
     windows: layoutNode(logical, logical.windows, areaLines),
     childFrames: logical.childFrames.map(frame => layoutChildFrame(logical, frame)),
     minibufferCompletions: themedCompletions(logical),
@@ -58,9 +63,11 @@ function layoutChildFrame(logical: LogicalModel, frame: LogicalModel["childFrame
 
 function layoutNode(logical: LogicalModel, node: LogicalWindowNode, availableLines: number): SerializedWindowNode {
   if (node.kind === "leaf") {
+    const bodyAndFooterLines = windowBodyLines(availableLines)
+    const footerLines = footerLineCount(node.pane.footer?.text, bodyAndFooterLines)
     return {
       kind: "leaf",
-      pane: layoutPane(logical, node.id, node.pane, node.dedicated, windowBodyLines(availableLines)),
+      pane: layoutPane(logical, node.id, node.pane, node.dedicated, Math.max(1, bodyAndFooterLines - footerLines)),
     }
   }
   const lines = splitLineBudget(availableLines, node.direction, node.ratio)
@@ -115,8 +122,12 @@ function layoutPane(
     selected: pane.selected,
     dedicated,
     body,
-    cursor: pane.selected ? { row: cursorLine - startLine, colOffset: col - 1 } : undefined,
+    // `shape` omitted for the default bar so the wire model stays minimal.
+    cursor: pane.selected
+      ? { row: cursorLine - startLine, colOffset: col - 1, ...(cursorIsBlock() ? { shape: "box" as const } : {}) }
+      : undefined,
     terminalSurface: pane.terminalSurface,
+    footer: pane.footer?.text ? serializeThemedText(applyTheme(pane.footer.text, pane.footer.spans ?? [], logical.theme)) : undefined,
     modeline: serializeThemedText(pane.modeline),
     clickState: { startLine, gutterPrefixLen: 0 },
     bodyLineBudget: maxLines,
@@ -126,6 +137,11 @@ function layoutPane(
     syncPoint: 0,
     textScale: pane.textScale,
   }
+}
+
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 function themedCompletions(logical: LogicalModel): SerializedThemedText {
@@ -138,7 +154,7 @@ function themedCompletions(logical: LogicalModel): SerializedThemedText {
     let start = 0
     for (let i = 0; i < Math.min(display.selectedLine, lines.length); i++) start += lines[i]!.length + 1
     const end = start + (lines[display.selectedLine]?.length ?? 0)
-    if (end > start) spans.push({ start, end, face: "region" })
+    if (end > start) spans.push({ start, end, face: "highlight" })
   }
   return serializeThemedText(applyTheme(text, spans, logical.theme))
 }
@@ -148,8 +164,17 @@ function themedMinibuffer(logical: LogicalModel): SerializedThemedText {
   if (!mb) return serializeThemedText(applyTheme(" ", [], logical.theme))
   const input = textWithCursor(mb.text, mb.point)
   const text = mb.prompt + input
-  return serializeThemedText(applyTheme(text, [
+  // See char-grid-layout: a preselected prompt wears the candidate highlight.
+  const inputFace = logical.completion?.promptSelected ? "highlight" : "minibuffer"
+  const spans: TextSpan[] = [
     { start: 0, end: mb.prompt.length, face: "minibufferPrompt" },
-    { start: mb.prompt.length, end: text.length, face: "minibuffer" },
-  ], logical.theme))
+    { start: mb.prompt.length, end: text.length, face: inputFace },
+  ]
+  // See char-grid-layout: C-SPC sets a real mark in the minibuffer buffer.
+  const region = regionSpanWithCursor(mb.text, mb.point, mb.mark)
+  if (region) {
+    spans.push({ start: mb.prompt.length + region.start, end: mb.prompt.length + region.end, face: "region" })
+  }
+  return serializeThemedText(unitalicizeCharAt(applyTheme(text, spans, logical.theme),
+    mb.prompt.length + Math.max(0, Math.min(mb.point, mb.text.length))))
 }

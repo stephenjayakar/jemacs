@@ -46,7 +46,7 @@ export async function lspCompletionAtPoint(
       const sorted = [...matching].sort((a, b) => (a.sortText ?? a.label).localeCompare(b.sortText ?? b.label))
       return sorted.map(item => {
         const insert = item.textEdit?.newText ?? item.insertText ?? item.label
-        const range = item.textEdit?.range
+        const range = item.textEdit ? ('range' in item.textEdit ? item.textEdit.range : 'replace' in item.textEdit ? item.textEdit.replace : undefined) : undefined
         const start = range ? pointFromLsp(buffer.text, range.start) : symbol.start
         const end = range ? pointFromLsp(buffer.text, range.end) : symbol.end
         return { text: insert, start, end }

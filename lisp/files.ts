@@ -6,23 +6,38 @@ import type { Editor } from "../src/kernel/editor"
 import { setModeSystem } from "../src/kernel/extension-points"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { readKey } from "./misc"
+import { FUNDAMENTAL_MODE, REVERT_BUFFER_FUNCTION_KEY } from "../src/kernel/buffer"
 import { readFileText } from "../src/platform/runtime"
 import { defcustom, getCustom } from "../src/runtime/custom"
 import { saveContextOptions } from "../src/core/save-context"
 import {
   diredChangeMarks,
   diredCreateDirectory,
+  diredDoChmod,
+  diredDoCompress,
+  diredDoCompressTo,
   diredDoCopy,
   diredDoDelete,
+  diredDoFindRegexp,
   diredDoFlaggedDelete,
+  diredDoHardlink,
+  diredDoQueryReplaceRegexp,
   diredDoRename,
+  diredDoShellCommand,
+  diredDoSymlink,
+  diredDoTouch,
   diredEntriesForPrefix,
   diredEntryLines,
   diredEntryAtPoint,
   diredFlagFileDeletion,
+  diredHideDetailsMode,
+  diredMarkDirectories,
   diredMarkEntry,
+  diredMarkExecutables,
+  diredMarkExtension,
   diredMarkedFilesSummary,
   diredMarkFilesRegexp,
+  diredSortToggleOrEdit,
   diredToggleMarks,
   diredToggleMark,
   diredUnmarkAll,
@@ -40,10 +55,10 @@ import {
 setModeSystem({ makeDirectoryBuffer: makeDiredBuffer })
 
 defcustom("make-backup-files", "boolean", true,
-  "Non-nil means make a backup of a file the first time it is saved.")
+  "Non-nil means make a backup of a file the first time it is saved.", "backup")
 
-defcustom("large-file-warning-threshold", "number", 10 * 1024 * 1024,
-  "Files larger than this many bytes are visited literally, skipping expensive mode setup. Set to 0 to disable.")
+defcustom("large-file-warning-threshold", "integer", 10 * 1024 * 1024,
+  "Files larger than this many bytes are visited literally, skipping expensive mode setup. Set to 0 to disable.", "files")
 
 /** Emacs `substitute-in-file-name`: typing an absolute path or `~` after the
  *  prefilled directory restarts from there, so `/a/b//etc/x` → `/etc/x`.
@@ -128,6 +143,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.normalMode(buffer)
   }, "Re-infer and enable the normal major mode for the current buffer.")
 
+  editor.command(FUNDAMENTAL_MODE, ({ editor, buffer }) => {
+    editor.enterMode(buffer, FUNDAMENTAL_MODE)
+  }, "Major mode not specialized for anything in particular.")
+
   editor.command("write-file", async ({ buffer, editor, args }) => {
     const path = args[0] ?? await editor.prompt("Write file: ", buffer.path ?? "", "write-file")
     if (!path) return
@@ -187,6 +206,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Kill the current buffer or a specified buffer.")
 
   const revertBuffer = async ({ buffer, editor, args }: CommandContext) => {
+    // Emacs dispatches through the buffer-local `revert-buffer-function` first
+    // (files.el); special modes like `custom-theme-choose-mode` set it to
+    // rebuild their generated contents instead of re-reading a file.
+    const revertFunction = buffer.locals.get(REVERT_BUFFER_FUNCTION_KEY)
+    if (typeof revertFunction === "string") {
+      await editor.run(revertFunction, args)
+      return
+    }
     if (!buffer.path) {
       editor.message("Current buffer is not visiting a file")
       return
@@ -220,10 +247,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       }
       // Buffers with buffer-save-without-query set save silently (files.el:6370).
       if (b.locals.get("buffer-save-without-query")) { await trySave(saveCtx({ runHook, force: true })); continue }
-      let answer = saveAll ? "y" : (await editor.prompt(`Save file ${b.path}? (y, n, !, ., q) `, "", "save-some-buffers"))?.trim()
-      if (answer == null || answer === "q") break
+      let answer = "y"
+      if (!saveAll) {
+        while (true) {
+          answer = await readKey(editor, `Save file ${b.path}? (y, n, !, ., q) `) ?? "q"
+          if (["y", "space", "n", "backspace", "delete", "!", ".", "q", "esc"].includes(answer)) break
+          editor.message("Please answer y, n, !, . or q.")
+        }
+      }
+      if (answer === "q" || answer === "esc") break
+      if (answer === "n" || answer === "backspace" || answer === "delete") continue
       if (answer === "!") { saveAll = true; answer = "y" }
-      if (answer === "y" || answer === ".") await trySave(saveCtx({ runHook }))
+      if (answer === "y" || answer === "space" || answer === ".") await trySave(saveCtx({ runHook }))
       if (answer === ".") break
     }
     const summary = dirty.length ? `Saved ${saved} of ${dirty.length} file(s)` : "(No files need saving)"
@@ -351,6 +386,20 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const count = diredMarkFilesRegexp(buffer, regexp, "delete")
     editor.message(`Flagged ${count} file(s) for deletion`)
   }, "Flag files for deletion by regular expression.")
+  editor.command("dired-mark-extension", async ({ buffer, editor, args }) => {
+    const extension = args[0] ?? await editor.prompt("Mark extension: ", "", "dired-extension")
+    if (!extension) return
+    const count = diredMarkExtension(buffer, extension)
+    editor.message(`Marked ${count} file(s)`)
+  }, "Mark files whose names end in a given extension.")
+  editor.command("dired-mark-directories", ({ buffer, editor }) => {
+    const count = diredMarkDirectories(buffer)
+    editor.message(`Marked ${count} director${count === 1 ? "y" : "ies"}`)
+  }, "Mark all directories in Dired.")
+  editor.command("dired-mark-executables", ({ buffer, editor }) => {
+    const count = diredMarkExecutables(buffer)
+    editor.message(`Marked ${count} executable file(s)`)
+  }, "Mark all executable files in Dired.")
   editor.command("dired-flag-file-deletion", ({ buffer, prefixArgument }) => {
     for (const entry of diredEntriesForPrefix(buffer, prefixArgument)) {
       diredFlagFileDeletion(buffer, entry)
@@ -368,6 +417,41 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("dired-do-rename", async ({ buffer, editor, prefixArgument }) => {
     await diredDoRename(editor, buffer, prefixArgument)
   }, "Rename a file or move marked files to another directory.")
+  editor.command("dired-do-chmod", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoChmod(editor, buffer, prefixArgument, args[0])
+  }, "Change the mode of marked files or the file on the current line.")
+  editor.command("dired-do-touch", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoTouch(editor, buffer, prefixArgument, args[0])
+  }, "Update the timestamp of marked files or the file on the current line.")
+  editor.command("dired-do-symlink", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoSymlink(editor, buffer, prefixArgument, args[0])
+  }, "Create symbolic links to marked files or the file on the current line.")
+  editor.command("dired-do-hardlink", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoHardlink(editor, buffer, prefixArgument, args[0])
+  }, "Create hard links to marked files or the file on the current line.")
+  editor.command("dired-do-shell-command", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoShellCommand(editor, buffer, prefixArgument, args[0])
+  }, "Run a shell command on marked files or the file on the current line.")
+  editor.command("dired-do-compress", async ({ buffer, editor, prefixArgument }) => {
+    await diredDoCompress(editor, buffer, prefixArgument)
+  }, "Compress or uncompress marked files or the file on the current line.")
+  editor.command("dired-do-compress-to", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoCompressTo(editor, buffer, prefixArgument, args[0])
+  }, "Compress marked files or the current file into a tar.gz archive.")
+  editor.command("dired-do-find-regexp", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoFindRegexp(editor, buffer, prefixArgument, args[0])
+  }, "Search marked files or the current file for a regular expression.")
+  editor.command("dired-do-query-replace-regexp", async ({ buffer, editor, args, prefixArgument }) => {
+    await diredDoQueryReplaceRegexp(editor, buffer, prefixArgument, args[0], args[1])
+  }, "Query replace a regular expression through marked files or the current file.")
+  editor.command("dired-hide-details-mode", ({ buffer, editor, args }) => {
+    const enabled = args[0] == null ? undefined : args[0] !== "0" && args[0] !== "false"
+    const on = diredHideDetailsMode(buffer, enabled)
+    editor.message(`Dired Hide Details mode ${on ? "enabled" : "disabled"}`)
+  }, "Toggle hiding details in the current Dired buffer.")
+  editor.command("dired-sort-toggle-or-edit", async ({ buffer, editor }) => {
+    await diredSortToggleOrEdit(editor, buffer)
+  }, "Toggle Dired sorting between name and date.")
   editor.command("dired-create-directory", async ({ buffer, editor, args }) => {
     if (!buffer.path || buffer.kind !== "directory") {
       editor.message("Not in Dired")

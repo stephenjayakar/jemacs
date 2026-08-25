@@ -1,2 +1,7 @@
 export * from "./magit"
+export * from "./section"
+export * from "./bisect"
+export * from "./rebase-todo"
+export * from "./with-editor"
+export * from "./process"
 export { install } from "./magit"

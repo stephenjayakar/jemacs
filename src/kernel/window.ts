@@ -181,6 +181,17 @@ export function setWindowLeafDedicated(node: WindowNode, id: WindowId, dedicated
   return mapWindowLeaves(node, leaf => leaf.id === id ? { ...leaf, dedicated } : leaf)
 }
 
+/** Set the immediate parent split so `id` receives `ratio` of that split. */
+export function setWindowSplitRatioForLeaf(node: WindowNode, id: WindowId, ratio: number): WindowNode {
+  if (node.kind === "leaf") return node
+  const safe = Math.max(0.1, Math.min(0.9, ratio))
+  if (node.first.kind === "leaf" && node.first.id === id) return { ...node, firstRatio: safe }
+  if (node.second.kind === "leaf" && node.second.id === id) return { ...node, firstRatio: 1 - safe }
+  if (findWindowLeaf(node.first, id)) return { ...node, first: setWindowSplitRatioForLeaf(node.first, id, ratio) }
+  if (findWindowLeaf(node.second, id)) return { ...node, second: setWindowSplitRatioForLeaf(node.second, id, ratio) }
+  return node
+}
+
 export function scrollWindowLeaf(node: WindowNode, id: WindowId, lineDelta: number, maxStartLine: number): WindowNode {
   return mapWindowLeaves(node, leaf => {
     if (leaf.id !== id) return leaf

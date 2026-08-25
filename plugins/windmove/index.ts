@@ -86,7 +86,7 @@ function doWindmove(editor: Editor, dir: Direction): void {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("windmove-wrap-around", "boolean", false,
-    "Whether movement off the edge of the frame wraps around.")
+    "Whether movement off the edge of the frame wraps around.", "windows")
 
   editor.command("windmove-left", ({ editor }) => doWindmove(editor, "left"),
     "Select the window to the left of the current one.")

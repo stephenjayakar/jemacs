@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
-import { BufferModel } from "../src/kernel/buffer"
+import { BufferModel, FUNDAMENTAL_MODE } from "../src/kernel/buffer"
 import { emacsKeyDescription, isPrintable, keyToken, Keymap, KeymapStack } from "../src/kernel/keymap"
 import { listWindowLeaves } from "../src/kernel/window"
 import { Editor, LARGE_FILE_LITERAL_LOCAL } from "../src/kernel/editor"
@@ -28,6 +28,41 @@ test("buffer insert/delete/undo", () => {
   expect(b.text).toBe("abc")
   b.undo()
   expect(b.text).toBe("aZbc")
+})
+
+test("BufferModel exposes canonical state as Emacs buffer-local variables", () => {
+  const b = new BufferModel({
+    name: "example.ts",
+    path: "/work/src/example.ts",
+    kind: "file",
+    mode: "typescript",
+  })
+
+  expect(b.locals.get("buffer-file-name")).toBe("/work/src/example.ts")
+  expect(b.locals.get("default-directory")).toBe("/work/src/")
+  expect(b.locals.get("major-mode")).toBe("typescript")
+  expect(b.locals.get("mode-name")).toBe("typescript")
+  expect(b.locals.get("buffer-read-only")).toBe(false)
+})
+
+test("Emacs buffer-local variables track BufferModel state changes", () => {
+  const b = new BufferModel({ name: "notes", mode: "text" })
+
+  expect(b.locals.get("buffer-file-name")).toBeNull()
+
+  b.path = "/tmp/notes.md"
+  b.kind = "file"
+  b.mode = "markdown"
+  b.readOnly = true
+
+  expect(b.locals.get("buffer-file-name")).toBe("/tmp/notes.md")
+  expect(b.locals.get("default-directory")).toBe("/tmp/")
+  expect(b.locals.get("major-mode")).toBe("markdown")
+  expect(b.locals.get("mode-name")).toBe("markdown")
+  expect(b.locals.get("buffer-read-only")).toBe(true)
+
+  b.kind = "scratch"
+  expect(b.locals.get("buffer-file-name")).toBeNull()
 })
 
 test("keymap handles multi-key command sequences", () => {
@@ -74,14 +109,11 @@ test("key descriptions use Emacs spellings", () => {
   expect(emacsKeyDescription("C-x C-f")).toBe("C-x C-f")
 })
 
-test("mac option key sequences map to meta bindings", () => {
-  expect(keyToken({ name: "≈", sequence: "≈" })).toBe("M-x")
-  expect(keyToken({ name: "ƒ", sequence: "ƒ" })).toBe("M-f")
-  expect(keyToken({ name: "∫", sequence: "∫" })).toBe("M-b")
-  expect(keyToken({ name: "≥", sequence: "≥" })).toBe("M-.")
-  expect(keyToken({ name: "≤", sequence: "≤" })).toBe("M-,")
-  expect(isPrintable({ name: "≈", sequence: "≈" })).toBe(false)
-  expect(isPrintable({ name: "≥", sequence: "≥" })).toBe(false)
+test("literal mac option glyphs are printable outside the OpenTUI decoder", () => {
+  expect(keyToken({ name: "≈", sequence: "≈" })).toBe("≈")
+  expect(keyToken({ name: "ƒ", sequence: "ƒ" })).toBe("ƒ")
+  expect(isPrintable({ name: "≈", sequence: "≈" })).toBe(true)
+  expect(isPrintable({ name: "≥", sequence: "≥" })).toBe(true)
 })
 
 test("visible text cursor does not shift the character under point", () => {
@@ -248,7 +280,10 @@ test("default emacs keybindings are registered and runnable", async () => {
 
   expect(editor.keymaps.feed({ name: "x", ctrl: true }).status).toBe("pending")
   expect(editor.keymaps.feed({ name: "c", ctrl: true })).toMatchObject({ status: "matched", command: "save-buffers-kill-terminal" })
-  expect(editor.keymaps.feed({ name: "≈", sequence: "≈" })).toMatchObject({ status: "matched", command: "execute-extended-command" })
+  // Option-composed chars are translated in the terminal host layer now
+  // (keyEventFromOpentui), so a raw ≈ reaching the kernel stays literal.
+  expect(editor.keymaps.feed({ name: "≈", sequence: "≈" }).status).toBe("unmatched")
+  expect(editor.keymaps.feed({ name: "x", meta: true })).toMatchObject({ status: "matched", command: "execute-extended-command" })
   expect(editor.keymaps.feed({ name: "escape" }).status).toBe("pending")
   expect(editor.keymaps.feed({ name: "x" })).toMatchObject({ status: "matched", command: "execute-extended-command" })
 })
@@ -870,6 +905,22 @@ test("clipboard kill commands use Emacs names and region semantics", async () =>
   expect(buffer.text).toBe("hello worldhellohello")
 })
 
+// macOS reports Cmd+V as the super modifier, so the clipboard commands are only
+// reachable if the super chords are bound. They were not, and Cmd+V died with
+// "Unbound key: s-v" in every mode.
+test("macOS super clipboard chords reach the clipboard commands", async () => {
+  const editor = new Editor()
+  installDefaultCommands(editor)
+
+  expect(editor.keymaps.lookup("s-v")).toMatchObject({ status: "matched", command: "clipboard-yank" })
+  expect(editor.keymaps.lookup("s-c")).toMatchObject({ status: "matched", command: "clipboard-kill-ring-save" })
+  expect(editor.keymaps.lookup("s-x")).toMatchObject({ status: "matched", command: "clipboard-kill-region" })
+
+  // Shift+V must stay a distinct binding: modes such as magit bind S-v.
+  expect(keyToken({ name: "v", sequence: "V", shift: true })).toBe("S-v")
+  expect(keyToken({ name: "v", sequence: "v", super: true })).toBe("s-v")
+})
+
 test("kill-ring-save deactivates mark and yank marks inserted text like Emacs", async () => {
   const editor = new Editor()
   installDefaultCommands(editor)
@@ -1008,9 +1059,16 @@ test("yank-pop does not replace a stale yank after another command", async () =>
   expect(buffer.text).toBe("new")
 
   await editor.run("backward-char")
+  // Emacs 28+: a stale yank is still never replaced, but M-y now falls back
+  // to browsing the kill ring instead of erroring. Cancel the browse.
+  const prompts: string[] = []
+  editor.completingReadFunction = async (_editor, prompt) => {
+    prompts.push(prompt)
+    return null
+  }
   await editor.run("yank-pop")
   expect(buffer.text).toBe("new")
-  expect(messages.at(-1)).toBe("Previous command was not a yank")
+  expect(prompts).toEqual(["Yank from kill-ring: "])
 })
 
 test("downcase-region converts region text and preserves point and mark", async () => {
@@ -1496,6 +1554,20 @@ test("python mode supports indentation, defun navigation, font-lock, and TAB com
   expect(spans.some(span => span.face === "string" && buffer.text.slice(span.start, span.end) === "'hi'")).toBe(true)
 })
 
+test("python mode indents after Return following a block opener", async () => {
+  const { installDefaultModes } = await import("../src/modes/default-modes")
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  await installStephenConfig(editor)
+  const buffer = editor.scratch("fibo.py", "def fibo(n):", "python")
+  buffer.point = buffer.text.length
+
+  await editor.handleKey({ name: "return" })
+
+  expect(buffer.text).toBe("def fibo(n):\n    ")
+})
+
 test("tree-sitter font-lock highlights javascript, html, and java modes", async () => {
   const { installDefaultModes } = await import("../src/modes/default-modes")
   const { install: installTreeSitterGrammars } = await import("../plugins/tree-sitter-grammars")
@@ -1648,7 +1720,8 @@ test("large files open literally and can return to normal mode", async () => {
   await Bun.write(path, "def f():\n    return 'loaded'\n")
   try {
     const buffer = await editor.openFile(path)
-    expect(buffer.mode).toBe("text")
+    // Emacs `find-file-literally` leaves the buffer in fundamental-mode.
+    expect(buffer.mode).toBe(FUNDAMENTAL_MODE)
     expect(buffer.locals.get(LARGE_FILE_LITERAL_LOCAL)).toBe(true)
 
     for (let i = 0; i < 50 && buffer.text === ""; i++) await Bun.sleep(10)
@@ -1909,6 +1982,7 @@ test("text-scale-adjust increases buffer scale and binds s-= in Stephen config",
   const buffer = editor.currentBuffer
 
   expect(editor.keymap.get("s-=")).toBe("text-scale-adjust")
+  expect(editor.keymap.get("s--")).toBe("text-scale-adjust")
   expect(getTextScaleAmount(buffer)).toBe(0)
 
   await editor.run("text-scale-adjust", [], { name: "=", sequence: "=" })
@@ -1918,6 +1992,9 @@ test("text-scale-adjust increases buffer scale and binds s-= in Stephen config",
 
   await editor.run("text-scale-adjust", [], { name: "=", sequence: "=" })
   expect(getTextScaleAmount(buffer)).toBe(2)
+
+  await editor.run("text-scale-adjust", [], { name: "-", sequence: "-", super: true })
+  expect(getTextScaleAmount(buffer)).toBe(1)
 
   await editor.run("text-scale-adjust", [], { name: "0", sequence: "0" })
   expect(getTextScaleAmount(buffer)).toBe(0)

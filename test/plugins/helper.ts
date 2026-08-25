@@ -5,9 +5,9 @@ import { clearAdvice } from "../../src/runtime/advice"
 import { clearHooks } from "../../src/kernel/hooks"
 import { listCatalogEntries } from "../../src/runtime/definitions"
 
-// electric-pair and completion-preview guard their addAdvice("self-insert-command")
+// electric-pair, completion-preview, and fill guard their addAdvice("self-insert-command")
 // with a module-level flag, so they cannot re-register after a clear; leave that
-// command's advice alone (both advisors no-op when their minor mode is disabled).
+// command's advice alone (these advisors no-op when their minor mode is disabled).
 const GUARDED_ADVICE = new Set(["self-insert-command"])
 
 /** Clear process-global advice/hooks left by earlier test files. Shared by

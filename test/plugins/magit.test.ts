@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { makeEditor } from "./helper"
 import { spawnProcess } from "../../src/platform/runtime"
 import { getMode } from "../../src/modes/mode"
-import { buildStatus, entryAtPoint, install, parsePorcelain, type MagitEntry } from "../../plugins/magit"
+import { buildStatus, entryAtPoint, install, magitDiffVisitTarget, parsePorcelain, type MagitEntry } from "../../plugins/magit"
 
 let repo: string
 
@@ -65,7 +65,7 @@ test("parsePorcelain reads branch and XY states", () => {
 
 test("install registers commands, modes and C-x g", () => {
   const editor = ed()
-  for (const cmd of ["magit-status", "magit-stage", "magit-unstage", "magit-refresh", "magit-commit", "magit-commit-finish", "magit-bury-buffer"]) {
+  for (const cmd of ["magit-status", "magit-stage", "magit-unstage", "magit-refresh", "magit-commit", "magit-commit-finish", "magit-bury-buffer", "magit-log-buffer-file", "magit-file-checkout", "magit-diff-visit-file"]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
   expect(editor.keymap.get("C-x g")).toBe("magit-status")
@@ -76,6 +76,25 @@ test("install registers commands, modes and C-x g", () => {
   expect(mode?.keymap?.get("c c")).toBe("magit-commit")
   expect(mode?.keymap?.get("q")).toBe("magit-bury-buffer")
   expect(getMode("magit-commit")?.keymap?.get("C-c C-c")).toBe("magit-commit-finish")
+})
+
+test("magitDiffVisitTarget computes file and source line from hunk lines", () => {
+  const diff = [
+    "diff --git a/a.txt b/a.txt",
+    "--- a/a.txt",
+    "+++ b/a.txt",
+    "@@ -2,3 +2,4 @@",
+    " context",
+    "-old",
+    "+new",
+    " tail",
+    "",
+  ].join("\n")
+  expect(magitDiffVisitTarget(diff, diff.indexOf(" context"))).toEqual({ file: "a.txt", line: 2 })
+  expect(magitDiffVisitTarget(diff, diff.indexOf("-old"))).toEqual({ file: "a.txt", line: 3 })
+  expect(magitDiffVisitTarget(diff, diff.indexOf("+new"))).toEqual({ file: "a.txt", line: 3 })
+  const statusHunk = "@@ -10 +20 @@\n+added\n"
+  expect(magitDiffVisitTarget(statusHunk, statusHunk.indexOf("+added"), "hint.txt")).toEqual({ file: "hint.txt", line: 20 })
 })
 
 test("buildStatus on a clean repo shows Head and Recent commits only", async () => {
@@ -105,9 +124,40 @@ test("magit-status opens a read-only *magit: <repo>* buffer in magit-status mode
   expect(buf.text).toContain("+changed")
 })
 
+test("magit-log-buffer-file opens log scoped to the current file", async () => {
+  const editor = ed()
+  await writeFile(join(repo, "a.txt"), "one\nsecond\n")
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "a only"])
+  await writeFile(join(repo, "b.txt"), "two\nsecond\n")
+  await git(["add", "b.txt"])
+  await git(["commit", "-q", "-m", "b only"])
+
+  await editor.openFile(join(repo, "a.txt"))
+  await editor.run("magit-log-buffer-file")
+
+  expect(editor.currentBuffer.name).toBe("*magit-log*")
+  expect(editor.currentBuffer.text).toContain("a only")
+  expect(editor.currentBuffer.text).not.toContain("b only")
+})
+
+test("magit-file-checkout checks out current file from a revision and reverts buffer", async () => {
+  const editor = ed()
+  await writeFile(join(repo, "a.txt"), "second\n")
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "second"])
+  const buffer = await editor.openFile(join(repo, "a.txt"))
+  expect(buffer.text).toBe("second\n")
+
+  await editor.run("magit-file-checkout", ["HEAD~1"])
+
+  expect(editor.currentBuffer.path).toBe(join(repo, "a.txt"))
+  expect(editor.currentBuffer.text).toBe("one\n")
+})
+
 test("magit-status outside a repo just messages", async () => {
   const editor = ed()
-  const island = await mkdtemp(join(tmpdir(), "jemacs-magit-none-"))
+  const island = await realpath(await mkdtemp("/tmp/jemacs-magit-none-"))
   let last = ""
   editor.events.on("message", ({ text }) => { last = text })
   await editor.run("magit-status", [island])

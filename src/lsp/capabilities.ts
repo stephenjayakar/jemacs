@@ -7,8 +7,8 @@ import {
   type ClientCapabilities,
 } from "./lsp-protocol"
 
-const symbolKindValueSet = Object.values(SymbolKind).filter(v => typeof v === "number") as number[]
-const completionKindValueSet = Object.values(CompletionItemKind).filter(v => typeof v === "number") as number[]
+const symbolKindValueSet = Object.values(SymbolKind).filter(v => typeof v === "number") as SymbolKind[]
+const completionKindValueSet = Object.values(CompletionItemKind).filter(v => typeof v === "number") as CompletionItemKind[]
 
 export function clientCapabilities(custom?: ClientCapabilities): ClientCapabilities {
   const base: ClientCapabilities = {
@@ -72,7 +72,6 @@ export function clientCapabilities(custom?: ClientCapabilities): ClientCapabilit
         completionItem: {
           snippetSupport: false,
           documentationFormat: ["markdown", "plaintext"],
-          resolveAdditionalTextEditsSupport: true,
           insertReplaceSupport: true,
           deprecatedSupport: true,
           resolveSupport: {

@@ -39,7 +39,13 @@ export class XtermPaneRegistry {
     applyTheme(state.term, theme)
     state.container.className = "xterm-pane"
     body.classList.add("xterm-surface")
-    body.replaceChildren(state.container)
+    // Only re-parent when the container isn't already the sole child. An
+    // unconditional replaceChildren() detaches and re-attaches the live xterm
+    // element on every frame, which tears down its canvas/WebGL layers and
+    // makes the pane visibly flash.
+    if (state.container.parentNode !== body || body.childNodes.length !== 1) {
+      body.replaceChildren(state.container)
+    }
 
     const rows = Math.max(1, surface.rows)
     const cols = Math.max(1, surface.cols)

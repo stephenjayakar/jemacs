@@ -103,7 +103,7 @@ export function eldocScheduleTimer(editor: Editor): Timer {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("eldoc-idle-delay", "number", 0.3,
-    "Seconds of idle time before ElDoc shows documentation in the echo area.")
+    "Seconds of idle time before ElDoc shows documentation in the echo area.", "help")
 
   ctx.minorMode({
     name: "eldoc-mode",

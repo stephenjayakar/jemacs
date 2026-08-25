@@ -1,5 +1,5 @@
 import type { BufferModel } from "../kernel/buffer"
-import { defineMode, type CompletionCandidate, type FontLockRange, type Mode, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type ImenuIndexEntry, type Mode, type TextSpan } from "./mode"
 import { createTreeSitterFontLock } from "./tree-sitter"
 
 const javascriptKeywords = new Set("async await break case catch class const continue default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield".split(" "))
@@ -27,6 +27,11 @@ export function installConfigModes(): void {
   defineCodeMode("yaml", new Set("true false null yes no on off".split(" ")), "#", 2, "text")
   defineCodeMode("json", jsonKeywords, "//", 2, "text")
   defineCodeMode("c", cKeywords, "//", 4)
+  // Mermaid diagrams are prose-with-keywords, so `text` is the right parent: prog-mode
+  // indentation rules fight the diagram syntax.
+  defineCodeMode("mermaid", new Set(("graph flowchart sequenceDiagram classDiagram stateDiagram erDiagram journey gantt pie "
+    + "gitGraph mindmap timeline quadrantChart requirementDiagram C4Context subgraph end participant actor note over "
+    + "loop alt opt par rect activate deactivate class state direction TB TD BT RL LR title section").split(" ")), "%%", 2, "text")
   defineMode({ name: "handlebars", parent: "text", commentStart: "{{!", fontLock: handlebarsFontLock })
   defineMode({ name: "restclient", parent: "text", commentStart: "#", fontLock: restClientFontLock })
 }
@@ -59,7 +64,47 @@ function defineTreeSitterCodeMode(name: string, keywords: Set<string>, commentSt
     indentLine: buffer => braceIndentLine(buffer, indentWidth),
     fontLock: hybridCodeFontLock(name, keywords, commentStart),
     completeAtPoint: buffer => wordCompleteAtPoint(buffer, keywords),
+    imenuIndex: name === "javascript" || name === "typescript" ? javascriptImenuIndex : undefined,
   })
+}
+
+export function javascriptImenuIndex(buffer: BufferModel): ImenuIndexEntry[] {
+  const entries: ImenuIndexEntry[] = []
+  const classStack: Array<{ name: string; depth: number }> = []
+  let depth = 0
+  let lineStart = 0
+
+  while (lineStart <= buffer.text.length) {
+    const lineEndIndex = lineEnd(buffer.text, lineStart)
+    const line = buffer.text.slice(lineStart, lineEndIndex)
+    const trimmed = line.trim()
+    const currentClass = classStack[classStack.length - 1]
+    const classMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)\b/)
+    const functionMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/)
+    const constArrowMatch = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
+    const methodMatch = currentClass && trimmed.match(/^(?:async\s+|static\s+)*(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::[^{]+)?\{/)
+
+    if (classMatch) {
+      const name = classMatch[1]!
+      entries.push({ name, point: lineStart })
+      classStack.push({ name, depth: depth + countChar(line, "{") - countChar(line, "}") })
+    } else if (functionMatch) {
+      entries.push({ name: functionMatch[1]!, point: lineStart })
+    } else if (constArrowMatch) {
+      entries.push({ name: constArrowMatch[1]!, point: lineStart })
+    } else if (methodMatch && currentClass) {
+      const method = methodMatch[1]!
+      if (method !== "if" && method !== "for" && method !== "while" && method !== "switch" && method !== "catch") {
+        entries.push({ name: `${currentClass.name}.${method}`, point: lineStart })
+      }
+    }
+
+    depth += countChar(line, "{") - countChar(line, "}")
+    while (classStack.length && depth < classStack[classStack.length - 1]!.depth) classStack.pop()
+    if (lineEndIndex === buffer.text.length) break
+    lineStart = lineEndIndex + 1
+  }
+  return entries
 }
 
 export function braceIndentLine(buffer: BufferModel, width: number): void {
@@ -113,11 +158,53 @@ function handlebarsFontLock(buffer: BufferModel): TextSpan[] {
   return spans
 }
 
-function restClientFontLock(buffer: BufferModel): TextSpan[] {
+// Mirrors `restclient-mode-keywords` in restclient.el: the face per construct
+// follows the `defface ... :inherit` chain there (method → keyword, url →
+// function-name, variable name → preprocessor, header name → variable-name,
+// header/string values → string, multiline + file upload → doc).
+const REST_LINE_RULES: Array<{ re: RegExp; faces: Array<TextSpan["face"]> }> = [
+  { re: /^[ \t]*(GET|POST|DELETE|PUT|HEAD|OPTIONS|PATCH|PROPFIND) (.*)$/d, faces: ["keyword", "function"] },
+  // `:name := elisp` / `:name = <<` / `:name = value` (multiline before plain).
+  { re: /^(:[^: ]+)[ \t]*:=[ \t]*(.+?)[ \t]*$/d, faces: ["preprocessor", "function"] },
+  { re: /^(:[^: ]+)[ \t]*:?=[ \t]*(<<)[ \t]*$/d, faces: ["preprocessor", "doc"] },
+  { re: /^(:[^:= ]+)[ \t]*=[ \t]*(.+?)[ \t]*$/d, faces: ["preprocessor", "string"] },
+  { re: /^(->) (\S+) +(.*)$/d, faces: ["preprocessor", "function", "string"] },
+  { re: /^(<[ \t]*[^<>\n\r]+[ \t]*)$/d, faces: ["doc"] },
+  { re: /^([^\](),/:;@[\\{}= \t]+): (.*)$/d, faces: ["variable", "string"] },
+  { re: /^(:[^: ]+)|({{[^} ]+}})$/d, faces: ["preprocessor", "preprocessor"] },
+]
+
+function restClientFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
+  const { text, offset } = fontLockSlice(buffer, range)
   const spans: TextSpan[] = []
-  addWords(buffer.text, /^\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/gm, "keyword", spans)
-  addWords(buffer.text, /^\s*#.*$/gm, "comment", spans)
-  return spans
+
+  let lineStart = 0
+  while (lineStart <= text.length) {
+    const nl = text.indexOf("\n", lineStart)
+    const lineEndIndex = nl === -1 ? text.length : nl
+    const line = text.slice(lineStart, lineEndIndex)
+
+    if (line.startsWith("#")) {
+      spans.push({ start: offset + lineStart, end: offset + lineEndIndex, face: "comment" })
+    } else {
+      for (const { re, faces } of REST_LINE_RULES) {
+        const match = re.exec(line)
+        if (!match) continue
+        const indices = match.indices ?? []
+        for (let group = 1; group < indices.length; group++) {
+          const bounds = indices[group]
+          const face = faces[group - 1]
+          if (!bounds || !face) continue
+          spans.push({ start: offset + lineStart + bounds[0], end: offset + lineStart + bounds[1], face })
+        }
+        break
+      }
+    }
+
+    if (nl === -1) break
+    lineStart = nl + 1
+  }
+  return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
 function wordCompleteAtPoint(buffer: BufferModel, keywords: Set<string>): CompletionCandidate[] {
@@ -145,6 +232,12 @@ function insideStringOrComment(spans: TextSpan[], point: number): boolean {
 function lineEnd(text: string, start: number): number {
   const end = text.indexOf("\n", start)
   return end === -1 ? text.length : end
+}
+
+function countChar(text: string, char: string): number {
+  let count = 0
+  for (const ch of text) if (ch === char) count++
+  return count
 }
 
 function fontLockSlice(buffer: BufferModel, range?: FontLockRange): { text: string; offset: number } {

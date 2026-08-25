@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path"
 import type { BufferModel } from "../kernel/buffer"
 import { spawnProcess, whichExecutable } from "../platform/runtime"
 import type { LspConnection } from "./client"
+import { getCustom } from "../runtime/custom"
 
 /** Port of `lsp-stdio-connection` from lsp-mode.el. */
 export function stdioConnection(
@@ -12,8 +13,20 @@ export function stdioConnection(
   return {
     connect({ onData, onExit, serverId, cwd }) {
       const argv = typeof command === "function" ? command(cwd) : command
+      const lspRemoteHost = getCustom<string>("lsp-remote-host")
+      let cmdArgv = argv
+      if (lspRemoteHost) {
+        const escapedArgs = argv.map(arg => {
+          if (arg.includes(" ") || arg.includes('"') || arg.includes("'")) {
+            return `'${arg.replace(/'/g, "'\\''")}'`
+          }
+          return arg
+        })
+        const remoteCmd = `cd ${cwd} && exec ${escapedArgs.join(" ")}`
+        cmdArgv = ["ssh", lspRemoteHost, remoteCmd]
+      }
       const proc = spawnProcess({
-        cmd: argv,
+        cmd: cmdArgv,
         cwd,
         stdin: "pipe",
         stdout: "pipe",
@@ -45,6 +58,8 @@ export function stdioConnection(
     test:
       testCommand
       ?? (buffer => {
+        const lspRemoteHost = getCustom<string>("lsp-remote-host")
+        if (lspRemoteHost) return true
         const cwd = buffer?.path ? dirname(resolve(buffer.path)) : process.cwd()
         const argv = typeof command === "function" ? command(cwd) : command
         const bin = argv[0]!

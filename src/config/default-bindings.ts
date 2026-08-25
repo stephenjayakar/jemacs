@@ -9,6 +9,12 @@ export function bindDefaultKeybindings(editor: Editor): void {
   bindMinibufferKeys(editor)
 }
 
+/** GUI-only convenience bindings layered on after the shared defaults. */
+export function bindGuiKeybindings(editor: Editor): void {
+  editor.key("s-s", "save-buffer")
+  editor.key("s-a", "mark-whole-buffer")
+}
+
 function bindGlobalKeys(editor: Editor): void {
   editor.key("left", "backward-char")
   editor.key("right", "forward-char")
@@ -84,12 +90,25 @@ function bindGlobalKeys(editor: Editor): void {
   for (const key of ["C-S-tab", "C-S-iso-lefttab", "C-iso-lefttab", "C-backtab"]) {
     editor.key(key, "previous-window-any-frame")
   }
-  editor.key("C-M-tab", "tab-bar-switch-to-next-tab")
-  editor.key("C-M-S-tab", "tab-bar-switch-to-prev-tab")
-  editor.key("s-}", "tab-bar-switch-to-next-tab")
-  editor.key("s-{", "tab-bar-switch-to-prev-tab")
-  editor.key("s-t", "tab-bar-new-tab")
-  editor.key("s-w", "tab-bar-close-tab")
+  // GNU Emacs binds the tab chords in `tab-bar-mode`'s own map; jemacs has no
+  // per-mode global map, so they sit on the global map next to `C-x t`.
+  editor.key("C-M-tab", "tab-next")
+  editor.key("C-M-S-tab", "tab-previous")
+  // macOS tab chords. A GUI Emacs gets these from `ns-win.el`; they live with
+  // the other super chords below because terminals that report super deliver
+  // them too, and both jemacs frontends read the same global map.
+  editor.key("s-t", "tab-new")
+  editor.key("s-w", "tab-close")
+  editor.key("s-}", "tab-next")
+  editor.key("s-{", "tab-previous")
+  editor.key("S-s-]", "tab-next")
+  editor.key("S-s-[", "tab-previous")
+  // macOS system clipboard chords. GNU Emacs on macOS binds these on the super
+  // modifier, and terminals that report super (plus the Electron host) deliver
+  // them here; without these, Cmd+V is reported as "Unbound key: s-v".
+  editor.key("s-v", "clipboard-yank")
+  editor.key("s-c", "clipboard-kill-ring-save")
+  editor.key("s-x", "clipboard-kill-region")
   editor.key("C-c C-r", "revert-buffer")
   editor.key("C-c C-q", "save-buffers-kill-terminal")
 
@@ -110,6 +129,11 @@ function bindGlobalKeys(editor: Editor): void {
   for (const key of ["prior", "kp-prior", "pageup"]) editor.key(key, "scroll-down-command")
   for (const key of ["next", "kp-next", "pagedown"]) editor.key(key, "scroll-up-command")
   editor.key("M-%", "query-replace")
+  editor.key("C-M-%", "query-replace-regexp")
+  editor.key("M-s o", "occur")
+  editor.key("M-!", "shell-command")
+  editor.key("M-&", "async-shell-command")
+  editor.key("M-|", "shell-command-on-region")
   editor.key("M-:", "eval-expression")
   editor.key("C-x C-w", "write-file")
   editor.key("C-x C-v", "find-alternate-file")
@@ -121,6 +145,9 @@ function bindGlobalKeys(editor: Editor): void {
   editor.key("C-x u", "undo")
   editor.key("C-x h", "mark-whole-buffer")
   editor.key("C-x l", "count-lines-page")
+  editor.key("C-x n n", "narrow-to-region")
+  editor.key("C-x n w", "widen")
+  editor.key("C-x n d", "narrow-to-defun")
   editor.key("M-g g", "goto-line")
   // M-. and xref history: installXref (after LSP).
   editor.key("C-x r SPC", "point-to-register")

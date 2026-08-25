@@ -75,7 +75,7 @@ export type TreeSitterLanguageSpec = {
   language: Language
   highlightsPath?: string
   extraHighlights?: string
-  highlight?: (root: SyntaxNode, text?: string) => TextSpan[]
+  highlight?: (root: SyntaxNode, text?: string, range?: FontLockRange) => TextSpan[]
 }
 
 const languageSpecs: Map<string, TreeSitterLanguageSpec> = new Map()
@@ -106,7 +106,7 @@ export function treeSitterFontLock(language: string, buffer: BufferModel, range?
     const parser = parserFor(language, spec.language, ParserCtor)
     const tree = parseIncremental(parser, language, buffer)
     if (spec.highlightsPath) return highlightWithQuery(spec, tree.rootNode, ParserCtor, range)
-    const spans = spec.highlight?.(tree.rootNode, buffer.text) ?? []
+    const spans = spec.highlight?.(tree.rootNode, buffer.text, range) ?? []
     return range ? spans.filter(span => span.end >= range.start && span.start <= range.end) : spans
   } catch (error) {
     if (process.env.JEMACS_DEBUG_FONT_LOCK === "1") {

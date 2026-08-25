@@ -191,6 +191,7 @@ function defaultTargets(): DomFrameTargets | undefined {
   if (!title || !windows || !minibuffer || !echo) return undefined
   return {
     title, windows, minibuffer, echo,
+    tabBar: document.getElementById("jemacs-tab-bar") ?? undefined,
     minibufferCompletions: document.getElementById("jemacs-minibuffer-completions") ?? undefined,
   }
 }

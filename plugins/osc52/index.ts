@@ -10,7 +10,7 @@ export function osc52Encode(text: string): string {
 }
 
 const enabled = defcustom("osc52-enabled", "boolean", true,
-  "If non-nil, every kill also writes an OSC 52 sequence to the host terminal's clipboard.")
+  "If non-nil, every kill also writes an OSC 52 sequence to the host terminal's clipboard.", "killing")
 
 /** UiHost has no writeRaw; bypass it and write straight to the PTY when we have one. */
 function emit(text: string): void {

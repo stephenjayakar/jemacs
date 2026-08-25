@@ -30,6 +30,7 @@ const STUBBED = new Set([
   "node:fs",
   "node:fs/promises",
   "node:child_process",
+  "node:net",
   "node:module",
   "node:url", // polyfill lacks fileURLToPath/pathToFileURL
   "bun:ffi",

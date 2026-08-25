@@ -1,21 +1,81 @@
-import type { TextSpan } from "../modes/mode"
+import type { GutterDecoration, TextSpan } from "../modes/mode"
+import { getCustom } from "../runtime/custom"
 
 export type LineNumberFormat = {
   text: string
   prefixLen: number
   firstLine: number
+  decorationSpans: TextSpan[]
 }
+
+export type DisplayLineNumbersType = true | "relative" | "visual"
 
 const GUTTER_SEPARATOR = "  "
 
-export function formatWithLineNumbers(visible: string, firstLine: number): LineNumberFormat {
+export function displayLineNumbersType(): DisplayLineNumbersType {
+  const value = getCustom<DisplayLineNumbersType>("display-line-numbers-type")
+  return value === "relative" || value === "visual" ? value : true
+}
+
+export function lineNumberPrefixLen(
+  firstLine: number,
+  visibleLineCount: number,
+  type: DisplayLineNumbersType = true,
+  currentLine = firstLine,
+): number {
+  const width = lineNumberWidth(firstLine, visibleLineCount, type, currentLine)
+  return width + GUTTER_SEPARATOR.length
+}
+
+export function formatWithLineNumbers(
+  visible: string,
+  firstLine: number,
+  type: DisplayLineNumbersType = true,
+  currentLine = firstLine,
+  decorations: GutterDecoration[] = [],
+): LineNumberFormat {
   const lines = visible.split("\n")
-  const width = Math.max(1, String(firstLine + Math.max(0, lines.length - 1)).length)
+  const width = lineNumberWidth(firstLine, lines.length, type, currentLine)
   const prefixLen = width + GUTTER_SEPARATOR.length
+  const decorationSpans: TextSpan[] = []
+  let offset = 0
   const text = lines
-    .map((line, index) => `${String(firstLine + index).padStart(width, " ")}${GUTTER_SEPARATOR}${line}`)
+    .map((line, index) => {
+      const lineNumber = firstLine + index
+      const decoration = decorations.find(item => item.line === lineNumber)
+      const glyph = (decoration?.glyph ?? " ").slice(0, 1)
+      const formatted = `${lineNumberText(lineNumber, type, currentLine).padStart(width, " ")} ${glyph}${line}`
+      if (decoration) decorationSpans.push({
+        start: offset + prefixLen - 1,
+        end: offset + prefixLen,
+        face: decoration.face,
+      })
+      offset += formatted.length + 1
+      return formatted
+    })
     .join("\n")
-  return { text, prefixLen, firstLine }
+  return { text, prefixLen, firstLine, decorationSpans }
+}
+
+function lineNumberWidth(
+  firstLine: number,
+  visibleLineCount: number,
+  type: DisplayLineNumbersType,
+  currentLine: number,
+): number {
+  const lastLine = firstLine + Math.max(0, visibleLineCount - 1)
+  if (type === true) return Math.max(1, String(Math.max(firstLine, lastLine)).length)
+  const maxAbsolute = Math.max(firstLine, lastLine, currentLine)
+  const maxRelative = Math.max(Math.abs(firstLine - currentLine), Math.abs(lastLine - currentLine))
+  return Math.max(1, String(maxAbsolute).length, String(maxRelative).length)
+}
+
+function lineNumberText(line: number, type: DisplayLineNumbersType, currentLine: number): string {
+  if (type === true || line === currentLine) return String(line)
+  // The formatter receives logical display lines before hard wrapping, so
+  // `visual` cannot cheaply count continuation rows here. Match relative
+  // numbering until the display pipeline exposes visual row positions.
+  return String(Math.abs(line - currentLine))
 }
 
 /** Apply region highlight only to buffer text, not the line-number gutter on each line. */

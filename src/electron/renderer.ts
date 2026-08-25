@@ -1,9 +1,10 @@
 import type { SerializedDisplayModel } from "../display/serialize"
 import { DOM_FRAME_ROW_PX, presentDomFrame } from "../display/dom-frame"
-import { domKeyFromKeyboardEvent, isDomModifierOnlyKey } from "./dom-key"
+import { domKeyFromKeyboardEvent, domKeyPlatform, isDomHideShortcut, isDomModifierOnlyKey, isDomPasteShortcut } from "./dom-key"
 import { XtermPaneRegistry } from "./xterm-panes"
 
 const titleEl = document.getElementById("jemacs-title")!
+const tabBarEl = document.getElementById("jemacs-tab-bar")!
 const windowsEl = document.getElementById("jemacs-windows")!
 const minibufferCompletionsEl = document.getElementById("jemacs-minibuffer-completions")!
 const minibufferEl = document.getElementById("jemacs-minibuffer")!
@@ -17,6 +18,8 @@ declare global {
       onDisplay(handler: (model: SerializedDisplayModel) => void): () => void
       onTerminalData(handler: (payload: unknown) => void): () => void
       sendInput(payload: unknown): void
+      readClipboardText(): string | Promise<string>
+      hideApplication?(): void
       ready(): void
     }
   }
@@ -24,21 +27,34 @@ declare global {
 
 function present(model: SerializedDisplayModel): void {
   presentDomFrame(
-    { title: titleEl, windows: windowsEl, minibufferCompletions: minibufferCompletionsEl, minibuffer: minibufferEl, echo: echoEl },
+    { title: titleEl, tabBar: tabBarEl, windows: windowsEl, minibufferCompletions: minibufferCompletionsEl, minibuffer: minibufferEl, echo: echoEl },
     model,
-    (windowId, row, col) => {
-      window.jemacs.sendInput({ type: "mouse", windowId, row, col, button: 0 })
+    (windowId, row, col, drag) => {
+      window.jemacs.sendInput({ type: "mouse", windowId, row, col, button: 0, drag })
     },
     (windowId, action, payload) => {
       window.jemacs.sendInput({ type: "pane-action", windowId, action, payload })
     },
     xtermPanes,
+    col => {
+      window.jemacs.sendInput({ type: "tab-bar", col })
+    },
   )
 }
-
-document.addEventListener("keydown", event => {
+document.addEventListener("keydown", async event => {
   if (event.defaultPrevented) return
   if (isDomModifierOnlyKey(event.key)) return
+  if (isDomPasteShortcut(event, domKeyPlatform(navigator.userAgent))) {
+    event.preventDefault()
+    const text = await window.jemacs.readClipboardText()
+    if (text) window.jemacs.sendInput({ type: "paste", text })
+    return
+  }
+  if (window.jemacs.hideApplication && isDomHideShortcut(event, domKeyPlatform(navigator.userAgent))) {
+    event.preventDefault()
+    window.jemacs.hideApplication()
+    return
+  }
   window.jemacs.sendInput({ type: "key", key: domKeyFromKeyboardEvent(event) })
   event.preventDefault()
 })

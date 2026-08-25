@@ -53,11 +53,21 @@ export const cp = stub("fs/promises.cp")
 export const unlink = stub("fs/promises.unlink")
 export const appendFile = stub("fs/promises.appendFile")
 export const mkdtemp = stub("fs/promises.mkdtemp")
+export const chmod = stub("fs/promises.chmod")
+export const utimes = stub("fs/promises.utimes")
+export const symlink = stub("fs/promises.symlink")
+export const link = stub("fs/promises.link")
+export const lstat = stub("fs/promises.lstat")
+export const readlink = stub("fs/promises.readlink")
 
 // node:child_process
 export const spawn = stub("child_process.spawn")
 export const spawnSync = stub("child_process.spawnSync")
 export const exec = stub("child_process.exec")
+
+// node:net
+export const createConnection = stub("net.createConnection")
+export const createServer = stub("net.createServer")
 
 // node:url — Bun's browser polyfill lacks fileURLToPath/pathToFileURL.
 // Browser `import.meta.url` is an http(s) URL, so map both to/from pathname.

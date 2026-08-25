@@ -10,7 +10,7 @@ declare global {
 
 type DisplayHandler = (model: SerializedDisplayModel) => void
 type TerminalDataHandler = (payload: unknown) => void
-type Cursor = { row: number; colOffset: number }
+type Cursor = { row: number; colOffset: number; shape?: "bar" | "box" }
 type Motion = "left" | "right" | "up" | "down" | "home" | "end"
 type KeyPayload = { type: "key"; key: { name: string; ctrl?: boolean; meta?: boolean; shift?: boolean; super?: boolean } }
 
@@ -81,6 +81,7 @@ const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff
  *  so the caret never lands between a surrogate pair. */
 export function predictCursor(cursor: Cursor, motion: Motion, lines: readonly string[]): Cursor {
   let { row, colOffset } = cursor
+  const shape = cursor.shape
   const maxRow = Math.max(0, lines.length - 1)
   const line = (i: number) => lines[i] ?? ""
   const len = (i: number) => line(i).length
@@ -117,7 +118,7 @@ export function predictCursor(cursor: Cursor, motion: Motion, lines: readonly st
       colOffset = len(row)
       break
   }
-  return { row, colOffset: Math.max(0, colOffset) }
+  return { row, colOffset: Math.max(0, colOffset), ...(shape ? { shape } : {}) }
 }
 
 function applyOptimisticCaret(payload: unknown): void {
@@ -186,6 +187,9 @@ window.jemacs = {
     if (ws.readyState !== WebSocket.OPEN) return
     ws.send(JSON.stringify(payload))
     applyOptimisticCaret(payload)
+  },
+  readClipboardText(): Promise<string> {
+    return navigator.clipboard.readText().catch(() => "")
   },
   ready(): void { /* no-op: server pushes on auth */ },
 }

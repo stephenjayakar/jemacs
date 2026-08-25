@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { makeEditor } from "./helper"
 import { setCustom } from "../../src/runtime/custom"
 import { spawnProcess } from "../../src/platform/runtime"
 import {
+  forgetProject,
   install,
   projectCurrent,
   projectDirectories,
@@ -27,7 +28,7 @@ async function git(args: string[], cwd: string): Promise<void> {
 }
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "jemacs-project-"))
+  dir = await realpath(await mkdtemp("/tmp/jemacs-project-"))
   repo = join(dir, "repo")
   listFile = join(dir, "projects.json")
   await mkdir(join(repo, "src", "deep"), { recursive: true })
@@ -78,13 +79,14 @@ test("projectDirectories lists tracked project directories relative to root", as
 
 test("install registers commands and C-x p bindings", () => {
   const editor = ed()
-  for (const cmd of ["project-current", "project-root", "project-find-file", "project-find-regexp", "project-find-dir", "project-switch-project", "project-dired", "project-vc-dir", "project-shell", "project-kill-buffers", "project-compile", "vc-dir"]) {
+  for (const cmd of ["project-current", "project-root", "project-find-file", "project-find-regexp", "project-switch-to-buffer", "project-forget-project", "project-query-replace-regexp", "project-find-dir", "project-switch-project", "project-dired", "project-vc-dir", "project-shell", "project-eshell", "project-kill-buffers", "project-compile", "vc-dir"]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
   expect(editor.commands.get("project-current")?.interactive).toBeUndefined()
   expect(editor.commands.get("project-root")?.interactive).toBeUndefined()
   expect(editor.commands.get("project-find-file")?.interactive).toBe(true)
   expect(editor.keymap.get("C-x p f")).toBe("project-find-file")
+  expect(editor.keymap.get("C-x p b")).toBe("project-switch-to-buffer")
   expect(editor.keymap.get("C-x p g")).toBe("project-find-regexp")
   expect(editor.keymap.get("C-x p d")).toBe("project-find-dir")
   expect(editor.keymap.get("C-x p p")).toBe("project-switch-project")
@@ -105,6 +107,13 @@ test("rememberProject dedupes and moves to front; readProjectList round-trips", 
   expect(await readProjectList()).toEqual(["/d", "/b", "/a", "/c"])
   await rememberProject("/d")
   expect(await readProjectList()).toEqual(["/d", "/b", "/a", "/c"])
+})
+
+test("forgetProject removes a persisted project root", async () => {
+  ed()
+  await writeProjectList([resolve(repo), "/b", "/c"])
+  await forgetProject(repo)
+  expect(await readProjectList()).toEqual(["/b", "/c"])
 })
 
 test("readProjectList tolerates missing or malformed file", async () => {
@@ -219,6 +228,40 @@ test("project-find-regexp searches from the project root and populates grep resu
   expect((await readProjectList())[0]).toBe(resolve(repo))
 })
 
+test("project-switch-to-buffer completes only buffers in the current project", async () => {
+  const editor = ed()
+  const outside = join(dir, "outside.txt")
+  await writeFile(outside, "outside\n")
+  await editor.openFile(join(repo, "src", "a.ts"))
+  await editor.openFile(outside)
+
+  let seen: string[] | undefined
+  editor.completingRead = (_prompt, opts) => {
+    seen = opts.collection
+    return Promise.resolve("a.ts")
+  }
+  await editor.run("project-switch-to-buffer", [repo])
+
+  expect(seen).toEqual(["a.ts"])
+  expect(editor.currentBuffer.path).toBe(resolve(repo, "src", "a.ts"))
+  expect((await readProjectList())[0]).toBe(resolve(repo))
+})
+
+test("project-forget-project completes known projects and persists removal", async () => {
+  const editor = ed()
+  const other = join(dir, "other")
+  await writeProjectList([other, resolve(repo)])
+  editor.completingRead = (prompt, opts) => {
+    expect(prompt).toBe("Forget project: ")
+    expect(opts.collection).toEqual([other, resolve(repo)])
+    return Promise.resolve(resolve(repo))
+  }
+
+  await editor.run("project-forget-project")
+
+  expect(await readProjectList()).toEqual([other])
+})
+
 test("project-switch-project picks a project then dispatches project-switch-commands", async () => {
   const editor = ed()
   const other = join(dir, "other")
@@ -237,7 +280,7 @@ test("project-switch-project picks a project then dispatches project-switch-comm
   expect(prompts[0]!.collection).toEqual([other, resolve(repo)])
   expect(prompts[1]).toEqual({
     prompt: "Run project command: ",
-    collection: ["Find file (project-find-file)", "Find regexp (project-find-regexp)", "Find directory (project-find-dir)", "VC-Dir (project-vc-dir)"],
+    collection: ["Find file (project-find-file)", "Find regexp (project-find-regexp)", "Find directory (project-find-dir)", "VC-Dir (project-vc-dir)", "Eshell (project-eshell)"],
   })
   expect(prompts[2]!.prompt).toContain("Find file in project")
   expect(editor.currentBuffer.path).toBe(resolve(repo, "README.md"))
@@ -310,6 +353,19 @@ test("project-shell starts shell at the current project root", async () => {
 
   expect(seen).toBe(resolve(repo))
   expect((await readProjectList())[0]).toBe(resolve(repo))
+})
+
+test("project-eshell aliases project-shell", async () => {
+  const editor = ed()
+  await editor.openFile(join(repo, "src", "a.ts"))
+  let seen: string | undefined
+  editor.command("shell", ({ args }) => {
+    seen = args[0]
+  })
+
+  await editor.run("project-eshell")
+
+  expect(seen).toBe(resolve(repo))
 })
 
 test("projectBuffers includes file and project-local special buffers", async () => {

@@ -1,7 +1,6 @@
 import { createRequire } from "node:module"
 import type { BufferModel } from "../../src/kernel/buffer"
 import type { Editor } from "../../src/kernel/editor"
-import type { Pty } from "../term/pty"
 import type { KeyEventLike } from "../../src/kernel/keymap"
 import type { FaceStyle } from "../../src/display/theme"
 import type { FaceName, TextSpan } from "../../src/modes/mode"
@@ -52,6 +51,27 @@ type XBufferCell = {
 
 export const JTERM_SPANS_LOCAL = "jterm-spans"
 
+/** Byte transport consumed by JTerm. A real PTY implements this interface,
+ *  but multiplexers such as tmux control mode can provide a virtual transport
+ *  whose output is supplied by an external protocol stream. */
+export type JTermTransport = {
+  pid: number
+  write(data: string): void
+  resize(rows: number, cols: number): void
+  onData(fn: (chunk: string) => void): void
+  onExit(fn: (code: number | null) => void): void
+  kill(): void
+}
+
+export type JTermTransportOptions = {
+  cwd?: string
+  env?: Record<string, string>
+  rows: number
+  cols: number
+}
+
+export type JTermSessionOptions = JTermTransportOptions & { label: string }
+
 export function jtermSpans(buffer: BufferModel): TextSpan[] {
   return (buffer.locals.get(JTERM_SPANS_LOCAL) as TextSpan[] | undefined) ?? []
 }
@@ -89,10 +109,12 @@ async function loadPtyModule(): Promise<PtyModule> {
   return ptyModule
 }
 
-/** Per-buffer session. Owns the PTY, the headless xterm, the surface
+/** Per-buffer session. Owns the transport, the headless xterm, the surface
  *  renderer, the write-coalescer, and the kill/resize lifecycle. */
 export class JTermSession {
-  readonly pty: Pty
+  /** Compatibility alias retained for existing PTY-backed callers. */
+  readonly pty: JTermTransport
+  readonly transport: JTermTransport
   readonly xt: XTermInstance
   readonly renderer: SurfaceRenderer
   rows: number
@@ -107,6 +129,7 @@ export class JTermSession {
   private txBuf = ""
   private txScheduled = false
   private pendingChunks: string[] = []
+  private pendingFeedResolvers: Array<{ resolve(): void; reject(error: unknown): void }> = []
   private feedScheduled = false
   private lastRenderedText = ""
   private disposed = false
@@ -115,23 +138,24 @@ export class JTermSession {
   constructor(
     private readonly editor: Editor,
     readonly buffer: BufferModel,
-    pty: Pty,
+    transport: JTermTransport,
     xt: XTermInstance,
     rows: number,
     cols: number,
     private readonly label: string,
   ) {
-    this.pty = pty
+    this.pty = transport
+    this.transport = transport
     this.xt = xt
     this.rows = rows
     this.cols = cols
     this.renderer = new SurfaceRenderer(editor, buffer, label)
   }
 
-  /** Wire the PTY data + exit handlers. Call once at session construction. */
+  /** Wire the transport data + exit handlers. Call once at session construction. */
   wireHandlers(): void {
-    this.pty.onData(chunk => {
-      this.feedChunk(chunk)
+    this.transport.onData(chunk => {
+      void this.feed(chunk)
     })
     // xterm emits terminal replies here (DSR cursor-position reports,
     // capability answers, etc.). Full-screen TUIs like opencode wait for these
@@ -139,7 +163,7 @@ export class JTermSession {
     this.disposables.push(this.xt.onData(data => {
       this.writeRaw(data)
     }))
-    this.pty.onExit(code => {
+    this.transport.onExit(code => {
       this.alive = false
       this.exitCode = code
       this.mirrorFromXterm()
@@ -161,7 +185,7 @@ export class JTermSession {
       this.txScheduled = false
       const buf = this.txBuf
       this.txBuf = ""
-      if (buf) this.pty.write(buf)
+      if (buf) this.transport.write(buf)
     })
   }
 
@@ -178,7 +202,7 @@ export class JTermSession {
     if (this.rows === rows && this.cols === cols) return
     this.rows = rows
     this.cols = cols
-    if (this.alive) this.pty.resize(rows, cols)
+    if (this.alive) this.transport.resize(rows, cols)
     this.xt.resize(cols, rows)
     this.renderer.invalidate()
     this.mirrorFromXterm()
@@ -188,7 +212,7 @@ export class JTermSession {
   kill(): void {
     if (!this.alive) return
     this.alive = false
-    this.pty.kill()
+    this.transport.kill()
   }
 
   /** Tear down the session. The host PTY is killed and timers cleared. */
@@ -208,25 +232,40 @@ export class JTermSession {
     this.mirrorFromXterm()
   }
 
-  /** Coalesce a burst of PTY chunks into a single xterm.write, then mirror
-   *  the parsed result back into the buffer. xterm.write is async (it sets
-   *  a setTimeout internally) — we don't await it; the onParsed callback
-   *  fires on a later microtask. */
-  private feedChunk(chunk: string): void {
+  /** Feed terminal output from the attached transport. Same-tick chunks are
+   *  parsed as one ordered batch; each returned promise settles only after
+   *  xterm parsing and the buffer/surface mirror are current. */
+  feed(chunk: string): Promise<void> {
+    if (this.disposed) return Promise.resolve()
     void this.editor.events.emit("terminalData", { bufferId: this.buffer.id, data: chunk })
     this.replyToTerminalQueries(chunk)
     this.pendingChunks.push(chunk)
-    if (this.feedScheduled) return
-    this.feedScheduled = true
-    queueMicrotask(() => {
-      this.feedScheduled = false
-      const chunks = this.pendingChunks
-      this.pendingChunks = []
-      const data = chunks.join("")
-      this.xt.write(data, () => {
-        this.mirrorFromXterm()
-      })
+    const promise = new Promise<void>((resolve, reject) => {
+      this.pendingFeedResolvers.push({ resolve, reject })
     })
+    if (!this.feedScheduled) {
+      this.feedScheduled = true
+      queueMicrotask(() => {
+        this.feedScheduled = false
+        const chunks = this.pendingChunks
+        const resolvers = this.pendingFeedResolvers
+        this.pendingChunks = []
+        this.pendingFeedResolvers = []
+        try {
+          this.xt.write(chunks.join(""), () => {
+            try {
+              this.mirrorFromXterm()
+              for (const waiter of resolvers) waiter.resolve()
+            } catch (error) {
+              for (const waiter of resolvers) waiter.reject(error)
+            }
+          })
+        } catch (error) {
+          for (const waiter of resolvers) waiter.reject(error)
+        }
+      })
+    }
+    return promise
   }
 
   /** Some OpenTUI apps (including opencode) block their first real frame on
@@ -252,18 +291,6 @@ export class JTermSession {
       reply += "\x1b_Gi=31337;ENOENT:kitty graphics unavailable\x1b\\"
     }
     if (reply) this.writeRaw(reply)
-  }
-
-  /** Test seam: feed a VT byte string directly without going through the pty.
-   *  Returns a promise that resolves after the xterm parse + mirror settle. */
-  feed(chunk: string, done?: () => void): Promise<void> {
-    return new Promise(resolve => {
-      this.xt.write(chunk, () => {
-        this.mirrorFromXterm()
-        done?.()
-        resolve()
-      })
-    })
   }
 
   /** Diff the xterm buffer against the buffer text and the cached surface,
@@ -457,30 +484,48 @@ function sameFaceStyle(a?: FaceStyle, b?: FaceStyle): boolean {
 
 export type { XTermInstance }
 
+/** Spawn the platform-appropriate PTY transport used by normal JTerm
+ *  sessions. Exported so packages can reuse JTerm's controlling-TTY policy. */
+export async function spawnPtyTransport(
+  argv: string[],
+  opts: JTermTransportOptions,
+): Promise<JTermTransport> {
+  const { spawnPty } = await loadPtyModule()
+  return spawnPty(argv, {
+    cwd: opts.cwd,
+    rows: opts.rows,
+    cols: opts.cols,
+    env: { ...process.env, TERM: "xterm-256color", ...opts.env },
+  })
+}
+
+/** Attach JTerm's emulator and renderer to an existing transport. */
+export function attachTransportSession(
+  editor: Editor,
+  buffer: BufferModel,
+  transport: JTermTransport,
+  opts: Pick<JTermSessionOptions, "rows" | "cols" | "label">,
+): JTermSession {
+  const xt = makeXTerm(opts.rows, opts.cols)
+  const session = new JTermSession(editor, buffer, transport, xt, opts.rows, opts.cols, opts.label)
+  session.wireHandlers()
+  session.prime()
+  return session
+}
+
 /** Spawn a session against a fresh headless xterm. */
 export async function spawnSession(
   editor: Editor,
   buffer: BufferModel,
   argv: string[],
-  opts: {
-    cwd?: string
-    env?: Record<string, string>
-    rows: number
-    cols: number
-    label: string
-  },
+  opts: JTermSessionOptions,
 ): Promise<JTermSession> {
   const cwd = opts.cwd ?? editor.currentBuffer.directory?.() ?? process.cwd()
-  const { spawnPty } = await loadPtyModule()
-  const pty = spawnPty(argv, {
+  const transport = await spawnPtyTransport(argv, {
     cwd,
     rows: opts.rows,
     cols: opts.cols,
-    env: { ...process.env, TERM: "xterm-256color", ...opts.env },
+    env: opts.env,
   })
-  const xt = makeXTerm(opts.rows, opts.cols)
-  const session = new JTermSession(editor, buffer, pty, xt, opts.rows, opts.cols, opts.label)
-  session.wireHandlers()
-  session.prime()
-  return session
+  return attachTransportSession(editor, buffer, transport, opts)
 }

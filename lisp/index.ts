@@ -5,6 +5,7 @@ import { Evaluator } from "../src/runtime/evaluator"
 import { installLiveSourceCommands } from "../src/runtime/live-source"
 import * as simple from "./simple"
 import * as windowCmds from "./window-cmds"
+import * as tabBar from "./tab-bar"
 import * as files from "./files"
 import * as isearchUi from "./isearch-ui"
 import * as minibuf from "./minibuf"
@@ -24,6 +25,9 @@ export function installLisp(editor: Editor, evaluator: Evaluator = new Evaluator
   const sink = (p: Promise<unknown>) => p.catch(err => { throw err instanceof Error ? err : new Error(String(err)) })
   sink(evaluator.installPlugin(path("simple"), simple.install))
   sink(evaluator.installPlugin(path("window-cmds"), windowCmds.install))
+  // After window-cmds: the tab commands are aliased by name, so the base
+  // commands must already exist, and `C-x t` layers onto the same global map.
+  sink(evaluator.installPlugin(path("tab-bar"), tabBar.install))
   sink(evaluator.installPlugin(path("files"), files.install))
   sink(evaluator.installPlugin(path("isearch-ui"), isearchUi.install))
   sink(evaluator.installPlugin(path("minibuf"), minibuf.install))

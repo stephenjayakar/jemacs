@@ -31,7 +31,6 @@ export type DiffFile = {
 }
 
 type Line = { text: string; start: number; end: number }
-const DIFF_NARROW_LOCAL = "diff-narrowed-region"
 const DIFF_REFINE_LOCAL = "diff-refine-spans"
 const DIFF_REMEMBERED_FILES_LOCAL = "diff-remembered-files"
 const DIFF_DELETE_EMPTY_FILES_LOCAL = "diff-delete-empty-files"
@@ -195,12 +194,11 @@ export function installDiffCommands(editor: Editor, ctx?: PluginContext): void {
   editor.command("diff-restrict-view", ({ buffer, editor, prefixArgument }) => {
     const bounds = prefixArgument != null ? boundsOfFile(buffer) : boundsOfHunk(buffer)
     if (!bounds) return editor.message(prefixArgument != null ? "No file at point" : "No hunk at point")
-    buffer.locals.set(DIFF_NARROW_LOCAL, bounds)
-    buffer.point = Math.max(bounds.start, Math.min(buffer.point, bounds.end))
+    buffer.narrowToRegion(bounds.start, bounds.end)
   }, "Restrict the view to the current hunk, or current file with a prefix argument.")
 
   editor.command("widen", ({ buffer }) => {
-    buffer.locals.delete(DIFF_NARROW_LOCAL)
+    buffer.widen()
   }, "Remove narrowing from the current buffer.")
 
   editor.command("diff-split-hunk", ({ buffer, editor }) => {
@@ -510,14 +508,15 @@ function boundsOfFile(buffer: BufferModel): { start: number; end: number } | nul
   }
 }
 
-function diffDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number } | null {
-  const narrowed = buffer.locals.get(DIFF_NARROW_LOCAL) as { start: number; end: number } | undefined
+function diffDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number; unmap: (n: number) => number } | null {
+  const narrowed = buffer.restriction
   if (!narrowed) return null
   const start = Math.max(0, Math.min(narrowed.start, buffer.text.length))
   const end = Math.max(start, Math.min(narrowed.end, buffer.text.length))
   return {
     text: buffer.text.slice(start, end),
     map: n => Math.max(0, Math.min(end, Math.max(start, n)) - start),
+    unmap: n => Math.max(start, Math.min(end, start + n)),
   }
 }
 
