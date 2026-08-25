@@ -4,10 +4,10 @@ import { createPluginContext, type PluginContext } from "../../src/runtime/plugi
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { fileExists } from "../../src/platform/runtime"
 
-defcustom("auto-save-interval", "number", 30,
-  "Seconds of idle time between auto-saves of dirty file-visiting buffers.")
-defcustom("auto-save-keystroke-interval", "number", 300,
-  "Number of input events between auto-saves; checked after each command.")
+defcustom("auto-save-interval", "integer", 30,
+  "Seconds of idle time between auto-saves of dirty file-visiting buffers.", "auto-save")
+defcustom("auto-save-keystroke-interval", "integer", 300,
+  "Number of input events between auto-saves; checked after each command.", "auto-save")
 
 const keystrokes = new WeakMap<Editor, number>()
 const timers = new WeakMap<Editor, ReturnType<typeof setInterval>>()

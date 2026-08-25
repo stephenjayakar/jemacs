@@ -17,3 +17,6 @@ examples/*/Cargo.lock
 .jemacs/
 \#*\#
 src/web/fonts/*.woff2
+
+# Snapshot of node_modules left by an interrupted install.
+node_modules.unknown/

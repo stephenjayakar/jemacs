@@ -284,7 +284,7 @@ export class WebHost implements UiHost {
       // caret positioning (`.jemacs-caret { position:absolute }`).
       return `<!doctype html><html><head><meta charset="utf-8"><title>Jemacs Shadow</title>`
         + `<link rel="stylesheet" href="${cssHref}">${inject}</head>`
-        + `<body><div id="jemacs-root"><div id="jemacs-title"></div><div id="jemacs-windows"></div>`
+        + `<body><div id="jemacs-root"><div id="jemacs-title"></div><div id="jemacs-tab-bar"></div><div id="jemacs-windows"></div>`
         + `<div id="jemacs-minibuffer-completions"></div>`
         + `<div id="jemacs-minibuffer"></div><div id="jemacs-echo"></div></div>`
         + `<script type="module" src="/editor.js"></script></body></html>`

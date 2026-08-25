@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import { defineMode, type CompletionCandidate, type FontLockRange, type TextSpan } from "./mode"
+import { defineMode, type CompletionCandidate, type FontLockRange, type ImenuIndexEntry, type TextSpan } from "./mode"
 
 const shellKeywords = new Set([
   "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "select", "then", "time", "until", "while",
@@ -29,9 +29,18 @@ export function installShellScriptMode(): void {
     completeAtPoint: shellScriptCompleteAtPoint,
     beginningOfDefun: shellScriptBeginningOfDefun,
     endOfDefun: shellScriptEndOfDefun,
+    imenuIndex: shellScriptImenuIndex,
   })
   defineMode({ name: "shell-script-mode", parent: "sh-mode" })
   defineMode({ name: "bash-mode", parent: "sh-mode" })
+}
+
+export function shellScriptImenuIndex(buffer: BufferModel): ImenuIndexEntry[] {
+  const entries: ImenuIndexEntry[] = []
+  for (const match of buffer.text.matchAll(functionDefunRegex)) {
+    entries.push({ name: match[1] ?? match[0], point: match.index ?? 0 })
+  }
+  return entries
 }
 
 export function shellScriptIndentLine(buffer: BufferModel): void {

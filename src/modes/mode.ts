@@ -1,13 +1,13 @@
 import type { BufferModel } from "../kernel/buffer"
 import { Keymap } from "../kernel/keymap"
-import type { CompletionCandidate, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
+import type { CompletionCandidate, FontLockRange, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan, WebSurfaceModel } from "../kernel/extension-points"
 import { modeHookName, addHook, removeHook, type HookFn } from "../kernel/hooks"
 import { registerCatalogEntry } from "../runtime/definitions"
 import { defmethod, getGeneric, removeMethod } from "../runtime/generic"
 import type { SourceLocation } from "../runtime/source"
 import { captureCallerSource } from "../runtime/source"
 
-export type { CompletionCandidate, FaceName, FontLockRange, PaneAction, TableSurfaceModel, TextSpan } from "../kernel/extension-points"
+export type { CanvasShapeModel, CanvasSurfaceModel, CompletionCandidate, FaceName, FontLockRange, GutterDecoration, ImenuIndexEntry, PaneAction, TableSurfaceModel, TextSpan, WebNodeModel, WebSurfaceModel } from "../kernel/extension-points"
 
 export type Mode = {
   name: string
@@ -23,9 +23,12 @@ export type Mode = {
   /** Selective-display: alternate body text + buffer→display offset map. Return null for identity. */
   displayFilter?: (buffer: BufferModel) => { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null
   tableSurface?: (buffer: BufferModel) => TableSurfaceModel | null
+  /** Rich DOM pane for hosts with `webSurfaces`. `body` stays the TUI fallback. */
+  webSurface?: (buffer: BufferModel) => WebSurfaceModel | null
   paneAction?: (buffer: BufferModel, action: PaneAction) => boolean | void
   mouseClick?: (buffer: BufferModel, point: number) => boolean | void
   completeAtPoint?: (buffer: BufferModel) => CompletionCandidate[]
+  imenuIndex?: (buffer: BufferModel) => ImenuIndexEntry[]
 }
 
 export const modes = new Map<string, Mode>()
@@ -39,10 +42,12 @@ const MODE_GENERICS = {
   fontLock: "font-lock",
   displayFilter: "display-filter",
   tableSurface: "table-surface",
+  webSurface: "web-surface",
   paneAction: "pane-action",
   mouseClick: "mouse-click",
   beginningOfDefun: "beginning-of-defun-function",
   endOfDefun: "end-of-defun-function",
+  imenuIndex: "imenu-create-index-function",
 } as const
 type ModeGenericField = keyof typeof MODE_GENERICS
 

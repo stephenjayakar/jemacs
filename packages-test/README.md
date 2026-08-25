@@ -1,10 +1,14 @@
 # packages-test/
 
-Tests for plugins that live in the **sibling** `jemacs-packages` repo (Stephen's split).
+Integration tests for plugins that live in Stephen's separate
+`jemacs-packages` repository.
 
-These import `../../../jemacs-packages/...` so they only work when that repo is checked out alongside this one. They are deliberately **outside** `test/` so `bun test` doesn't pick them up by default.
+They use `~/.jemacs/packages` by default. Set `JEMACS_PACKAGES` to test any
+checkout without requiring a particular repository layout. They are deliberately
+outside `test/` so `bun test` does not pick them up by default.
 
 Run explicitly:
 ```
-bun test packages-test/projectile.ts packages-test/file-sidebar.ts
+JEMACS_PACKAGES=/path/to/jemacs-packages \
+  bun test ./packages-test/projectile.ts ./packages-test/file-sidebar.ts
 ```

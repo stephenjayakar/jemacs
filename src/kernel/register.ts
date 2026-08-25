@@ -6,3 +6,6 @@ export type RegisterContents =
   | { kind: "text"; text: string }
   | { kind: "number"; value: number }
   | { kind: "rectangle"; lines: string[] }
+
+/** The saved window layout a register (or a tab-bar tab) restores. */
+export type WindowConfiguration = Extract<RegisterContents, { kind: "window-configuration" }>

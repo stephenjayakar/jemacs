@@ -5,7 +5,8 @@ import type { CommandContext } from "../../src/kernel/command"
 import { setCustom } from "../../src/runtime/custom"
 import { setFaceAttribute } from "../../src/runtime/faces"
 import { enableBuiltinTheme } from "../../src/themes"
-import { gruvboxDarkHardTheme, install as installGruvboxDarkHardTheme } from "../../plugins/gruvbox-dark-hard"
+import { install as installGruvboxDarkHardTheme } from "../../plugins/gruvbox-dark-hard"
+import { modusVivendiTheme, install as installModusVivendiTheme } from "../../plugins/modus-vivendi"
 import { install as installVertico } from "../../plugins/vertico"
 import { install as installTiling } from "../../plugins/tiling"
 import { install as installWindow } from "../../plugins/window"
@@ -36,15 +37,18 @@ export async function install(editor: Editor): Promise<void> {
   const userTemporaryFileDirectory = join(tmpdir(), userInfo().username)
   setCustom("backup-directory-alist", [[".", userTemporaryFileDirectory]])
   setCustom("markdown-fontify-code-blocks-natively", true)
+  setCustom("markdown-indent-on-enter", "indent-and-new-item")
+  setCustom("markdown-trim-trailing-whitespace-on-enter", true)
   setCustom("markdown-fill-column", 100)
   setCustom("markdown-visual-fill-column-center-text", true)
   setCustom("word-wrap", true)
 
   installGruvboxDarkHardTheme(editor)
-  enableBuiltinTheme(gruvboxDarkHardTheme.name)
+  installModusVivendiTheme(editor)
+  enableBuiltinTheme(modusVivendiTheme.name)
   setFaceAttribute("default", "family", "Fira Code")
   setFaceAttribute("default", "height", 140)
-  editor.setTheme(gruvboxDarkHardTheme)
+  editor.setTheme(modusVivendiTheme)
   installVertico(editor)
   installWindow(editor)
   installTiling(editor)
@@ -58,7 +62,7 @@ export async function install(editor: Editor): Promise<void> {
   editor.key("C-x C-a", "lsp-execute-code-action")
   editor.key("C-x C-j", "previous-buffer")
   editor.key("C-x C-l", "next-buffer")
-  editor.key("C-c g s", "magit-status")
-  editor.key("s-f", "counsel-ag")
+  editor.key("s-f", "project-find-regexp")
   editor.key("s-=", "text-scale-adjust")
+  editor.key("s--", "text-scale-adjust")
 }

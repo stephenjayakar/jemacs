@@ -8,6 +8,30 @@ This is a work-in-progress and doesn't have a major release yet. Lots of rough e
 
 We've implemented some default plugins in `plugins/`. You can find additional ones in https://github.com/stephenjayakar/jemacs-packages/.
 
+## Install
+
+The core installs independently of user config and packages:
+
+```bash
+./scripts/install.sh
+```
+
+By default this links the current checkout at
+`${XDG_DATA_HOME:-~/.local/share}/jemacs` and installs the launcher at
+`~/.local/bin/jemacs`. The checkout may live anywhere; neither the core nor the
+launcher assumes sibling config/package repositories.
+
+User-owned files remain under `~/.jemacs`:
+
+```text
+~/.jemacs/init.ts       startup config
+~/.jemacs/packages/     out-of-tree packages
+~/.jemacs/*.json        persisted editor state
+```
+
+The config and packages repositories each provide their own `scripts/install.sh`.
+Set `JEMACS_HOME` or `BIN_DIR` to override the core installation paths.
+
 ## Run
 
 **Terminal (default):**
@@ -28,6 +52,27 @@ bun run dev:gui
 ```
 
 Both hosts share the same kernel (`src/kernel/`), display model (`src/display/`), and bootstrap (`src/run.ts`).
+
+### Remote files over SSH
+
+Use Emacs TRAMP filenames with `C-x C-f` or as a command-line file. Jemacs
+prompts for new host keys and passwords in the minibuffer and reuses SSH
+connections:
+
+```text
+/ssh:user@example.com:/home/user/file.txt
+/ssh:user@example.com#2222:/home/user/file.txt
+```
+
+A persistent local Docker target is available for real SSH/filesystem testing.
+It listens only on localhost; its password is intentionally test-only.
+
+```bash
+scripts/tramp-ssh-target.sh start   # prints the filename and credentials
+scripts/tramp-ssh-target.sh test    # real transport/editor integration test
+scripts/tramp-ssh-target.sh reset   # recreate its named filesystem volume
+scripts/tramp-ssh-target.sh stop
+```
 
 Optional: native OpenTUI editor surface for the selected window (no font-lock in that pane):
 

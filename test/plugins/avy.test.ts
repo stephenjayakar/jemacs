@@ -1,7 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
 import { displayRows, parseKey } from "../harness"
-import { install, avyLabels, avyCollect, avySpans, AVY_KEYS } from "../../plugins/avy"
+import {
+  install,
+  avyLabels,
+  avyCollect,
+  avyCollectLine,
+  avyCollectPair,
+  avyCollectString,
+  avyCollectWord1,
+  avySpans,
+  AVY_KEYS,
+} from "../../plugins/avy"
+import { setCustom } from "../../src/runtime/custom"
+import { currentKill } from "../../src/runtime/kill-ring"
 
 const tick = () => new Promise(r => setTimeout(r, 0))
 
@@ -66,6 +78,26 @@ describe("avyCollect", () => {
     const hits = avyCollect(editor, "x")
     expect(hits).toHaveLength(4)
     expect(new Set(hits.map(h => h.windowId)).size).toBe(2)
+  })
+})
+
+describe("additional avy collectors", () => {
+  test("avyCollectPair finds visible two-character matches", () => {
+    const { editor } = setup("zz aa zz zzz")
+    expect(avyCollectPair(editor, "zz").map(h => h.point)).toEqual([0, 6, 9, 10])
+  })
+
+  test("avyCollectWord1 finds word beginnings only", () => {
+    const { editor } = setup("zap pizza zoo zip _zap 9zap")
+    expect(avyCollectWord1(editor, "z").map(h => h.point)).toEqual([0, 10, 14])
+  })
+
+  test("avyCollectLine labels visible line beginnings", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n")
+    const { editor } = setup(lines)
+    editor.setSelectedWindowStartLine(7)
+    const hits = avyCollectLine(editor, 4)
+    expect(hits.map(h => editor.currentBuffer.text.slice(0, h.point).split("\n").length - 1)).toEqual([7, 8, 9, 10])
   })
 })
 
@@ -171,5 +203,91 @@ describe("avy-goto-char", () => {
     fire("x"); await tick()
     for (const row of displayRows(editor).slice(0, 12)) expect(row).toHaveLength(1)
     fire("C-g"); await tick()
+  })
+})
+
+describe("additional avy commands", () => {
+  test("new commands are registered", () => {
+    const { editor } = setup("")
+    expect(editor.commands.get("avy-goto-char-2")).toBeTruthy()
+    expect(editor.commands.get("avy-goto-word-1")).toBeTruthy()
+    expect(editor.commands.get("avy-goto-line")).toBeTruthy()
+    expect(editor.commands.get("avy-copy-line")).toBeTruthy()
+    expect(editor.commands.get("avy-move-line")).toBeTruthy()
+  })
+
+  test("avy-goto-char-2 reads two chars and jumps to a selected pair", async () => {
+    const { editor, buf, fire } = setup("zz aa zz zz", 11)
+    void editor.run("avy-goto-char-2"); await tick()
+    fire("z"); await tick()
+    fire("z"); await tick()
+    expect(displayRows(editor)[0]).toContain("az aa sz dz")
+    fire("s"); await tick()
+    expect(buf.point).toBe(6)
+    expect(buf.text).toBe("zz aa zz zz")
+    expect(buf.dirty).toBe(false)
+  })
+
+  test("avy-goto-word-1 labels word beginnings starting with the read char", async () => {
+    const { editor, buf, fire } = setup("zap pizza zoo zip _zap", 0)
+    void editor.run("avy-goto-word-1"); await tick()
+    fire("z"); await tick()
+    // The block cursor at point 0 overlays the first label glyph.
+    expect(displayRows(editor)[0]).toContain("█ap pizza soo dip _zap")
+    fire("d"); await tick()
+    expect(buf.point).toBe(14)
+    expect(buf.text).toBe("zap pizza zoo zip _zap")
+  })
+
+  test("avy-goto-line labels visible line beginnings without reading a char", async () => {
+    const { editor, buf, fire } = setup("one\ntwo\nthree", 0)
+    void editor.run("avy-goto-line"); await tick()
+    // The block cursor at point 0 overlays the first label glyph.
+    expect(displayRows(editor).slice(0, 3)).toEqual(["█ne", "swo", "dhree"])
+    fire("s"); await tick()
+    expect(buf.point).toBe(4)
+    expect(buf.text).toBe("one\ntwo\nthree")
+    expect(avySpans(buf)).toEqual([])
+  })
+
+  test("avy-copy-line copies the selected visible line to point", async () => {
+    const { editor, buf, fire } = setup("one\ntwo\nthree\n", 14)
+    void editor.run("avy-copy-line"); await tick()
+    fire("s"); await tick()
+    expect(buf.text).toBe("one\ntwo\nthree\ntwo\n")
+    expect(currentKill(editor)).toBe("two\n")
+  })
+
+  test("avy-move-line moves the selected visible line to point", async () => {
+    const { editor, buf, fire } = setup("one\ntwo\nthree\n", 14)
+    void editor.run("avy-move-line"); await tick()
+    fire("s"); await tick()
+    expect(buf.text).toBe("one\nthree\ntwo\n")
+    expect(currentKill(editor)).toBe("two\n")
+  })
+})
+
+describe("avy-goto-char-timer", () => {
+  test("avyCollectString finds arbitrary-length matches", () => {
+    const { editor } = setup("foo bar foobar", 0)
+    const targets = avyCollectString(editor, "foo")
+    expect(targets.map(t => t.point)).toEqual([0, 8])
+    expect(avyCollectString(editor, "")).toEqual([])
+  })
+
+  test("accumulated string search jumps after timeout", async () => {
+    setCustom("avy-timeout-seconds", 0.03)
+    const { editor, buf, fire } = setup("zap zebra zap", 0)
+    const done = editor.run("avy-goto-char-timer")
+    await tick()
+    fire("z"); await tick()
+    fire("a"); await tick()
+    fire("p"); await tick()
+    // Only "zap" at 0 and 10 match; wait past the timeout for labeling.
+    await new Promise(r => setTimeout(r, 60))
+    fire("s"); await tick()
+    await done
+    expect(buf.point).toBe(10)
+    expect(buf.text).toBe("zap zebra zap")
   })
 })

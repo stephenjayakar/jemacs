@@ -1,18 +1,24 @@
 import { spawn as nodeSpawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, existsSync, watch as nodeWatch } from "node:fs"
-import { access, cp as nodeCp, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, stat as nodeStat, unlink as nodeUnlink, writeFile } from "node:fs/promises"
+import { access, chmod as nodeChmod, cp as nodeCp, link as nodeLink, lstat as nodeLstat, mkdir as nodeMkdir, readFile, readdir as nodeReaddir, readlink as nodeReadlink, rename as nodeRename, rm as nodeRm, stat as nodeStat, symlink as nodeSymlink, unlink as nodeUnlink, utimes as nodeUtimes, writeFile } from "node:fs/promises"
 import { homedir as nodeHomedir } from "node:os"
 import { join } from "node:path"
 import type { Readable } from "node:stream"
+import { createConnection, createServer } from "node:net"
 
 export type StatLike = { mode: number; size: number; mtime: number }
 
 const S_IFDIR = 0o040000
+const S_IFLNK = 0o120000
 /** True when `st.mode` has the directory bit — works for both nodeRuntime
  *  (POSIX `st_mode`) and RemoteRuntime (manifest entries use the same bit). */
 export function isDirectory(st: StatLike): boolean {
   return (st.mode & S_IFDIR) !== 0
+}
+
+export function isSymbolicLink(st: StatLike): boolean {
+  return (st.mode & S_IFLNK) === S_IFLNK
 }
 
 /** Returned by `watch`; call `close()` to stop receiving events. */
@@ -33,6 +39,8 @@ export type PlatformRuntime = {
   writeFileText(path: string, text: string): Promise<void>
   fileExists(path: string): Promise<boolean>
   stat(path: string): Promise<StatLike | null>
+  lstat?(path: string): Promise<StatLike | null>
+  readlink?(path: string): Promise<string>
   /** Remove a file. Optional: hosts that lack it (RemoteRuntime today) fall
    *  through to nodeRuntime; callers already `.catch` the no-op throw. */
   unlink?(path: string): Promise<void>
@@ -45,7 +53,13 @@ export type PlatformRuntime = {
   cp?(src: string, dest: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
   rename?(src: string, dest: string): Promise<void>
   rm?(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
+  chmod?(path: string, mode: number): Promise<void>
+  utimes?(path: string, atime: Date, mtime: Date): Promise<void>
+  symlink?(target: string, path: string): Promise<void>
+  link?(existingPath: string, newPath: string): Promise<void>
   spawnProcess(options: SpawnOptions): SpawnHandle
+  connectTcp?(host: string, port: number): TcpHandle
+  findFreeTcpPort?(host?: string): Promise<number>
   whichExecutable(name: string): string | null
   /** Hex sha256 of `text` — the CAS/BufferRef key. */
   hash(text: string): string
@@ -73,6 +87,7 @@ export function getPlatformRuntime(): Partial<PlatformRuntime> | undefined {
 export type SpawnOptions = {
   cmd: string[]
   cwd?: string
+  env?: Record<string, string>
   stdin?: "pipe" | "ignore"
   stdout?: "pipe" | "ignore"
   stderr?: "pipe" | "ignore"
@@ -84,6 +99,13 @@ export type SpawnHandle = {
   stderr: ReadableStream<Uint8Array> | null
   exited: Promise<number | null>
   kill(): void
+}
+
+export type TcpHandle = {
+  readable: ReadableStream<Uint8Array>
+  write(chunk: string): void
+  closed: Promise<void>
+  close(): void
 }
 
 function nodeReadableToWeb(stream: Readable): ReadableStream<Uint8Array> {
@@ -102,11 +124,21 @@ function nodeReadableToWeb(stream: Readable): ReadableStream<Uint8Array> {
   })
 }
 
+function mergedEnv(extra?: Record<string, string>): Record<string, string> | undefined {
+  if (!extra) return undefined
+  const base: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value != null) base[key] = value
+  }
+  return { ...base, ...extra }
+}
+
 function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
   if (typeof Bun !== "undefined") {
     const proc = Bun.spawn({
       cmd: options.cmd,
       cwd: options.cwd,
+      env: mergedEnv(options.env),
       stdin: options.stdin ?? "ignore",
       stdout: options.stdout ?? "ignore",
       stderr: options.stderr ?? "ignore",
@@ -124,6 +156,7 @@ function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
 
   const proc = nodeSpawn(options.cmd[0]!, options.cmd.slice(1), {
     cwd: options.cwd,
+    env: mergedEnv(options.env),
     stdio: [
       options.stdin === "pipe" ? "pipe" : "ignore",
       options.stdout === "pipe" ? "pipe" : "ignore",
@@ -143,6 +176,32 @@ function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
     }),
     kill: () => proc.kill(),
   }
+}
+
+function nodeConnectTcp(host: string, port: number): TcpHandle {
+  const socket = createConnection({ host, port })
+  const closed = new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => resolve())
+    socket.once("error", reject)
+  })
+  return {
+    readable: nodeReadableToWeb(socket),
+    write: chunk => socket.write(chunk),
+    closed,
+    close: () => socket.destroy(),
+  }
+}
+
+function nodeFindFreeTcpPort(host = "127.0.0.1"): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once("error", reject)
+    server.listen(0, host, () => {
+      const address = server.address()
+      const port = typeof address === "object" && address ? address.port : 0
+      server.close(error => error ? reject(error) : resolve(port))
+    })
+  })
 }
 
 function nodeWhich(name: string): string | null {
@@ -187,6 +246,17 @@ export const nodeRuntime: PlatformRuntime = {
       return null
     }
   },
+  async lstat(path) {
+    try {
+      const s = await nodeLstat(path)
+      return { mode: s.mode, size: s.size, mtime: s.mtimeMs }
+    } catch {
+      return null
+    }
+  },
+  async readlink(path) {
+    return nodeReadlink(path)
+  },
   async unlink(path) {
     await nodeUnlink(path)
   },
@@ -202,6 +272,18 @@ export const nodeRuntime: PlatformRuntime = {
   async rm(path, opts) {
     await nodeRm(path, opts)
   },
+  async chmod(path, mode) {
+    await nodeChmod(path, mode)
+  },
+  async utimes(path, atime, mtime) {
+    await nodeUtimes(path, atime, mtime)
+  },
+  async symlink(target, path) {
+    await nodeSymlink(target, path)
+  },
+  async link(existingPath, newPath) {
+    await nodeLink(existingPath, newPath)
+  },
   async readdir(dir) {
     try {
       return await nodeReaddir(dir)
@@ -210,6 +292,8 @@ export const nodeRuntime: PlatformRuntime = {
     }
   },
   spawnProcess: nodeSpawnProcess,
+  connectTcp: nodeConnectTcp,
+  findFreeTcpPort: nodeFindFreeTcpPort,
   whichExecutable: nodeWhich,
   hash(text) {
     return createHash("sha256").update(text).digest("hex")
@@ -258,6 +342,14 @@ export async function stat(path: string): Promise<StatLike | null> {
   return (override?.stat ?? nodeRuntime.stat)(path)
 }
 
+export async function lstat(path: string): Promise<StatLike | null> {
+  return (override?.lstat ?? nodeRuntime.lstat!)(path)
+}
+
+export async function readlink(path: string): Promise<string> {
+  return (override?.readlink ?? nodeRuntime.readlink!)(path)
+}
+
 export async function unlink(path: string): Promise<void> {
   return (override?.unlink ?? nodeRuntime.unlink!)(path)
 }
@@ -282,9 +374,33 @@ export async function rm(path: string, opts?: { recursive?: boolean; force?: boo
   return (override?.rm ?? nodeRuntime.rm!)(path, opts)
 }
 
+export async function chmod(path: string, mode: number): Promise<void> {
+  return (override?.chmod ?? nodeRuntime.chmod!)(path, mode)
+}
+
+export async function utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+  return (override?.utimes ?? nodeRuntime.utimes!)(path, atime, mtime)
+}
+
+export async function symlink(target: string, path: string): Promise<void> {
+  return (override?.symlink ?? nodeRuntime.symlink!)(target, path)
+}
+
+export async function link(existingPath: string, newPath: string): Promise<void> {
+  return (override?.link ?? nodeRuntime.link!)(existingPath, newPath)
+}
+
 /** Spawn a subprocess in Bun or Node (Electron main uses Node). */
 export function spawnProcess(options: SpawnOptions): SpawnHandle {
   return (override?.spawnProcess ?? nodeRuntime.spawnProcess)(options)
+}
+
+export function connectTcp(host: string, port: number): TcpHandle {
+  return (override?.connectTcp ?? nodeRuntime.connectTcp)!(host, port)
+}
+
+export function findFreeTcpPort(host?: string): Promise<number> {
+  return (override?.findFreeTcpPort ?? nodeRuntime.findFreeTcpPort)!(host)
 }
 
 export function hash(text: string): string {

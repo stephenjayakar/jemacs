@@ -4,13 +4,13 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Editor } from "./kernel/editor"
 import { findProjectRoot } from "./lsp/project-root"
-import { installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
+import { bindGuiKeybindings, installDefaultConfig, installDefaultHooks, installUserConfig, loadCustomFile } from "./config"
 import { loadStartupConfig, parseStartupArgs } from "./config/startup"
 import { installDefaultModes } from "./modes/default-modes"
 import { installLspMode } from "./lsp/install"
 import { installXref } from "./xref/install"
 import { runJemacs } from "./run"
-import { createDefaultHost } from "./ui/select-host"
+import { createDefaultHost, wantsGuiHost } from "./ui/select-host"
 import { installBuiltinPlugins } from "../plugins/builtin"
 import { attachAuthority } from "./shadow/shadow"
 import { StdioLink } from "./shadow/stdio-link"
@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   if (fsRootIdx >= 0 && Bun.argv[fsRootIdx + 1] != null) ignored.add(Bun.argv[fsRootIdx + 1]!)
   const args = parseStartupArgs(Bun.argv, ignored)
   const evaluator = installDefaultConfig(editor)
+  if (wantsGuiHost()) bindGuiKeybindings(editor)
   for (const config of args.configs) await loadStartupConfig(editor, evaluator, config)
   installLspMode(editor)
   installDefaultHooks(editor)
@@ -44,7 +45,6 @@ async function main(): Promise<void> {
   await loadCustomFile(editor, evaluator)
 
   const file = args.files[0]
-  if (file) await editor.openFile(file)
 
   // Out-of-band buffer probe for the layer-3 shadow integration test and
   // scripts/shadow-pair.sh: lets a test read A's in-memory text without a UI.
@@ -61,6 +61,9 @@ async function main(): Promise<void> {
   })
 
   if (serveStdio) {
+    // A stdio authority has no interactive host of its own, so its initial
+    // buffers must still be opened before they are announced to the shadow.
+    if (file) await editor.openFile(file)
     const link = new StdioLink(process.stdin, process.stdout, {
       role: "authority",
       onClose: () => { editor.running = false; process.exit(0) },
@@ -83,10 +86,23 @@ async function main(): Promise<void> {
     host.attachEditor(editor)
     console.log(`Web: http://127.0.0.1:${host.port}/`)
     await runJemacs(editor, host)
+    if (file) await openStartupFile(editor, file)
     return
   }
 
+  // Start the host before visiting the command-line file. Remote files may
+  // need SSH host-key/password prompts, which cannot be answered until a UI is
+  // bound to the editor.
   await runJemacs(editor, await createDefaultHost())
+  if (file) await openStartupFile(editor, file)
+}
+
+async function openStartupFile(editor: Editor, file: string): Promise<void> {
+  try {
+    await editor.openFile(file)
+  } catch (error) {
+    editor.message(error instanceof Error ? error.message : String(error))
+  }
 }
 
 /** Jail root for the shadow web host: explicit `--fsRoot` wins; otherwise the

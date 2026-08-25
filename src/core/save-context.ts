@@ -4,7 +4,7 @@ import { defcustom, getCustom } from "../runtime/custom"
 
 defcustom("backup-directory-alist", "sexp", [] as BackupDirectoryAlist,
   "Alist of filename patterns and backup directories. Each element is `[regexp, directory]`. " +
-  "When directory is absolute, backup names use `!` instead of `/`. When directory is null, no backup is made.")
+  "When directory is absolute, backup names use `!` instead of `/`. When directory is null, no backup is made.", "backup")
 
 /** Resolved save options shared by every command-layer save path. */
 export function saveContextOptions(): Pick<SaveContext, "makeBackupFiles" | "backupDirectoryAlist"> {

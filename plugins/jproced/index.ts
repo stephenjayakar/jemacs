@@ -244,7 +244,7 @@ function defineCustoms(): void {
   defcustom("jproced-sort", "string", "pcpu", "Current JProced sort attribute.", "jproced")
   defcustom("jproced-descend", "boolean", true, "When non-nil, sort descending.", "jproced")
   defcustom("jproced-tree-flag", "boolean", false, "When non-nil, display processes as a tree.", "jproced")
-  defcustom("jproced-auto-update-interval", "number", 5, "Seconds between automatic JProced refreshes.", "jproced")
+  defcustom("jproced-auto-update-interval", "integer", 5, "Seconds between automatic JProced refreshes.", "jproced")
   defcustom("jproced-auto-update-flag", "sexp", false as boolean | "visible", "Auto refresh setting: false, true, or 'visible'.", "jproced")
   defcustom("jproced-enable-color-flag", "boolean", true, "Display process attributes with richer color.", "jproced")
   defcustom("jproced-low-memory-usage-threshold", "number", 0.1, "Low memory threshold for JProced coloring.", "jproced")

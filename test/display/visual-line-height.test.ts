@@ -97,3 +97,29 @@ test("wrapRowsForContent honors word-wrap boundaries", () => {
   expect(wrapRowsForContent("alpha beta gamma delta", 12, 0, true)).toBe(2)
   expect(wrapRowsForContent("alpha beta gamma delta", 12, 0, false)).toBe(2)
 })
+
+test("computeLineVisualRows overlapping boundaries and multiline spans", () => {
+  const text = "line0\nline1\nline2\nline3"
+  // lineStarts: [0, 6, 12, 18]
+  // lineEnds: [5, 11, 17, 23]
+  const buffer = new BufferModel({ name: "overlap.txt", text })
+  faceRemapAddRelative(buffer, "default", { height: 100 }) // default: 10px
+  faceRemapAddRelative(buffer, "tall-face", { heightScale: 2 }) // tall: 20px
+  
+  // Span completely inside line0
+  const span0: TextSpan = { start: 1, end: 4, face: "tall-face" as any }
+  // Span starting at newline after line0, ending inside line1
+  const span1: TextSpan = { start: 5, end: 8, face: "tall-face" as any }
+  // Span starting in line1, crossing line2, ending in line3
+  const span2: TextSpan = { start: 10, end: 20, face: "tall-face" as any }
+
+  const rows = computeLineVisualRows(text, [span0, span1, span2], theme, buffer)
+  const defaultCost = (10 * DOM_FRAME_LINE_HEIGHT_RATIO) / DOM_FRAME_ROW_PX
+  const tallCost = (20 * DOM_FRAME_LINE_HEIGHT_RATIO) / DOM_FRAME_ROW_PX
+
+  expect(rows[0]).toBeCloseTo(tallCost, 5) // span0 is on line0
+  expect(rows[1]).toBeCloseTo(tallCost, 5) // span1 is on line1, span2 is on line1
+  expect(rows[2]).toBeCloseTo(tallCost, 5) // span2 is on line2
+  expect(rows[3]).toBeCloseTo(tallCost, 5) // span2 is on line3
+})
+

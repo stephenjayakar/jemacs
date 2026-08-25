@@ -1,15 +1,17 @@
 import type { Editor } from "../src/kernel/editor"
 import type { BufferModel } from "../src/kernel/buffer"
 import { Keymap, keyToken, type KeyEventLike } from "../src/kernel/keymap"
-import { defaultTheme, disableBuiltinTheme, enableBuiltinTheme, getBuiltinTheme, isBuiltinThemeEnabled, listEnabledBuiltinThemes, themeSource } from "../src/themes"
+import { defaultTheme, disableBuiltinTheme, enableBuiltinTheme, getBuiltinTheme, isBuiltinThemeEnabled, listEnabledBuiltinThemes, themeFile, themeSource } from "../src/themes"
 import { defcustom, getCustom } from "../src/runtime/custom"
 import { Evaluator } from "../src/runtime/evaluator"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { inspectValue } from "../src/runtime/inspect"
 import { defineMinorMode } from "../src/modes/minor-mode"
+import { customizeThemeAtPoint } from "../src/modes/customize"
+import { showHelp } from "../src/runtime/live-source"
 
 defcustom("text-scale-mode-step", "number", 1.2,
-  "Each step of text scale multiplies face height by this factor.")
+  "Each step of text scale multiplies face height by this factor.", "display")
 
 const TEXT_SCALE_AMOUNT_KEY = "text-scale-mode-amount"
 const TEXT_SCALE_ADJUST_MAP = "text-scale-adjust-map"
@@ -92,7 +94,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 
   editor.command("describe-bindings", ({ editor }) => {
     const lines = editor.keymap.all().map(([k, v]) => `${k.padEnd(16)} ${v}`)
-    editor.scratch("*Help*", lines.join("\n"), "help")
+    showHelp(editor, lines.join("\n"), { kind: "definition", ref: { kind: "function", name: "describe-bindings" } }, {
+      command: "describe-bindings",
+      args: [],
+    })
   }, "Describe key bindings of the current keymap.")
 
   editor.command("view-echo-area-messages", ({ editor }) => {
@@ -112,7 +117,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     const lines = editor.commands.entries()
       .filter(c => re.test(c.name) || re.test(c.description ?? ""))
       .map(c => `${c.name.padEnd(24)} ${c.description ?? ""}`)
-    editor.scratch("*Help*", lines.join("\n") || "No matches", "help")
+    showHelp(editor, lines.join("\n") || "No matches", { kind: "command", name: pattern }, {
+      command: "apropos-command",
+      args: [pattern],
+    })
   }, "Show commands matching a pattern.")
 
   editor.command("help-command", ({ editor }) => {
@@ -131,7 +139,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       "C-h e    view-echo-area-messages",
       "C-h C-h  help-for-help",
     ]
-    editor.scratch("*Help*", lines.join("\n"), "help")
+    showHelp(editor, lines.join("\n"), { kind: "definition", ref: { kind: "function", name: "help-for-help" } }, {
+      command: "help-for-help",
+      args: [],
+    })
   }, "Describe help commands.")
 
   editor.command("count-lines-page", ({ buffer, editor }) => {
@@ -283,12 +294,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       editor.message(`Unknown theme: ${name}`)
       return
     }
+    // Layout of `describe-theme-1` in cus-theme.el. Jemacs themes are always
+    // "loaded" once registered, so the enabled/disabled wording applies.
+    const file = themeFile(name)
     editor.scratch("*Help*", [
-      `${name} theme`,
+      `${name} is a custom theme${file ? ` in ‘${file}’` : ""}.`,
+      `It is loaded ${isBuiltinThemeEnabled(name) ? "and enabled" : "but disabled"}.`,
       "",
-      `${themeSource(name)} Custom theme.`,
+      "Documentation:",
+      theme.doc ?? "No documentation available.",
       "",
-      `Faces: ${Object.keys(theme.faces).sort().join(", ")}`,
+      "You can customize this theme.",
     ].join("\n"), "help")
   }, "Describe a Custom theme.")
 
@@ -420,14 +436,7 @@ function expressionBeforePoint(text: string, point: number): string | null {
 }
 
 function themeNameAtPoint(editor: Editor): string | null {
-  if (!editor.currentBuffer.locals.get("jemacs-customize-theme")) return null
-  const line = editor.currentBuffer.lineBoundsAt().text
-  const direct = /^Theme:\s+(.+?)\s+\[/.exec(line)?.[1]
-  if (direct && getBuiltinTheme(direct.trim())) return direct.trim()
-  const before = editor.currentBuffer.text.slice(0, editor.currentBuffer.point)
-  const matches = [...before.matchAll(/^Theme:\s+(.+?)\s+\[/gm)]
-  const name = matches.at(-1)?.[1]?.trim()
-  return name && getBuiltinTheme(name) ? name : null
+  return customizeThemeAtPoint(editor)
 }
 
 async function refreshThemeBufferIfCurrent(editor: Editor): Promise<void> {

@@ -1,0 +1,3 @@
+[test]
+# Reaps layer-3 TUI strays at startup and teardown (see test/preload.ts).
+preload = ["./test/preload.ts"]

@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
+import { display as displayModel } from "../harness/display"
 import { install } from "../../plugins/vertico"
 import { resetCustom, setCustom } from "../../src/runtime/custom"
 
@@ -22,7 +23,140 @@ const display = (editor: ReturnType<typeof makeEditor>) => editor.minibufferComp
 
 afterEach(() => {
   // custom vars are process-global; restore defaults so later test files see baselines
-  for (const name of ["vertico-cycle", "vertico-count", "vertico-scroll-margin"]) resetCustom(name)
+  for (const name of ["vertico-cycle", "vertico-count", "vertico-scroll-margin", "vertico-dynamic-debounce"]) resetCustom(name)
+})
+
+describe("dynamic collections", () => {
+  const DEBOUNCE = 10
+
+  /** Let the debounce timer fire and the query it starts finish painting. */
+  const settle = (ms = DEBOUNCE * 6) => new Promise(resolve => setTimeout(resolve, ms))
+
+  function openDynamic(source: (input: string, signal: AbortSignal) => Promise<string[]>) {
+    const editor = makeEditor()
+    install(editor)
+    setCustom("vertico-dynamic-debounce", DEBOUNCE)
+    editor.enableMinorMode("vertico-mode")
+    const result = editor.prompt("Find: ", "", undefined, { dynamicCollection: source })
+    return { editor, result }
+  }
+
+  test("candidates come from the source, in the order the source returned them", async () => {
+    // Deliberately not sorted: a remote source ranks its own results and vertico must not resort.
+    const { editor, result } = openDynamic(async input => [`${input}-zzz`, `${input}-a`, `${input}-mm`])
+    await editor.handleKey({ name: "q", sequence: "q" })
+    await settle()
+    const lines = display(editor).split("\n")
+    expect(lines[0]).toContain("1/3")
+    expect(lines.slice(1)).toEqual(["> q-zzz", "  q-a", "  q-mm"])
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("candidates are not re-filtered against the input", async () => {
+    // A code-search backend matches on path components the typed string never
+    // appears in verbatim.
+    const { editor, result } = openDynamic(async () => ["java/com/example/Widget.java"])
+    await editor.handleKey({ name: "w", sequence: "w" })
+    await settle()
+    expect(display(editor)).toContain("> java/com/example/Widget.java")
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("typing does not wait for the query", async () => {
+    // verticoRefresh runs from post-command-hook, which the key loop awaits: awaiting a slow
+    // remote source there would stall every keystroke behind it.
+    const { editor, result } = openDynamic(async () => {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      return ["slow"]
+    })
+    const start = Date.now()
+    for (const key of ["a", "b", "c"]) await editor.handleKey({ name: key, sequence: key })
+    expect(Date.now() - start).toBeLessThan(250)
+    expect(editor.minibufferInput()).toBe("abc")
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("a superseded query is aborted and never paints its candidates", async () => {
+    const started: string[] = []
+    const release: Array<() => void> = []
+    const { editor, result } = openDynamic(async (input, signal) => {
+      started.push(input)
+      if (input !== "a") return ["fresh"]
+      // Hold the first query open until the second one has been issued.
+      await new Promise<void>(resolve => release.push(resolve))
+      if (signal.aborted) throw new Error("aborted")
+      return ["stale"]
+    })
+
+    await editor.handleKey({ name: "a", sequence: "a" })
+    await settle()
+    expect(started).toEqual(["a"])
+    await editor.handleKey({ name: "b", sequence: "b" })
+    await settle()
+    release[0]?.()
+    await settle()
+
+    expect(started).toEqual(["a", "ab"])
+    expect(display(editor)).toContain("> fresh")
+    expect(display(editor)).not.toContain("stale")
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("cancelling the prompt aborts the in-flight query", async () => {
+    let seenSignal: AbortSignal | null = null
+    const { editor, result } = openDynamic(async (_input, signal) => {
+      seenSignal = signal
+      await new Promise(resolve => setTimeout(resolve, 500))
+      return ["late"]
+    })
+    await editor.handleKey({ name: "x", sequence: "x" })
+    await settle()
+    editor.minibufferCancel()
+    await result
+    expect(seenSignal!.aborted).toBe(true)
+  })
+
+  test("the count line marks a query that has not answered yet", async () => {
+    const { editor, result } = openDynamic(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return ["done"]
+    })
+    await editor.handleKey({ name: "x", sequence: "x" })
+    // Still inside the debounce window: the display says a query is pending, not "no matches".
+    expect(display(editor)).toContain("...")
+    await settle()
+    expect(display(editor)).toContain("1/1")
+    expect(display(editor)).not.toContain("...")
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("keystrokes inside the debounce window collapse into one query", async () => {
+    const queries: string[] = []
+    const { editor, result } = openDynamic(async input => {
+      queries.push(input)
+      return [input]
+    })
+    // Three fast keystrokes: the first two are still debouncing when the next one lands.
+    for (const key of ["a", "b", "c"]) await editor.handleKey({ name: key, sequence: key })
+    await settle()
+    expect(queries).toEqual(["abc"])
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("vertico-exit returns the highlighted dynamic candidate", async () => {
+    const { editor, result } = openDynamic(async input => [`${input}-one`, `${input}-two`])
+    await editor.handleKey({ name: "z", sequence: "z" })
+    await settle()
+    await editor.run("vertico-next")
+    await editor.run("vertico-exit")
+    await expect(result).resolves.toBe("z-two")
+  })
 })
 
 describe("vertico-cycle wraparound", () => {
@@ -149,7 +283,82 @@ describe("vertico-next-group / vertico-previous-group", () => {
   })
 })
 
+// Regression: `C-x C-f` on a directory preselects the prompt (index -1) so RET
+// visits the typed directory. No candidate row is marked `> ` in that state, and
+// nothing else was highlighted either, so the list looked inert. Emacs paints the
+// prompt line with `vertico-current'; `promptSelected` is what carries that.
+describe("preselected prompt is still visibly selected", () => {
+  test("a directory prompt marks no candidate but flags the prompt line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vertico-preselect-"))
+    await writeFile(join(dir, "a.txt"), "")
+    await writeFile(join(dir, "b.txt"), "")
+
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    const result = editor.prompt("Find file: ", `${dir}/`, undefined, { completion: "file" })
+    await editor.refreshMinibufferCompletions()
+
+    expect(display(editor)).toContain("*/2")
+    expect(display(editor)).not.toContain("> ")
+    expect(editor.minibufferCompletionDisplay?.selectedLine).toBeUndefined()
+    expect(editor.minibufferCompletionDisplay?.promptSelected).toBe(true)
+
+    // Moving onto a candidate hands the highlight back to the list.
+    await editor.run("vertico-next")
+    expect(display(editor)).toContain("> ")
+    expect(editor.minibufferCompletionDisplay?.selectedLine).toBe(1)
+    expect(editor.minibufferCompletionDisplay?.promptSelected).toBe(false)
+
+    editor.minibufferCancel()
+    await result
+  })
+})
+
+// Regression: `C-x C-f` preselects the prompt, so the whole input already wore a
+// background. Painting the mark with that same face made `C-SPC` invisible: the
+// row looked identical before and after marking.
+describe("mark stays visible on a preselected prompt", () => {
+  test("the marked span differs from the rest of the prompt row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vertico-mark-"))
+    await writeFile(join(dir, "a.txt"), "")
+
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    const result = editor.prompt("Find file: ", `${dir}/`, undefined, { completion: "file" })
+    await editor.refreshMinibufferCompletions()
+    expect(editor.minibufferCompletionDisplay?.promptSelected).toBe(true)
+
+    const regionBg = editor.theme.faces.region?.bg
+    const marked = () => displayModel(editor).minibuffer.chunks.some(c => c.bg === regionBg)
+    expect(marked()).toBe(false)
+
+    const buffer = editor.activeBuffer
+    buffer.setMark()
+    buffer.move(-4)
+    expect(buffer.markActive).toBe(true)
+    expect(marked()).toBe(true)
+
+    editor.minibufferCancel()
+    await result
+  })
+})
+
 describe("vertico-exit-input", () => {
+  test("RET submits literal file prompt text when there are zero candidates", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    const input = "/ssh:user@192.168.0.29:/"
+    const result = editor.prompt("Find: ", input, undefined, { completion: "file" })
+    await editor.refreshMinibufferCompletions()
+    expect(display(editor)).toContain("*/0")
+
+    await editor.handleKey({ name: "return" })
+    await expect(result).resolves.toBe(input)
+  })
+
   test("M-RET returns the raw input, not the highlighted candidate", async () => {
     const { editor, result } = await open(["alpha", "alphabet"])
     await editor.handleKey({ name: "a", sequence: "a" })
@@ -214,5 +423,35 @@ describe("vertico-save", () => {
     expect(buf?.text).toBe("xx")
     editor.minibufferCancel()
     await result2
+  })
+})
+
+// Layer 2: the flag above is only useful if the renderer actually paints it. The
+// prompt input must carry the same background the selected candidate row gets,
+// which is `highlight' and not `region' — `region' stays reserved for the mark.
+describe("preselected prompt reaches the display model", () => {
+  test("the minibuffer input renders with the highlight background", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vertico-preselect-display-"))
+    await writeFile(join(dir, "a.txt"), "")
+
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    const result = editor.prompt("Find file: ", `${dir}/`, undefined, { completion: "file" })
+    await editor.refreshMinibufferCompletions()
+
+    const highlightBg = editor.theme.faces.highlight?.bg
+    expect(highlightBg).toBeTruthy()
+    expect(highlightBg).not.toBe(editor.theme.faces.region?.bg)
+    const promptSelected = displayModel(editor).minibuffer.chunks.some(c => c.text.includes(dir) && c.bg === highlightBg)
+    expect(promptSelected).toBe(true)
+
+    // Once a candidate is current the prompt drops back to the plain face.
+    await editor.run("vertico-next")
+    const stillSelected = displayModel(editor).minibuffer.chunks.some(c => c.text.includes(dir) && c.bg === highlightBg)
+    expect(stillSelected).toBe(false)
+
+    editor.minibufferCancel()
+    await result
   })
 })

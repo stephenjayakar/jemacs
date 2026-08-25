@@ -1,11 +1,15 @@
 import type { BufferModel } from "../kernel/buffer"
 import type { FaceName } from "../modes/mode"
 import type { FaceStyle, Theme } from "../display/theme-types"
+import { ensureCustomGroup } from "./custom"
 import { registerCatalogEntry } from "./definitions"
 import { captureCallerSource } from "./source"
 import type { SourceLocation } from "./source"
 
-export type FaceAttribute = keyof Omit<FaceStyle, "inherit">
+/** Any face attribute Customize can set, `:inherit` included. The display
+ *  layer only reads a few of them; the rest round-trip through Customize and
+ *  the custom file so an Emacs config keeps its meaning. */
+export type FaceAttribute = keyof FaceStyle
 
 export type CustomFace = {
   name: string
@@ -16,6 +20,9 @@ export type CustomFace = {
   baselineSpec: FaceStyle
   savedSpec?: FaceStyle
   customized: boolean
+  /** Emacs `face-comment` / `saved-face-comment`. */
+  comment?: string
+  savedComment?: string
 }
 
 const faces = new Map<string, CustomFace>()
@@ -38,8 +45,35 @@ export function mergeFaceStyles(base: FaceStyle | undefined, overlay: FaceStyle 
   return merged
 }
 
+/** `custom-set-faces`: install saved face specs read back from the custom file. */
+export function customSetFaces(...specs: Array<[string, FaceStyle, string?]>): void {
+  for (const [name, spec, comment] of specs) {
+    if (!faces.has(name)) defface(name, {})
+    const face = faces.get(name)!
+    customOverrides.set(name, { ...spec })
+    face.spec = mergeFaceStyles(face.baselineSpec, spec) ?? {}
+    face.savedSpec = { ...spec }
+    face.customized = true
+    if (comment !== undefined) {
+      face.comment = comment
+      face.savedComment = comment
+    }
+    registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
+  }
+}
+
+/** Face attributes the user has changed but not yet saved (Emacs `customized-face`). */
+export function faceIsUnsaved(name: string): boolean {
+  const face = faces.get(name)
+  if (!face?.customized) return false
+  if (!face.savedSpec) return true
+  if (face.comment !== face.savedComment) return true
+  return !faceSpecsEqual(customOverrides.get(name), face.savedSpec)
+}
+
 export function defface(name: string, spec: FaceStyle, doc?: string, group?: string): CustomFace {
   const source = captureCallerSource(3)
+  ensureCustomGroup(group)
   const existing = faces.get(name)
   if (existing) {
     existing.spec = { ...spec }
@@ -76,9 +110,10 @@ export function listKnownFaceNames(): string[] {
   const names = new Set<string>([
     "default", "variable-pitch", "fixed-pitch",
     "keyword", "string", "comment", "builtin", "function", "type",
-    "number", "constant", "directory", "region", "isearch", "lazyHighlight",
+    "number", "constant", "preprocessor", "doc", "variable",
+    "directory", "region", "highlight", "isearch", "lazyHighlight",
     "modeLine", "modeLineInactive", "minibuffer", "minibufferPrompt", "title",
-    "error", "lineNumber", "lineNumberCurrent",
+    "warning", "error", "lineNumber", "lineNumberCurrent",
     "diffHeader", "diffFileHeader", "diffIndex", "diffHunkHeader",
     "diffRemoved", "diffAdded", "diffChanged", "diffContext",
     "diffFunction", "diffNonexistent",
@@ -132,6 +167,40 @@ export function setFaceAttribute(name: string, attribute: FaceAttribute, value: 
   registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
 }
 
+/** Emacs `face-comment`: free-text note attached to a customized face. */
+export function setFaceComment(name: string, comment: string | undefined): void {
+  if (!faces.has(name)) defface(name, {})
+  const face = faces.get(name)!
+  face.comment = comment || undefined
+  face.customized = true
+}
+
+export function getFaceComment(name: string): string | undefined {
+  return faces.get(name)?.comment
+}
+
+/** Unchecking an attribute checkbox drops that attribute. An attribute that
+ *  came from the face's own `defface` spec is masked with an explicit
+ *  `undefined` override, which is how the merged spec loses it — the same
+ *  effect as removing the attribute from the checklist in Emacs. */
+export function unsetFaceAttribute(name: string, attribute: FaceAttribute): boolean {
+  const face = faces.get(name)
+  if (!face) return false
+  const override = customOverrides.get(name) ?? {}
+  const inOverride = attribute in override && override[attribute] !== undefined
+  const inBaseline = face.baselineSpec[attribute] != null
+  if (!inOverride && !inBaseline) return false
+  const next: FaceStyle = { ...override }
+  if (inBaseline) next[attribute] = undefined
+  else delete next[attribute]
+  if (Object.keys(next).length) customOverrides.set(name, next)
+  else customOverrides.delete(name)
+  face.spec = mergeFaceStyles(face.baselineSpec, customOverrides.get(name)) ?? { ...face.baselineSpec }
+  face.customized = customOverrides.has(name)
+  registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
+  return true
+}
+
 export function getCustomFaceOverrides(): Partial<Record<string, FaceStyle>> {
   const out: Partial<Record<string, FaceStyle>> = {}
   for (const [name, style] of customOverrides) out[name] = { ...style }
@@ -151,6 +220,7 @@ export function saveFace(name: string, spec?: FaceStyle): void {
   const override = customOverrides.get(name)
   if (!override) return
   face.savedSpec = { ...override }
+  face.savedComment = face.comment
   face.customized = true
   registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
 }
@@ -162,6 +232,8 @@ export function resetFace(name: string): boolean {
   face.spec = { ...face.baselineSpec }
   face.customized = false
   face.savedSpec = undefined
+  face.comment = undefined
+  face.savedComment = undefined
   registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
   return true
 }
@@ -171,6 +243,7 @@ export function resetFaceToSaved(name: string): boolean {
   if (!face?.savedSpec) return false
   customOverrides.set(name, { ...face.savedSpec })
   face.spec = mergeFaceStyles(face.baselineSpec, face.savedSpec) ?? {}
+  face.comment = face.savedComment
   face.customized = true
   registerCatalogEntry({ kind: "face", name, source: face.source, doc: face.doc })
   return true
@@ -249,16 +322,23 @@ function resolveFaceFromTheme(
   const spec = theme.faces[face]
   const registry = getFaceRegistrySpec(face)
 
+  // A theme's `:inherit` wins over the one the face was defined with, matching
+  // Emacs: the theme is the later, more specific customization. Honouring the
+  // registry's `inherit` at all is what makes `defface(x, { inherit: ["comment"] })`
+  // actually pick up comment's colour -- it used to be merged in as an inert
+  // key, so such a face resolved to no foreground and rendered as plain default.
+  const inherit = spec?.inherit?.length ? spec.inherit : registry?.inherit
+
   let base: FaceStyle | undefined
-  if (spec?.inherit?.length) {
-    for (const parent of spec.inherit) {
+  if (inherit?.length) {
+    for (const parent of inherit) {
       base = mergeFaceStyles(base, resolveFaceFromTheme(parent, theme, visited, buffer))
     }
   } else if (face !== "default") {
     base = inheritFontFrom(resolvedDefaultFace(theme, buffer, visited))
   }
 
-  base = mergeFaceStyles(base, registry)
+  base = mergeFaceStyles(base, registry ? omitInherit(registry) : undefined)
   base = mergeFaceStyles(base, spec ? omitInherit(spec) : undefined)
   return base
 }

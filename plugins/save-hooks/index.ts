@@ -2,7 +2,7 @@ import type { Editor } from "../../src/kernel/editor"
 import type { BufferModel } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { CommandAdvice } from "../../src/runtime/advice"
-import { defcustom } from "../../src/runtime/custom"
+import { defcustom, getCustom } from "../../src/runtime/custom"
 
 const deleteTrailingLines = defcustom(
   "delete-trailing-lines",
@@ -50,6 +50,21 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     deleteTrailingWhitespace(buffer, start, end)
   }, "Delete trailing whitespace at the end of each line in the region, or the whole buffer.")
 
+/**
+ * Modes whose buffers keep their trailing whitespace on save.
+ *
+ * A commit-message buffer is the usual case: the trailing space can be significant to
+ * the version-control tool reading it back, and the buffer is throwaway anyway. Out-of
+ * tree modes add themselves here rather than patching this plugin.
+ */
+const exemptModes = defcustom<string[]>(
+  "delete-trailing-whitespace-exempt-modes",
+  "sexp",
+  [],
+  "Major modes exempt from `delete-trailing-whitespace` on save.",
+)
+
+
   const advice: CommandAdvice = {
     before: async ({ editor, buffer }) => {
       try {
@@ -64,5 +79,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }
 
   ctx.advice("save-buffer", advice)
-  ctx.hook("before-save-hook", ({ buffer }) => deleteTrailingWhitespace(buffer))
+  ctx.hook("before-save-hook", ({ buffer }) => {
+    const exempt = getCustom<string[]>("delete-trailing-whitespace-exempt-modes") ?? exemptModes.value
+    if (exempt.includes(buffer.mode)) return
+    deleteTrailingWhitespace(buffer)
+  })
 }

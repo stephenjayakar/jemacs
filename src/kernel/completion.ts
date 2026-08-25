@@ -1,6 +1,8 @@
 import { join, resolve } from "node:path"
 import { cwd, homedir, isDirectory, readdir, stat } from "../platform/runtime"
 
+const REMOTE_FILE_RE = /^\/(?:ssh|scp|sudo):/
+
 export function expandUserPath(input: string): string {
   if (input.startsWith("~/")) return join(homedir(), input.slice(2))
   if (input === "~") return homedir()
@@ -19,14 +21,20 @@ export function splitCompletionInput(input: string, baseDirectory = cwd()): { di
 }
 
 export async function fileCompletionCandidates(input: string, baseDirectory = cwd()): Promise<string[]> {
+  if (REMOTE_FILE_RE.test(input)) return []
   const { directory, prefix } = splitCompletionInput(input, baseDirectory)
   const dirPath = directory.startsWith("/") ? directory : resolve(baseDirectory, directory)
-  const names = await readdir(dirPath.replace(/\/+$/, "") || "/")
+  let names: string[]
+  try {
+    names = await readdir(dirPath.replace(/\/+$/, "") || "/")
+  } catch {
+    return []
+  }
   const pfx = prefix.toLowerCase()
   const matches = names.filter(n => n.toLowerCase().startsWith(pfx))
   const out = await Promise.all(matches.map(async name => {
     const path = join(dirPath, name)
-    const st = await stat(path)
+    const st = await stat(path).catch(() => null)
     return st && isDirectory(st) ? `${path}/` : path
   }))
   return out.sort((a, b) => a.localeCompare(b))

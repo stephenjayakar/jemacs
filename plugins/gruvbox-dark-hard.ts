@@ -39,19 +39,25 @@ export const gruvboxDarkHardTheme = defineTheme("gruvbox-dark-hard", {
   type: { fg: gruvboxDarkHardPalette.bright_purple },
   number: { fg: gruvboxDarkHardPalette.bright_purple },
   constant: { fg: gruvboxDarkHardPalette.bright_purple },
+  preprocessor: { fg: gruvboxDarkHardPalette.bright_aqua },
+  doc: { fg: gruvboxDarkHardPalette.light3, italic: true },
+  variable: { fg: gruvboxDarkHardPalette.bright_blue },
   directory: { fg: gruvboxDarkHardPalette.bright_blue, bold: true },
   region: { bg: gruvboxDarkHardPalette.dark2 },
+  highlight: { fg: gruvboxDarkHardPalette.dark0_hard, bg: gruvboxDarkHardPalette.faded_blue },
   isearch: { fg: gruvboxDarkHardPalette.dark0_hard, bg: gruvboxDarkHardPalette.bright_orange },
   modeLine: { fg: gruvboxDarkHardPalette.light2, bg: gruvboxDarkHardPalette.dark3 },
   modeLineInactive: { fg: gruvboxDarkHardPalette.light4, bg: gruvboxDarkHardPalette.dark1 },
   minibuffer: { fg: gruvboxDarkHardPalette.light1, bg: gruvboxDarkHardPalette.dark1 },
   minibufferPrompt: { fg: gruvboxDarkHardPalette.bright_green, bold: true },
   title: { fg: gruvboxDarkHardPalette.light3, bg: gruvboxDarkHardPalette.dark0 },
+  warning: { fg: gruvboxDarkHardPalette.bright_yellow },
+  success: { fg: gruvboxDarkHardPalette.bright_green, bold: true },
   // Underline only — must layer over font-lock fg, not repaint it as `keyword` (t-1f96245b).
   error: { underline: true },
   lineNumber: { fg: gruvboxDarkHardPalette.dark4, bg: gruvboxDarkHardPalette.dark1 },
   lineNumberCurrent: { fg: gruvboxDarkHardPalette.bright_orange, bg: gruvboxDarkHardPalette.dark2 },
-})
+}, "A retro-groove colour theme (dark version, hard contrast)")
 
 export function install(_editor: Editor, ctx: PluginContext = createPluginContext(_editor)): void {
   registerTheme(gruvboxDarkHardTheme)

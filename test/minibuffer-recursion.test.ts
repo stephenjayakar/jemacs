@@ -132,3 +132,43 @@ describe("recursive minibuffer", () => {
     expect(ed.minibufferHistory.get("outer-hist")).toBeUndefined()
   })
 })
+
+// Regression: the minibuffer is a real buffer, so C-SPC sets a mark there, but
+// `logicalMinibuffer` dropped it and the prompt row was painted as one flat
+// span. Marking in the `C-x C-f` prompt therefore had no visible effect.
+describe("minibuffer region", () => {
+  test("C-SPC then motion paints the region on the prompt row", async () => {
+    const ed = await script({ plugins: false }).done()
+    const opened = nextMinibuffer(ed)
+    void keySeq(ed, "M-x")
+    await opened
+
+    for (const ch of "abcdef") await keySeq(ed, ch)
+    expect(ed.minibufferInput()).toBe("abcdef")
+
+    const regionBg = ed.theme.faces.region?.bg
+    expect(regionBg).toBeTruthy()
+    const marked = () => display(ed).minibuffer.chunks.some(c => c.bg === regionBg)
+
+    // No mark yet, so nothing on the row wears the region face.
+    expect(marked()).toBe(false)
+
+    await keySeq(ed, "C-SPC")
+    await keySeq(ed, "C-b")
+    await keySeq(ed, "C-b")
+    expect(ed.activeBuffer.markActive).toBe(true)
+    expect(marked()).toBe(true)
+    // Exactly the two characters between point and mark are highlighted; the
+    // cursor glyph stands in for the "e" it overwrites.
+    const highlighted = display(ed).minibuffer.chunks.filter(c => c.bg === regionBg).map(c => c.text).join("")
+    expect(highlighted).toBe("█f")
+
+    // Deactivating the mark clears the highlight again.
+    await keySeq(ed, "C-g")
+    expect(ed.activeBuffer.markActive).toBe(false)
+    expect(marked()).toBe(false)
+
+    await keySeq(ed, "C-g")
+    expect(ed.minibuffer).toBeNull()
+  })
+})

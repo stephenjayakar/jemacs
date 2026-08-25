@@ -6,6 +6,13 @@
  */
 
 export * from "vscode-languageserver-types"
+export type {
+  ClientCapabilities,
+  InitializeParams,
+  InitializeResult,
+  ServerCapabilities,
+  _InitializeParams,
+} from "vscode-languageserver-protocol"
 export {
   InitializeRequest,
   InitializedNotification,

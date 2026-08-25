@@ -24,10 +24,13 @@ test("GUI markdown scroll keeps cursor on screen below tall headings", async () 
   })
   const pane = model.windows.kind === "leaf" ? model.windows.pane : null
   expect(pane).not.toBeNull()
+  // GUI hosts get a caret coordinate rather than a █ in the text; the row it
+  // names still has to be inside the pane's budget and inside the body.
   const bodyRows = themedTextPlain(pane!.body).split("\n")
-  const cursorRow = bodyRows.findIndex(r => r.includes("█"))
+  const cursorRow = pane!.cursor?.row ?? -1
   expect(cursorRow).toBeGreaterThanOrEqual(0)
   expect(cursorRow).toBeLessThan(pane!.bodyLineBudget)
+  expect(cursorRow).toBeLessThan(bodyRows.length)
 })
 
 test("GUI markdown body fills the pane without leaving a huge empty gap", () => {

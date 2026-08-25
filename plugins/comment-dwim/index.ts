@@ -4,7 +4,7 @@ import type { BufferModel } from "../../src/kernel/buffer"
 import { modeFeature } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 
-defcustom("comment-column", "number", 32, "Column to indent right-margin comments to.")
+defcustom("comment-column", "integer", 32, "Column to indent right-margin comments to.", "editing")
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")

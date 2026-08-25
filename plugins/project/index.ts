@@ -87,6 +87,12 @@ export async function rememberProject(root: string): Promise<void> {
   await writeProjectList(list)
 }
 
+export async function forgetProject(root: string): Promise<void> {
+  const resolved = resolve(root)
+  const list = (await readProjectList()).filter(p => resolve(p) !== resolved)
+  await writeProjectList(list)
+}
+
 function projectSwitchCommands(editor: Editor): ProjectSwitchCommand[] {
   const custom = getCustom<unknown>("project-switch-commands")
   const commands = Array.isArray(custom) ? custom : DEFAULT_PROJECT_SWITCH_COMMANDS
@@ -132,11 +138,15 @@ export async function projectBuffers(editor: Editor, root: string): Promise<Buff
   return buffers
 }
 
+function bufferContainsNul(bytes: Uint8Array): boolean {
+  return bytes.includes(0)
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("project-list-file", "string", join(homedir(), ".jemacs", "projects.json"),
-    "File where the list of known project roots is persisted.")
+    "File where the list of known project roots is persisted.", "tools")
   defcustom("project-switch-commands", "sexp", DEFAULT_PROJECT_SWITCH_COMMANDS,
-    "Commands offered by project-switch-project.")
+    "Commands offered by project-switch-project.", "tools")
 
   editor.commands.define("project-current", async ({ editor, args }) =>
     projectCurrent(editor, { directory: args[0] }),
@@ -190,6 +200,64 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       prompt: "Find regexp in project: ",
     })
   }, "Find all matches for REGEXP in the current project's roots.")
+
+  editor.command("project-switch-to-buffer", async ({ editor, args }) => {
+    const root = await requireCurrentProject(editor, args[0])
+    if (!root) return
+    await rememberProject(root)
+    const buffers = await projectBuffers(editor, root)
+    if (!buffers.length) {
+      editor.message("No project buffers")
+      return
+    }
+    const names = buffers.map(b => editor.bufferDisplayName(b))
+    const choice = await editor.completingRead("Switch to project buffer: ", {
+      collection: names,
+      history: "buffer",
+    })
+    if (!choice) return
+    editor.switchToBuffer(choice)
+  }, "Switch to a buffer belonging to the current project.")
+
+  editor.command("project-forget-project", async ({ editor }) => {
+    const roots = await readProjectList()
+    if (!roots.length) {
+      editor.message("No known projects")
+      return
+    }
+    const root = await editor.completingRead("Forget project: ", {
+      collection: roots,
+      history: "project",
+    })
+    if (!root) return
+    await forgetProject(root)
+    editor.message(`Forgot project ${root}`)
+  }, "Forget a known project.")
+
+  editor.command("project-query-replace-regexp", async ({ editor, args }) => {
+    const firstArgIsRoot = args[0] != null && await projectRoot(args[0]) === resolve(args[0])
+    const root = await requireCurrentProject(editor, firstArgIsRoot ? args[0] : undefined)
+    if (!root) return
+    const from = (firstArgIsRoot ? args[1] : args[0]) ?? await editor.prompt("Query replace regexp in project: ", "", "query-replace")
+    if (!from) return
+    const to = (firstArgIsRoot ? args[2] : args[1]) ?? await editor.prompt(`Query replace regexp ${from} with: `, "", "query-replace")
+    if (to == null) return
+    let re: RegExp
+    try { re = new RegExp(from) }
+    catch (err) { editor.message((err as Error).message); return }
+    await rememberProject(root)
+    let visited = 0
+    for (const file of await projectFiles(root)) {
+      const path = join(root, file)
+      const bytes = await readFile(path).catch(() => null)
+      if (!bytes || bufferContainsNul(bytes) || !re.test(bytes.toString("utf8"))) continue
+      const buffer = await editor.openFile(path)
+      buffer.point = 0
+      visited++
+      await editor.run("query-replace-regexp", [from, to])
+    }
+    editor.message(`Query replace regexp visited ${visited} file${visited === 1 ? "" : "s"}`)
+  }, "Run query-replace-regexp across files in the current project.")
 
   editor.command("vc-dir", async ({ editor, buffer, args }) => {
     const dir = args[0] ?? buffer.directory() ?? process.cwd()
@@ -254,6 +322,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.run("shell", [root])
   }, "Start an inferior shell in the current project's root directory.")
 
+  editor.command("project-eshell", async ({ editor, args }) => {
+    await editor.run("project-shell", args)
+  }, "Alias for project-shell; Jemacs has one shell command.")
+
   editor.command("project-kill-buffers", async ({ editor, args }) => {
     const noConfirm = args.includes("no-confirm") || args.includes("true")
     const directory = args.find(arg => arg !== "no-confirm" && arg !== "true")
@@ -285,6 +357,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Run `compile` with the project root as default-directory.")
 
   editor.key("C-x p f", "project-find-file")
+  editor.key("C-x p b", "project-switch-to-buffer")
   editor.key("C-x p d", "project-find-dir")
   editor.key("C-x p g", "project-find-regexp")
   editor.key("C-x C-z", "project-find-file")

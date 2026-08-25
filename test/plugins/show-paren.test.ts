@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { makeEditor } from "./helper"
-import { install, showParenCompute, showParenData, SHOW_PAREN_LOCAL } from "../../plugins/show-paren"
+import { install, showParenCompute, showParenData, showParenSpans, SHOW_PAREN_LOCAL } from "../../plugins/show-paren"
 import { setCustom } from "../../src/runtime/custom"
 
 describe("showParenCompute", () => {
@@ -137,5 +137,25 @@ describe("show-paren-mode", () => {
     await editor.changed("test")
     expect(showParenData(buf)?.thereBeg).toBe(4)
     setCustom("show-paren-when-point-inside-paren", false)
+  })
+})
+
+describe("showParenSpans", () => {
+  test("renders match and mismatch faces as overlay spans", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("show-paren-mode")
+    const buf = editor.scratch("t.ts", "(ok)", "text")
+    buf.point = buf.text.length
+    await editor.changed("test")
+    expect(showParenSpans(buf)).toEqual([
+      { start: 3, end: 4, face: "show-paren-match" },
+      { start: 0, end: 1, face: "show-paren-match" },
+    ])
+
+    buf.setText("(bad]")
+    buf.point = buf.text.length
+    await editor.changed("test")
+    expect(showParenSpans(buf).every(s => s.face === "show-paren-mismatch")).toBe(true)
   })
 })

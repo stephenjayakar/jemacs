@@ -14,14 +14,16 @@ export type BuildDisplayOptions = {
   viewport: ViewportSize
   hostLabel?: string
   hostCapabilities?: HostCapabilities
+  /** Render this frame instead of the selected one (multi-frame GUI hosts). */
+  frameId?: string
 }
 
 /** `Editor` → `DisplayModel` for char-grid hosts (OpenTUI / Electron).
  *  Shim: editor side-effects + `buildLogicalModel` → `layoutCharGrid`. */
 export function buildDisplayModel(editor: Editor, options: BuildDisplayOptions): DisplayModel {
-  const { viewport, lastMessage, hostLabel, hostCapabilities } = options
+  const { viewport, lastMessage, hostLabel, hostCapabilities, frameId } = options
   setEditorDisplayContext(editor, viewport, hostCapabilities)
-  const logical = buildLogicalModel(editor, { lastMessage, hostLabel })
+  const logical = buildLogicalModel(editor, { lastMessage, hostLabel, frameId })
   const selected = syncEditorWindowGeometry(editor, logical, viewport)
   const model = layoutCharGrid(logical, viewport, hostCapabilities)
   // Write the selected window's corrected `startLine` back to the editor.
@@ -58,7 +60,7 @@ function syncEditorWindowGeometry(
   const completionLines = logical.completion?.text
     ? Math.max(1, logical.completion.text.split("\n").length)
     : 0
-  const areaLines = Math.max(2, contentAreaLines(viewport.rows) - completionLines - logical.overlayRows)
+  const areaLines = Math.max(2, contentAreaLines(viewport.rows) - completionLines - logical.overlayRows - (logical.tabBar ? 1 : 0))
   let selected: SelectedLeaf | null = null
   const published = new Set<string>()
   walk(logical.windows, areaLines, viewport.cols)
@@ -67,7 +69,8 @@ function syncEditorWindowGeometry(
   function walk(node: LogicalWindowNode, lines: number, cols?: number): void {
     if (node.kind === "leaf") {
       const { pane } = node
-      const maxLines = windowBodyLines(lines)
+      const bodyAndFooterLines = windowBodyLines(lines)
+      const maxLines = Math.max(1, bodyAndFooterLines - footerLineCount(pane.footer?.text, bodyAndFooterLines))
       const isSelected = node.id === logical.selectedWindowId
       stampPaneGeometry(pane, maxLines, cols, viewport.cols)
       // Per-buffer side effect: selected window's geometry takes precedence so
@@ -87,6 +90,11 @@ function syncEditorWindowGeometry(
   }
 }
 
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
+}
+
 /** Write this leaf's body geometry into the per-pane locals snapshot so
  *  downstream layout / serialization see per-window dimensions, independent of
  *  the buffer-level publish (t-audit2-d032ccb4). */
@@ -104,12 +112,21 @@ function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number,
   const cursorLine = pointLineCol(dText, dPoint).line - 1
   const displayLines = dText.split("\n")
   const lineRange = visualRowLineRange(pane.startLine, cursorLine, maxLines, displayLines.length)
-  const wrapLayout = paneWrapLayoutFor(dText, pane.locals, cols, pane.showLineNumbers, pane.startLine, maxLines)
+  const wrapLayout = paneWrapLayoutFor(
+    dText,
+    pane.locals,
+    cols,
+    pane.showLineNumbers || Boolean(pane.gutterDecorations?.length),
+    pane.startLine,
+    maxLines,
+    cursorLine + 1,
+  )
   if (!useFontMetrics) {
     const wrappedRows = computeWrappedLineRows(displayLines, {
       wrapCols: wrapLayout.wrapCols,
       gutterPrefixLen: wrapLayout.gutterPrefixLen,
       wordWrap: wrapLayout.wordWrap,
+      adaptiveWrap: wrapLayout.adaptiveWrap,
       fromLine: lineRange.fromLine,
       toLine: lineRange.toLine,
     })
@@ -123,6 +140,7 @@ function selectedVisualRows(editor: Editor, pane: LogicalPane, maxLines: number,
     wrapCols: wrapLayout.wrapCols,
     gutterPrefixLen: wrapLayout.gutterPrefixLen,
     wordWrap: wrapLayout.wordWrap,
+    adaptiveWrap: wrapLayout.adaptiveWrap,
     displayLines,
     fromLine: lineRange.fromLine,
     toLine: lineRange.toLine,

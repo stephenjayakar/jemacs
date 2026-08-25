@@ -30,3 +30,10 @@ test("binding 'linefeed' matches a 'C-j' lookup (bidirectional)", () => {
   km.bind("linefeed", "lfd-cmd")
   expect(km.get("C-j")).toBe("lfd-cmd")
 })
+
+test("normalizeToken normalizes uppercase key names to include shift prefix", () => {
+  expect(normalizeToken("F")).toBe("S-f")
+  expect(normalizeToken("A")).toBe("S-a")
+  expect(normalizeToken("S-f")).toBe("S-f")
+  expect(normalizeToken("S-F")).toBe("S-f")
+})

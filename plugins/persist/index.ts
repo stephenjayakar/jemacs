@@ -209,10 +209,10 @@ export async function recentfLoadList(): Promise<void> {
 const autosaveTimers = new WeakMap<Editor, Timer>()
 
 export async function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): Promise<void> {
-  defcustom("savehist-file", "string", join(homedir(), ".jemacs", "history.json"), "File where minibuffer histories are persisted.")
-  defcustom("savehist-autosave-interval", "number", 300, "Seconds of idle time before autosaving history.")
-  defcustom("recentf-save-file", "string", join(homedir(), ".jemacs", "recentf.json"), "File where the recent file list is persisted.")
-  defcustom("recentf-max-saved-items", "number", 20, "Maximum number of recent files to remember.")
+  defcustom("savehist-file", "string", join(homedir(), ".jemacs", "history.json"), "File where minibuffer histories are persisted.", "convenience")
+  defcustom("savehist-autosave-interval", "integer", 300, "Seconds of idle time before autosaving history.", "convenience")
+  defcustom("recentf-save-file", "string", join(homedir(), ".jemacs", "recentf.json"), "File where the recent file list is persisted.", "convenience")
+  defcustom("recentf-max-saved-items", "integer", 20, "Maximum number of recent files to remember.", "convenience")
 
   editor.events.on("changed", () => notifyActivity())
 

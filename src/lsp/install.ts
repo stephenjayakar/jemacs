@@ -3,10 +3,12 @@ import { registerAllLspClients } from "./clients"
 import { lspExecuteCodeAction } from "./code-actions"
 import { LspManager } from "./manager"
 import { lspFindDefinition, lspFindImplementation } from "./navigation"
+import { defcustom } from "../runtime/custom"
 
 let installed = false
 
 export function installLspMode(editor: Editor): LspManager {
+  defcustom("lsp-remote-host", "string", null, "Remote SSH host to run language servers on.", "tools")
   if (!installed) {
     registerAllLspClients()
     installed = true

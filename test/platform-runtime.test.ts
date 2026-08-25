@@ -84,7 +84,14 @@ test("watch fires on change and close() stops it", async () => {
   let fired = 0
   const handle = watch(path, () => { fired++ })
   await writeFile(path, "b", "utf8")
-  await new Promise(r => setTimeout(r, 50))
+  // Poll instead of sleeping a fixed 50ms. This waits on a real OS filesystem event,
+  // which under a loaded suite arrives later than any constant worth hardcoding. The
+  // 4s ceiling stays below bun's 5s per-test timeout, so a watcher that never fires
+  // still reports as the assertion below failing rather than as a test timeout.
+  const deadline = Date.now() + 4_000
+  while (fired === 0 && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 10))
+  }
   expect(fired).toBeGreaterThan(0)
   handle.close()
   await rm(dir, { recursive: true })

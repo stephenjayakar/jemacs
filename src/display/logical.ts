@@ -1,16 +1,19 @@
 import type { Editor, MinibufferCompletionDisplay } from "../kernel/editor"
 import type { BufferModel } from "../kernel/buffer"
 import { textScaleFactor, textScaleLighter } from "../core/text-scale"
+import { appName } from "../runtime/app-name"
 import { defvar, getCustom } from "../runtime/custom"
 import { isearchLazyHighlightSpans, isearchMatchSpan } from "../kernel/isearch"
-import { type ChildFrameParameters, type WindowLeaf, type WindowNode } from "../kernel/window"
+import { findWindowLeaf, type ChildFrameParameters, type WindowLeaf, type WindowNode } from "../kernel/window"
 import { diagnosticsForBuffer } from "../lsp/diagnostics"
 import { positionToPoint } from "../lsp/positions"
-import { modeFeature, type FontLockRange, type TableSurfaceModel, type TextSpan } from "../modes/mode"
+import { modeFeature, type FontLockRange, type GutterDecoration, type TableSurfaceModel, type TextSpan, type WebSurfaceModel } from "../modes/mode"
 import { applyTheme, type Theme } from "./theme"
 import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
 import { TERMINAL_SURFACE_LOCAL, type TerminalSurfaceModel } from "./terminal-surface"
+import { applyRestrictionDisplayFilter, type DisplayFilterResult } from "./display-wrap"
+import { tabBarLayout, tabBarVisible } from "./tab-bar"
 
 /** Plugin-contributed modeline segments (Emacs `mode-line-misc-info`). Each fn
  *  returns a string appended after the minor-mode lighters; empty string = nothing. */
@@ -63,12 +66,16 @@ export type LogicalPane = {
   modeline: ThemedText
   /** Modeline variant used when a matching terminal surface is active. */
   terminalModeline?: ThemedText
+  /** Window-local popup rows rendered between the body and mode line. */
+  footer?: { text: string; spans?: TextSpan[] }
   /** Raw terminal grid from `buffer.locals[TERMINAL_SURFACE_LOCAL]` (dims unchecked). */
   terminalSurface?: TerminalSurfaceModel
   /** Optional rich table/list pane model. Plain text remains the fallback. */
   tableSurface?: TableSurfaceModel
+  webSurface?: WebSurfaceModel
   readOnly: boolean
   showLineNumbers: boolean
+  gutterDecorations?: GutterDecoration[]
   textScale: number
   locals: ReadonlyMap<string, unknown>
 }
@@ -88,10 +95,17 @@ export type LogicalMinibuffer = {
   text: string
   point: number
   prompt: string
+  mask?: boolean
+  /** Active-region end, as an offset into `text`. The minibuffer is a real
+   *  buffer, so C-SPC sets a mark there; hosts paint point..mark like any
+   *  other window. Null when no region is active. */
+  mark?: number | null
 }
 
 export type LogicalModel = {
   windows: LogicalWindowNode
+  /** Tab-bar row, drawn above the window stack. Absent when the bar is hidden. */
+  tabBar?: { text: string; spans: TextSpan[] } | null
   childFrames: LogicalChildFrame[]
   selectedWindowId: string
   minibuffer: LogicalMinibuffer | null
@@ -107,29 +121,44 @@ export type LogicalModel = {
 export type BuildLogicalOptions = {
   lastMessage?: string
   hostLabel?: string
+  /** Render this frame instead of the selected one (multi-frame GUI hosts). */
+  frameId?: string
 }
 
 /** Walk `editor.windowLayout` into a viewport-independent `LogicalModel`.
  *  Pure: reads `editor` but never mutates it. */
 export function buildLogicalModel(editor: Editor, options: BuildLogicalOptions = {}): LogicalModel {
-  const { lastMessage, hostLabel = "Jemacs" } = options
-  const buffer = editor.currentBuffer
+  const { lastMessage, hostLabel = "Jemacs", frameId } = options
+  // Hosts that show several frames at once (the Electron GUI) render each one
+  // by id; everything else renders whichever frame is selected.
+  const frame = frameId ? editor.frames.find(candidate => candidate.id === frameId) : undefined
+  const layout = frame?.layout ?? editor.windowLayout
+  const selectedWindowId = frame?.selectedWindowId ?? editor.selectedWindowId
+  const buffer = frame && frame.id !== editor.selectedFrameId
+    ? editor.buffers.get(findWindowLeaf(layout, selectedWindowId)?.bufferId ?? "") ?? editor.currentBuffer
+    : editor.currentBuffer
   const pending = editor.keymaps.pendingSequence()
   const depth = editor.minibuffer && editor.minibufferDepthLevel > 1
     ? ` [${editor.minibufferDepthLevel}]`
     : ""
 
-  const titleText = ` ${hostLabel} — ${editor.bufferDisplayName(buffer)}${buffer.dirty ? "*" : ""}`
+  // `jemacs-app-name` renames every surface at once; when it is empty each host
+  // keeps its own name ("Jemacs GUI", "Jemacs OpenTUI", ...).
+  const titleText = ` ${appName(hostLabel)} — ${editor.bufferDisplayName(buffer)}${buffer.dirty ? "*" : ""}`
   const title = applyTheme(titleText, [{ start: 0, end: titleText.length, face: "title" }], editor.theme)
 
-  const windows = buildLogicalWindowTree(editor, editor.windowLayout)
+  const windows = buildLogicalWindowTree(editor, layout, selectedWindowId)
+  // The bar belongs to the frame being rendered, not to the selected one, so a
+  // background GUI frame draws its own tabs.
+  const tabBarFrame = frame ?? editor.selectedFrame
+  const tabBar = tabBarVisible(editor, tabBarFrame) ? tabBarLayout(editor, tabBarFrame) : null
   const childFrames = [...editor.childFrames.values()]
     .filter(frame => frame.visible)
     .map(frame => ({
       id: frame.id,
       parentFrameId: frame.parentFrameId,
       parameters: frame.parameters,
-      pane: buildLogicalPane(editor, frame.window),
+      pane: buildLogicalPane(editor, frame.window, selectedWindowId),
     }))
   const minibuffer = logicalMinibuffer(editor, depth)
   const overlayRows = editor.minibuffer ? editor.activeBuffer.text.split("\n").length - 1 : 0
@@ -144,8 +173,9 @@ export function buildLogicalModel(editor: Editor, options: BuildLogicalOptions =
 
   return {
     windows,
+    tabBar: tabBar ? { text: tabBar.text, spans: tabBar.spans } : undefined,
     childFrames,
-    selectedWindowId: editor.selectedWindowId,
+    selectedWindowId,
     minibuffer,
     completion: editor.minibufferCompletionDisplay,
     overlayRows,
@@ -156,12 +186,12 @@ export function buildLogicalModel(editor: Editor, options: BuildLogicalOptions =
   }
 }
 
-function buildLogicalWindowTree(editor: Editor, layout: WindowNode): LogicalWindowNode {
+function buildLogicalWindowTree(editor: Editor, layout: WindowNode, selectedWindowId: string): LogicalWindowNode {
   if (layout.kind === "leaf") {
     return {
       kind: "leaf",
       id: layout.id,
-      pane: buildLogicalPane(editor, layout),
+      pane: buildLogicalPane(editor, layout, selectedWindowId),
       dedicated: layout.dedicated,
     }
   }
@@ -169,14 +199,15 @@ function buildLogicalWindowTree(editor: Editor, layout: WindowNode): LogicalWind
     kind: "split",
     direction: layout.direction,
     ratio: layout.firstRatio,
-    first: buildLogicalWindowTree(editor, layout.first),
-    second: buildLogicalWindowTree(editor, layout.second),
+    first: buildLogicalWindowTree(editor, layout.first, selectedWindowId),
+    second: buildLogicalWindowTree(editor, layout.second, selectedWindowId),
   }
 }
 
-function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
-  const selected = leaf.id === editor.selectedWindowId
+function buildLogicalPane(editor: Editor, leaf: WindowLeaf, selectedWindowId: string): LogicalPane {
+  const selected = leaf.id === selectedWindowId
   const buffer = editor.buffers.get(leaf.bufferId)
+  const footer = editor.transient?.windowId === leaf.id ? editor.transientDisplay() : null
   if (!buffer) {
     return {
       bufferId: leaf.bufferId,
@@ -192,20 +223,22 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
       startLine: 0,
       mode: "",
       modeline: applyTheme(" (empty)", [], editor.theme),
+      footer: footer ?? undefined,
       readOnly: false,
       showLineNumbers: false,
+      gutterDecorations: [],
       textScale: 1,
       locals: emptyLocals,
     }
   }
 
-  const point = selected ? buffer.point : leaf.point
-  const fontLockSpans = [...editor.fontLock(buffer, visibleFontLockRange(buffer, leaf))]
+  const point = selected ? buffer.point : Math.max(buffer.pointMin, Math.min(buffer.pointMax, leaf.point))
+  const fontLockSpans = clipSpansToRestriction([...editor.fontLock(buffer, visibleFontLockRange(buffer, leaf))], buffer)
   const spans = [...fontLockSpans]
   if (selected && editor.isearch) {
     const match = isearchMatchSpan(buffer, editor.isearch)
-    if (match) spans.push(match)
-    spans.push(...isearchLazyHighlightSpans(buffer, editor.isearch))
+    if (match && match.end > buffer.pointMin && match.start < buffer.pointMax) spans.push(clipSpanToRestriction(match, buffer))
+    spans.push(...isearchLazyHighlightSpans(buffer, editor.isearch, buffer.pointMin, buffer.pointMax))
   }
   const filt = safeDisplayFilter(buffer)
   const displayOffsets = filt ? evalDisplayOffsets(filt.map, point, buffer.mark, spans) : undefined
@@ -231,13 +264,16 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
     startLine: leaf.startLine,
     mode: buffer.mode,
     modeline: modelineFor(editor, buffer, leaf, point, selected, dirty),
+    footer: footer ?? undefined,
     terminalModeline: surface
       ? themedModeline(terminalModelineText(editor, buffer, dirty, leaf.dedicated), selected, editor.theme)
       : undefined,
     terminalSurface: surface,
     tableSurface: safeTableSurface(buffer),
+    webSurface: safeWebSurface(buffer),
     readOnly: buffer.readOnly,
     showLineNumbers: buffer.kind !== "minibuffer" && editor.showLineNumbers(buffer),
+    gutterDecorations: editor.gutterDecorations(buffer),
     textScale: textScaleFactor(buffer),
     locals,
   }
@@ -246,12 +282,13 @@ function buildLogicalPane(editor: Editor, leaf: WindowLeaf): LogicalPane {
 function visibleFontLockRange(buffer: BufferModel, leaf: WindowLeaf): FontLockRange {
   const rows = numberLocal(buffer, "window-body-rows") ?? 80
   const margin = Math.max(80, rows * 4)
-  const startLine = Math.max(0, leaf.startLine - margin)
-  const endLine = Math.min(buffer.lineCount, leaf.startLine + rows + margin)
-  const start = buffer.lineStarts[startLine] ?? 0
-  const end = endLine < buffer.lineCount
+  const baseLine = buffer.lineAt(buffer.pointMin)
+  const startLine = Math.max(0, baseLine + leaf.startLine - margin)
+  const endLine = Math.min(buffer.lineCount, baseLine + leaf.startLine + rows + margin)
+  const start = Math.max(buffer.pointMin, buffer.lineStarts[startLine] ?? 0)
+  const end = Math.max(start, Math.min(buffer.pointMax, endLine < buffer.lineCount
     ? buffer.lineStarts[endLine]!
-    : buffer.text.length
+    : buffer.text.length))
   return { startLine, endLine, start, end }
 }
 
@@ -262,12 +299,27 @@ function numberLocal(buffer: BufferModel, key: string): number | null {
 
 /** Guard the mode's `displayFilter` so a buggy plugin degrades to identity
  *  instead of taking the frame down (t-audit2-ab15abf8). */
-function safeDisplayFilter(buffer: BufferModel): { text: string; map: (n: number) => number; unmap?: (n: number) => number } | null {
+function safeDisplayFilter(buffer: BufferModel): DisplayFilterResult | null {
   try {
-    return modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null
+    return applyRestrictionDisplayFilter(buffer, modeFeature(buffer.mode, "displayFilter")?.(buffer) ?? null)
   } catch (err) {
     console.error(`display-filter for mode '${buffer.mode}' threw:`, err)
-    return null
+    return applyRestrictionDisplayFilter(buffer, null)
+  }
+}
+
+function clipSpansToRestriction(spans: TextSpan[], buffer: BufferModel): TextSpan[] {
+  if (!buffer.isNarrowed) return spans
+  return spans
+    .filter(span => span.end > buffer.pointMin && span.start < buffer.pointMax)
+    .map(span => clipSpanToRestriction(span, buffer))
+}
+
+function clipSpanToRestriction<T extends TextSpan>(span: T, buffer: BufferModel): T {
+  return {
+    ...span,
+    start: Math.max(buffer.pointMin, span.start),
+    end: Math.min(buffer.pointMax, span.end),
   }
 }
 
@@ -276,6 +328,16 @@ function safeTableSurface(buffer: BufferModel): TableSurfaceModel | undefined {
     return modeFeature(buffer.mode, "tableSurface")?.(buffer) ?? undefined
   } catch (err) {
     console.error(`table-surface for mode '${buffer.mode}' threw:`, err)
+    return undefined
+  }
+}
+
+/** Guard the mode's `webSurface` the same way, so a bad plugin degrades to body text. */
+function safeWebSurface(buffer: BufferModel): WebSurfaceModel | undefined {
+  try {
+    return modeFeature(buffer.mode, "webSurface")?.(buffer) ?? undefined
+  } catch (err) {
+    console.error(`web-surface for mode '${buffer.mode}' threw:`, err)
     return undefined
   }
 }
@@ -366,10 +428,13 @@ function themedModeline(text: string, selected: boolean, theme: Theme): ThemedTe
 
 function logicalMinibuffer(editor: Editor, depth: string): LogicalMinibuffer | null {
   if (editor.minibuffer) {
+    const buffer = editor.activeBuffer
     return {
       prompt: `${depth} ${editor.minibuffer.prompt}`,
-      text: editor.activeBuffer.text,
-      point: editor.activeBuffer.point,
+      text: buffer.text,
+      point: buffer.point,
+      mask: editor.minibuffer.mask,
+      mark: buffer.markActive ? buffer.mark : null,
     }
   }
   if (editor.isearch) {

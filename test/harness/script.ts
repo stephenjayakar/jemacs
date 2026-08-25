@@ -11,7 +11,10 @@ import { resetTestGlobals } from "../plugins/helper"
  *  This is the *inverse* of `keyToken()` — tests written with string tokens
  *  exercise the real handleKey→keyToken→keymap path, not editor.run(). */
 export function parseKey(token: string): KeyEventLike {
-  if (token.length === 1) return { name: token, sequence: token }
+  if (token.length === 1) {
+    const isUpper = token >= "A" && token <= "Z"
+    return { name: token.toLowerCase(), sequence: token, shift: isUpper || undefined }
+  }
   const aliases: Record<string, string> = {
     Enter: "return", RET: "return", SPC: "space", Space: "space",
     TAB: "tab", Tab: "tab", DEL: "backspace", BSpace: "backspace",

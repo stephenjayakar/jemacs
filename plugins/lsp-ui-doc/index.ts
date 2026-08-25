@@ -99,13 +99,13 @@ function schedule(editor: Editor): Timer {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("lsp-ui-doc-enable", "boolean", false,
-    "If non-nil, show LSP hover documentation in a child frame.")
+    "If non-nil, show LSP hover documentation in a child frame.", "tools")
   defcustom("lsp-ui-doc-delay", "number", 0.3,
-    "Seconds of idle time before lsp-ui-doc requests hover documentation.")
-  defcustom("lsp-ui-doc-max-width", "number", 72,
-    "Maximum child-frame width for lsp-ui-doc, in character cells.")
-  defcustom("lsp-ui-doc-max-height", "number", 12,
-    "Maximum child-frame height for lsp-ui-doc, in character cells.")
+    "Seconds of idle time before lsp-ui-doc requests hover documentation.", "tools")
+  defcustom("lsp-ui-doc-max-width", "integer", 72,
+    "Maximum child-frame width for lsp-ui-doc, in character cells.", "tools")
+  defcustom("lsp-ui-doc-max-height", "integer", 12,
+    "Maximum child-frame height for lsp-ui-doc, in character cells.", "tools")
 
   ctx.minorMode({
     name: "lsp-ui-doc-mode",

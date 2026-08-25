@@ -41,7 +41,9 @@ export function terminalSurfaceToThemedText(surface: TerminalSurfaceModel): Them
         fg: atCursor ? (cell.bg ?? "#1e1e1e") : cell.fg,
         bg: atCursor ? (cell.fg ?? "#d4d4d4") : cell.bg,
         bold: cell.bold,
-        italic: cell.italic,
+        // The cursor cell is drawn as a reverse-video block; slanting it reads
+        // as a glitch, so never italicize it.
+        italic: atCursor ? false : cell.italic,
         underline: cell.underline,
       })
     }

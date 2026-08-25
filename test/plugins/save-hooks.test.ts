@@ -128,3 +128,43 @@ test("error in before-save-hook does not prevent save", async () => {
   const onDisk = await readFile(path, "utf8")
   expect(onDisk).toBe("new")
 })
+
+test("save hook skips a buffer whose mode is exempt from trailing-whitespace deletion", async () => {
+  const editor = makeEditor()
+  install(editor)
+
+  const { setCustom } = await import("../../src/runtime/custom")
+  setCustom("delete-trailing-whitespace-exempt-modes", ["commit-message-mode"])
+
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-save-"))
+  const path = join(dir, "file.txt")
+  await writeFile(path, "")
+  const buf = await editor.openFile(path)
+  buf.mode = "commit-message-mode"
+  buf.setText("line one   \nline two\t\n", false)
+
+  await editor.run("save-buffer")
+
+  // Trailing whitespace can be significant to whatever reads the message back.
+  expect(buf.text).toBe("line one   \nline two\t\n")
+  const onDisk = await readFile(path, "utf8")
+  expect(onDisk).toBe("line one   \nline two\t\n")
+
+  setCustom("delete-trailing-whitespace-exempt-modes", [])
+})
+
+test("save hook still strips trailing whitespace in a non-exempt mode", async () => {
+  const editor = makeEditor()
+  install(editor)
+
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-save-"))
+  const path = join(dir, "file.txt")
+  await writeFile(path, "")
+  const buf = await editor.openFile(path)
+  buf.mode = "text"
+  buf.setText("line one   \nline two\t\n", false)
+
+  await editor.run("save-buffer")
+
+  expect(buf.text).toBe("line one\nline two\n")
+})
