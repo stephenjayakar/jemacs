@@ -22,8 +22,13 @@ export type FaceName =
   | "type"
   | "number"
   | "constant"
+  | "preprocessor"
+  | "doc"
   | "directory"
   | "region"
+  /** Emacs `highlight`: the transient "this is the current row" face. Distinct
+   *  from `region`, which means "point..mark is active". */
+  | "highlight"
   | "isearch"
   | "lazyHighlight"
   | "modeLine"
@@ -31,10 +36,41 @@ export type FaceName =
   | "minibuffer"
   | "minibufferPrompt"
   | "title"
+  | "warning"
   | "error"
   | "lineNumber"
   | "lineNumberCurrent"
+  | "warning"
+  | "success"
+  | "variable"
   | "helpLink"
+  | "shadow"
+  // cus-edit.el's own faces, used by every Custom buffer.
+  | "custom-variable-tag"
+  | "custom-variable-obsolete"
+  | "custom-face-tag"
+  | "custom-group-tag"
+  | "custom-group-tag-1"
+  | "custom-group-subtitle"
+  | "custom-group-rule"
+  | "custom-state"
+  | "custom-button"
+  | "custom-button-pressed"
+  | "custom-button-unraised"
+  | "custom-documentation"
+  | "custom-link"
+  | "custom-visibility"
+  | "custom-comment"
+  | "custom-comment-tag"
+  | "custom-modified"
+  | "custom-set"
+  | "custom-changed"
+  | "custom-saved"
+  | "custom-themed"
+  | "custom-rogue"
+  | "custom-invalid"
+  | "widget-field"
+  | "widget-inactive"
   | "diffHeader"
   | "diffFileHeader"
   | "diffIndex"
@@ -48,12 +84,44 @@ export type FaceName =
   | "diffRefineChanged"
   | "diffRefineRemoved"
   | "diffRefineAdded"
+  | "magit-section-highlight"
+  | "magit-section-heading"
+  | "magit-section-secondary-heading"
+  | "magit-section-heading-selection"
+  | "magit-section-child-count"
+  | "magit-left-margin"
+  | "markdown-header-face-1"
+  | "markdown-header-face-2"
+  | "markdown-header-face-3"
+  | "markdown-header-face-4"
+  | "markdown-header-face-5"
+  | "markdown-header-face-6"
+  | "markdown-markup"
+  | "markdown-emphasis"
+  | "markdown-strong"
+  | "markdown-link"
+  | "markdown-strikethrough"
+  | "markdown-inline-code"
+  | "markdown-blockquote"
+  // tab-bar.el's faces, drawn by the tab bar above the window stack.
+  | "tab-bar"
+  | "tab-bar-tab"
+  | "tab-bar-tab-inactive"
 
 export type TextSpan = {
   start: number
   end: number
   face: FaceName
   style?: FaceStyle
+}
+
+export type GutterDecoration = {
+  /** One-based source line. */
+  line: number
+  glyph: string
+  face: FaceName
+  priority?: number
+  title?: string
 }
 
 export type FontLockRange = {
@@ -127,6 +195,85 @@ export type TableSurfaceModel = {
   emptyText?: string
 }
 
+// ── Web surface ────────────────────────────────────────────────────────────────
+
+/**
+ * A styled box in a web surface, addressed by `id` for click routing.
+ *
+ * This is a declarative subset of HTML rather than a raw markup string: modes describe
+ * *what* to draw and the host decides how, which keeps plugins unable to inject scripts
+ * or arbitrary DOM into the frame.
+ */
+export type WebNodeModel = {
+  id?: string
+  /**
+   * Layout role. `row`/`column` are flex containers; the rest are leaves.
+   *
+   * `badge` is a pill-shaped label, for the short enumerated values -- a session state, a
+   * variable's type, a verdict -- that read as noise inline but as structure when boxed.
+   *
+   * `image` draws the picture at `src`. The host accepts only `file:` and `data:` URLs,
+   * so a surface cannot make the frame fetch anything over the network.
+   */
+  kind: "row" | "column" | "text" | "bar" | "badge" | "image"
+  text?: string
+  /** Picture location for `image`. `file:` or `data:` only; other schemes are dropped. */
+  src?: string
+  /** Theme face name, resolved by the host against the active theme. */
+  face?: string
+  /** 0..1 fill fraction, only meaningful for `bar`. */
+  value?: number
+  /**
+   * Tree depth, rendered as leading space.
+   *
+   * Text renderings carry hierarchy in leading spaces, which a flex row collapses; a
+   * variables or call-stack tree is unreadable without this.
+   */
+  indent?: number
+  /**
+   * Marks the row the buffer's point is on.
+   *
+   * A surface pane paints no caret, so without this the keyboard selection a mode
+   * maintains would be invisible in the GUI.
+   */
+  selected?: boolean
+  /** Emitted as a pane action when clicked, if the host supports mouse input. */
+  action?: string
+  title?: string
+  children?: WebNodeModel[]
+}
+
+/**
+ * A canvas drawing, expressed as an ordered list of primitives.
+ *
+ * Coordinates are fractions of the canvas box (0..1) so the host can size the canvas to
+ * the pane without the mode knowing anything about pixels.
+ */
+export type CanvasShapeModel =
+  | { kind: "rect"; x: number; y: number; width: number; height: number; face?: string; fill?: boolean }
+  | { kind: "line"; x1: number; y1: number; x2: number; y2: number; face?: string }
+  | { kind: "text"; x: number; y: number; text: string; face?: string; align?: "left" | "center" | "right" }
+
+export type CanvasSurfaceModel = {
+  /** Drawing aspect ratio (width / height), used to size the canvas box. */
+  aspect?: number
+  shapes: CanvasShapeModel[]
+}
+
+/**
+ * Rich pane content for hosts with a DOM, such as the Electron GUI.
+ *
+ * Like `TableSurfaceModel`, this never replaces the pane's `body` text: the body remains
+ * the copy, search, and TUI rendering of the same information, and a host without
+ * `webSurfaces` support simply ignores this field. That is what keeps every feature built
+ * on it usable in the terminal.
+ */
+export type WebSurfaceModel = {
+  kind: "web"
+  nodes: WebNodeModel[]
+  canvas?: CanvasSurfaceModel
+}
+
 export type PaneAction = {
   action: string
   payload?: Record<string, string | number | boolean>
@@ -174,6 +321,27 @@ export type ModeSpec = {
   beginningOfDefun?: (buffer: BufferModel) => boolean | void
   endOfDefun?: (buffer: BufferModel) => boolean | void
   imenuIndex?: (buffer: BufferModel) => ImenuIndexEntry[]
+}
+
+export type PointKeymapSource = (buffer: BufferModel, point: number) => Keymap | null
+
+const pointKeymapSources: PointKeymapSource[] = []
+
+export function addPointKeymapSource(source: PointKeymapSource): () => void {
+  pointKeymapSources.push(source)
+  return () => {
+    const index = pointKeymapSources.indexOf(source)
+    if (index >= 0) pointKeymapSources.splice(index, 1)
+  }
+}
+
+export function pointKeymaps(buffer: BufferModel, point: number): Keymap[] {
+  const maps: Keymap[] = []
+  for (const source of pointKeymapSources) {
+    const keymap = source(buffer, point)
+    if (keymap) maps.push(keymap)
+  }
+  return maps
 }
 
 export type MinorModeSpec = {

@@ -6,6 +6,7 @@ import { install } from "../../plugins/undo-tree"
 import type { Editor } from "../../src/kernel/editor"
 import { resetCustom, setCustom } from "../../src/runtime/custom"
 import { makeEditor } from "./helper"
+import { listWindowLeaves } from "../../src/kernel/window"
 
 function messages(editor: Editor): string[] {
   const out: string[] = []
@@ -98,6 +99,44 @@ describe("undo-tree plugin", () => {
     expect(editor.currentBuffer.id).toBe(buf.id)
   })
 
+  test("visualizer binds Emacs motion keys to undo-tree navigation", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const parent = editor.scratch("undo.txt", "", "text")
+    parent.insert("A")
+
+    await editor.run("undo-tree-visualize")
+
+    expect(editor.keymaps.lookup("C-p")).toMatchObject({ status: "matched", command: "undo-tree-visualize-undo" })
+    expect(editor.keymaps.lookup("C-n")).toMatchObject({ status: "matched", command: "undo-tree-visualize-redo" })
+    expect(editor.keymaps.lookup("C-b")).toMatchObject({ status: "matched", command: "undo-tree-visualize-switch-branch-left" })
+    expect(editor.keymaps.lookup("C-f")).toMatchObject({ status: "matched", command: "undo-tree-visualize-switch-branch-right" })
+
+    const previous = editor.keymaps.lookup("C-p")
+    if (previous.status !== "matched") throw new Error("C-p did not resolve")
+    await editor.run(previous.command)
+    expect(parent.text).toBe("")
+    expect(parent.undoTreeSnapshot().current.id).toBe(0)
+  })
+
+  test("clicking a visualizer node sets the parent buffer to that undo node", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const parent = editor.scratch("undo.txt", "", "text")
+    parent.insert("A")
+
+    await editor.run("undo-tree-visualize")
+    const buf = visualizer(editor)
+    const rootPoint = buf.text.search(/[os]/)
+    expect(rootPoint).toBeGreaterThanOrEqual(0)
+
+    editor.clickWindow(editor.selectedWindowId, rootPoint)
+
+    expect(parent.text).toBe("")
+    expect(parent.undoTreeSnapshot().current.id).toBe(0)
+    expect(buf.point).toBe(rootPoint)
+  })
+
   test("visualize-undo moves the current marker up and changes parent text", async () => {
     const editor = makeEditor()
     install(editor)
@@ -144,6 +183,23 @@ describe("undo-tree plugin", () => {
 
     expect(editor.buffers.has(buf.id)).toBe(false)
     expect(editor.currentBuffer.id).toBe(parent.id)
+    expect(listWindowLeaves(editor.windowLayout)).toHaveLength(1)
+  })
+
+  test("visualizer centers its rendered tree and binds both q spellings", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const parent = editor.scratch("undo.txt", "", "text")
+    parent.insert("A")
+
+    await editor.run("undo-tree-visualize")
+    const buf = visualizer(editor)
+
+    expect(buf.locals.get("markdown-visual-fill-column-mode")).toBe(true)
+    expect(buf.locals.get("markdown-visual-fill-column-center-text")).toBe(true)
+    expect(buf.locals.get("markdown-fill-column")).toBeGreaterThan(0)
+    expect(editor.keymaps.lookup("q")).toMatchObject({ status: "matched", command: "undo-tree-visualizer-quit" })
+    expect(editor.keymaps.lookup("S-q")).toMatchObject({ status: "matched", command: "undo-tree-visualizer-quit" })
   })
 
   test("abort restores the node that was current when the visualizer opened", async () => {

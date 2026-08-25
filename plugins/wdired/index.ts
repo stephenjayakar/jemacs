@@ -172,11 +172,11 @@ function changeToDired(buffer: BufferModel): void {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("wdired-create-parent-directories", "boolean", true,
-    "If non-nil, create parent directories of destination files when renaming.")
+    "If non-nil, create parent directories of destination files when renaming.", "dired")
   defcustom("wdired-allow-to-change-permissions", "boolean", false,
-    "If non-nil, allow editing file permission bits in WDired buffers.")
+    "If non-nil, allow editing file permission bits in WDired buffers.", "dired")
   defcustom("wdired-allow-to-redirect-links", "boolean", true,
-    "If non-nil, allow editing symbolic link targets in WDired buffers.")
+    "If non-nil, allow editing symbolic link targets in WDired buffers.", "dired")
 
   const keymap = new Keymap("wdired-map")
   keymap.bind("C-c C-c", "wdired-finish-edit")

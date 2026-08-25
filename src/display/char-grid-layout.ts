@@ -1,16 +1,18 @@
 import type { MinibufferCompletionDisplay } from "../kernel/editor"
+import type { TextSpan } from "../modes/mode"
 import { getCustom } from "../runtime/custom"
 import type { HostCapabilities } from "./protocol"
-import { textWithCursor } from "../ui/text-display"
+import { regionSpanWithCursor, textWithCursor } from "../ui/text-display"
+import { cursorIsBlock } from "./cursor-type"
 import { windowClickState } from "./click-to-point"
 import { visibleStyledTextFromStart } from "./buffer-view"
 import type { ChildFrameModel, DisplayModel, WindowDisplayNode, WindowPaneModel } from "./protocol"
 import { bufferHighlightSpans } from "./buffer-highlights"
 import { applyTheme, type Theme } from "./theme"
 import { terminalSurfaceToThemedText, type TerminalSurfaceModel } from "./terminal-surface"
-import { plainThemedText, type ThemedChunk, type ThemedText } from "./themed-text"
+import { CURSOR_GLYPH, extractCursorMarker, plainThemedText, unitalicizeCharAt, type ThemedChunk, type ThemedText } from "./themed-text"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
-import { paneWrapLayoutFor, wrapBodyRows } from "./display-wrap"
+import { paneWrapLayoutFor, wrapBodyRowsWithMap } from "./display-wrap"
 import {
   computeLineVisualRows,
   computeWrappedLineRows,
@@ -34,12 +36,14 @@ export function layoutCharGrid(
     ? Math.max(1, logical.completion.text.split("\n").length)
     : 0
   // Minibuffer may carry a multi-line completion overlay (fido); steal those rows from the window stack.
-  const areaLines = Math.max(2, contentAreaLines(viewport.rows) - completionLines - logical.overlayRows)
+  // The tab bar takes one more row above the windows when it is shown.
+  const areaLines = Math.max(2, contentAreaLines(viewport.rows) - completionLines - logical.overlayRows - (logical.tabBar ? 1 : 0))
   const windows = layoutWindowTree(logical, logical.windows, areaLines, viewport.cols, hostCapabilities)
   const childFrames = logical.childFrames.map(frame => layoutChildFrame(logical, frame, viewport, hostCapabilities))
 
   return {
     title: logical.title,
+    tabBar: logical.tabBar ? applyTheme(logical.tabBar.text, logical.tabBar.spans, logical.theme) : undefined,
     windows,
     childFrames,
     minibufferCompletions: themedCompletions(logical.completion, logical.theme),
@@ -117,7 +121,10 @@ function layoutLeafPane(
   hostCapabilities?: HostCapabilities,
 ): WindowPaneModel {
   const pane = leaf.pane
-  const maxLines = windowBodyLines(availableLines)
+  const bodyAndFooterLines = windowBodyLines(availableLines)
+  const footerLines = footerLineCount(pane.footer?.text, bodyAndFooterLines)
+  const maxLines = Math.max(1, bodyAndFooterLines - footerLines)
+  const footer = pane.footer?.text ? applyTheme(pane.footer.text, pane.footer.spans ?? [], logical.theme) : undefined
   if (!pane.buffer) {
     return {
       id: leaf.id,
@@ -127,6 +134,8 @@ function layoutLeafPane(
       body: plainThemedText(""),
       terminalSurface: undefined,
       tableSurface: undefined,
+      webSurface: undefined,
+      footer,
       modeline: pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
       bodyLineBudget: maxLines,
@@ -137,9 +146,19 @@ function layoutLeafPane(
     }
   }
 
-  const surface = activeTerminalSurface(pane.terminalSurface, maxLines, availableCols)
+  const useRaw = hostCapabilities?.terminalRawStreams === true
+  // Raw-stream hosts (Electron) run their own terminal emulator and receive
+  // cell content over a separate byte channel, so they only need the surface's
+  // shape -- a momentarily stale grid still renders correctly. Gating them on
+  // exact dimensions drops the pane out of this branch during the window
+  // between a layout change and the pty resize that follows it, which swaps the
+  // pane (and its modeline) to the themed-text fallback and back on every
+  // resize. That engine swap is what reads as judder in the GUI.
+  // Hosts that paint the grid from these cells still need an exact fit.
+  const surface = useRaw
+    ? pane.terminalSurface
+    : activeTerminalSurface(pane.terminalSurface, maxLines, availableCols)
   if (surface) {
-    const useRaw = hostCapabilities?.terminalRawStreams
     return {
       id: leaf.id,
       bufferId: pane.bufferId,
@@ -148,6 +167,8 @@ function layoutLeafPane(
       body: useRaw ? plainThemedText("") : terminalSurfaceToThemedText(surface),
       terminalSurface: useRaw ? terminalSurfaceMetadata(surface) : surface,
       tableSurface: undefined,
+      webSurface: undefined,
+      footer,
       modeline: pane.terminalModeline ?? pane.modeline,
       clickState: { startLine: 0, gutterPrefixLen: 0 },
       bodyLineBudget: maxLines,
@@ -170,6 +191,8 @@ function layoutLeafPane(
   const dFontLockSpans = map
     ? pane.fontLockSpans.map(s => ({ ...s, start: map(s.start), end: map(s.end) }))
     : pane.fontLockSpans
+  const gutterDecorations = pane.gutterDecorations ?? []
+  const showGutter = pane.showLineNumbers || gutterDecorations.length > 0
   const dLines = dText.split("\n")
   const lineCount = dLines.length
   let startLine = Math.max(0, Math.min(pane.startLine, lineCount - 1))
@@ -178,7 +201,7 @@ function layoutLeafPane(
     dText,
     pane.locals,
     availableCols,
-    pane.showLineNumbers,
+    showGutter,
     startLine,
     maxLines,
     cursorLine + 1,
@@ -189,6 +212,7 @@ function layoutLeafPane(
     wrapCols: wrapLayout.wrapCols,
     gutterPrefixLen: wrapLayout.gutterPrefixLen,
     wordWrap: wrapLayout.wordWrap,
+    adaptiveWrap: wrapLayout.adaptiveWrap,
     fromLine: lineRange.fromLine,
     toLine: lineRange.toLine,
   })
@@ -197,6 +221,7 @@ function layoutLeafPane(
       wrapCols: wrapLayout.wrapCols,
       gutterPrefixLen: wrapLayout.gutterPrefixLen,
       wordWrap: wrapLayout.wordWrap,
+      adaptiveWrap: wrapLayout.adaptiveWrap,
       displayLines: dLines,
       fromLine: lineRange.fromLine,
       toLine: lineRange.toLine,
@@ -210,17 +235,20 @@ function layoutLeafPane(
     ? visibleLineCountForBudget(startLine, maxLines, lineCount, visualRows)
     : maxLines
   const syncSpans = bufferHighlightSpans(pane.point, mark, pane.spans)
-  const clickState = windowClickState(dText, startLine, displayLines, pane.showLineNumbers, cursorLine + 1)
+  const clickState = windowClickState(dText, startLine, displayLines, showGutter, cursorLine + 1)
   if (pane.displayUnmap) clickState.displayToBuffer = pane.displayUnmap
   // Hosts hard-wrap overflowing rows at column 0, which paints continuation
   // text into the next line's gutter (t-16be1a86). Pre-wrap here so every
   // continuation row carries the gutter's left padding.
+  // Hosts with real font metrics draw their own caret, so the █ is only a
+  // placeholder we extract below -- it must not eat the character under point.
+  const hostDrawsCaret = hostCapabilities?.perFaceFonts === true
   const keepWrappedTop = startLine === 0
-  const { wrapCols, gutterPrefixLen: gutter, wordWrap } = paneWrapLayoutFor(
+  const { wrapCols, gutterPrefixLen: gutter, wordWrap, adaptiveWrap } = paneWrapLayoutFor(
     dText,
     pane.locals,
     availableCols,
-    pane.showLineNumbers,
+    showGutter,
     startLine,
     displayLines,
     cursorLine + 1,
@@ -232,28 +260,49 @@ function layoutLeafPane(
   const columnWidth = visualFill && contentWidth != null && wrapCols != null
     ? wrapCols - clickState.gutterPrefixLen
     : undefined
-  let body = wrapBodyRows(
+  const wrapped = wrapBodyRowsWithMap(
     visibleStyledTextFromStart(dText, dPoint, startLine, {
       mark: dMark,
       spans: dSpans,
       theme: logical.theme,
       buffer: pane.buffer,
       maxLines: displayLines,
-      showLineNumbers: pane.showLineNumbers,
+      showLineNumbers: showGutter,
+      gutterDecorations,
       showCursor: pane.selected,
+      cursorMode: hostDrawsCaret ? "insert" : "overwrite",
     }),
     wrapCols,
     gutter,
     maxLines,
     keepWrappedTop,
     wordWrap,
-    pane.selected ? "█" : undefined,
+    pane.selected ? CURSOR_GLYPH : undefined,
+    adaptiveWrap,
   )
+  let body = wrapped.text
+  // Without this a click below a wrapped line reads its physical row as a
+  // logical-line offset and lands too far down the buffer (one row of drift per
+  // continuation row above it). Omitted when no line wrapped, so the common
+  // case keeps the previous (identical) mapping and a smaller wire payload.
+  if (wrapped.rows.some((r, i) => r.line !== i)) clickState.wrappedRows = wrapped.rows
   if (visualFill?.center && columnWidth != null && contentWidth != null && columnWidth < contentWidth) {
     const leftMargin = Math.floor((contentWidth - columnWidth) / 2)
     if (leftMargin > 0) {
       clickState.leftPadding = leftMargin
       body = padBodyLines(body, " ".repeat(leftMargin))
+    }
+  }
+  // Hosts that measure real glyphs draw their own caret, so hand them a
+  // position and take the block glyph back out. Done after wrapping/padding so
+  // the row/col are the ones actually rendered.
+  let cursor: { row: number; colOffset: number; shape?: "bar" | "box" } | undefined
+  if (pane.selected && hostDrawsCaret) {
+    const extracted = extractCursorMarker(body)
+    if (extracted) {
+      body = extracted.text
+      // `shape` omitted for the default bar so the wire model stays minimal.
+      cursor = cursorIsBlock() ? { ...extracted.cursor, shape: "box" } : extracted.cursor
     }
   }
 
@@ -263,8 +312,13 @@ function layoutLeafPane(
     selected: pane.selected,
     dedicated: leaf.dedicated,
     body,
+    cursor,
     terminalSurface: undefined,
     tableSurface: hostCapabilities?.richTables ? pane.tableSurface : undefined,
+    // Terminal hosts drop this and fall back to `body`, which is why every web surface
+    // must have a text rendering behind it.
+    webSurface: hostCapabilities?.webSurfaces ? pane.webSurface : undefined,
+    footer,
     modeline: pane.modeline,
     clickState,
     bodyLineBudget: maxLines,
@@ -273,6 +327,11 @@ function layoutLeafPane(
     syncSpans,
     textScale: pane.textScale,
   }
+}
+
+function footerLineCount(text: string | undefined, bodyAndFooterLines: number): number {
+  if (!text) return 0
+  return Math.min(Math.max(0, bodyAndFooterLines - 1), Math.max(1, text.split("\n").length))
 }
 
 function activeTerminalSurface(
@@ -286,6 +345,16 @@ function activeTerminalSurface(
   return surface
 }
 
+/** Cell-free copy of a surface for raw-stream hosts, which receive the actual
+ *  content over their own byte channel and need only its shape.
+ *
+ *  `rows`/`cols` deliberately report the *emulator's* dimensions rather than
+ *  the pane's current budget. Raw-stream hosts key their terminal instance by
+ *  `bufferId`, so one buffer shown in two windows produces two panes backed by
+ *  a single emulator; reporting per-pane budgets would make those panes fight
+ *  over its size on every frame. The emulator's own size is the one value all
+ *  panes of a buffer agree on, and the pty resize that follows a layout change
+ *  brings it to the target shortly after. */
 function terminalSurfaceMetadata(surface: TerminalSurfaceModel): TerminalSurfaceModel {
   return {
     kind: "terminal",
@@ -375,7 +444,7 @@ function themedCompletions(display: MinibufferCompletionDisplay | null, theme: T
     let start = 0
     for (let i = 0; i < Math.min(display.selectedLine, lines.length); i++) start += lines[i]!.length + 1
     const end = start + (lines[display.selectedLine]?.length ?? 0)
-    if (end > start) spans.push({ start, end, face: "region" as const })
+    if (end > start) spans.push({ start, end, face: "highlight" as const })
   }
   return applyTheme(text, spans, theme)
 }
@@ -386,8 +455,26 @@ function themedMinibuffer(logical: LogicalModel, theme: Theme): ThemedText {
   const text = mb.mask ? mb.text.replace(/[^\n]/g, "•") : mb.text
   const input = textWithCursor(text, mb.point)
   const minibufferText = mb.prompt + input
-  return applyTheme(minibufferText, [
+  // Vertico can preselect the prompt instead of a candidate; then the input
+  // line is what carries `vertico-current', so it gets the same `highlight'
+  // face the selected candidate row would have. `highlight' is not `region':
+  // the mark below must stay visible on top of a highlighted row.
+  const inputFace = logical.completion?.promptSelected ? "highlight" : "minibuffer"
+  const spans: TextSpan[] = [
     { start: 0, end: mb.prompt.length, face: "minibufferPrompt" },
-    { start: mb.prompt.length, end: minibufferText.length, face: "minibuffer" },
-  ], theme)
+    { start: mb.prompt.length, end: minibufferText.length, face: inputFace },
+  ]
+  // C-SPC works in the minibuffer like any other buffer, so the active region
+  // has to be visible there too. It sits after the prompt, and wins over the
+  // plain input face because later spans merge on top.
+  const region = regionSpanWithCursor(text, mb.point, mb.mark)
+  if (region) {
+    spans.push({
+      start: mb.prompt.length + region.start,
+      end: mb.prompt.length + region.end,
+      face: "region",
+    })
+  }
+  return unitalicizeCharAt(applyTheme(minibufferText, spans, theme),
+    mb.prompt.length + Math.max(0, Math.min(mb.point, text.length)))
 }

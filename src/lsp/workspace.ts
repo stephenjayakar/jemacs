@@ -105,7 +105,7 @@ export async function startWorkspace(
     capabilities: clientCapabilities(),
     clientInfo: { name: "jemacs", version: "0.1.0" },
     initializationOptions: initOptions ?? {},
-  }) as InitializeParams
+  }) as unknown as InitializeParams
 
   const result = await workspace.rpc.request("initialize", initParams)
   if (!lspInitializeResultP(result)) throw new Error("Invalid initialize response from language server")

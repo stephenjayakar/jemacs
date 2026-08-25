@@ -5,6 +5,7 @@ import { access, chmod as nodeChmod, cp as nodeCp, link as nodeLink, lstat as no
 import { homedir as nodeHomedir } from "node:os"
 import { join } from "node:path"
 import type { Readable } from "node:stream"
+import { createConnection, createServer } from "node:net"
 
 export type StatLike = { mode: number; size: number; mtime: number }
 
@@ -57,6 +58,8 @@ export type PlatformRuntime = {
   symlink?(target: string, path: string): Promise<void>
   link?(existingPath: string, newPath: string): Promise<void>
   spawnProcess(options: SpawnOptions): SpawnHandle
+  connectTcp?(host: string, port: number): TcpHandle
+  findFreeTcpPort?(host?: string): Promise<number>
   whichExecutable(name: string): string | null
   /** Hex sha256 of `text` — the CAS/BufferRef key. */
   hash(text: string): string
@@ -96,6 +99,13 @@ export type SpawnHandle = {
   stderr: ReadableStream<Uint8Array> | null
   exited: Promise<number | null>
   kill(): void
+}
+
+export type TcpHandle = {
+  readable: ReadableStream<Uint8Array>
+  write(chunk: string): void
+  closed: Promise<void>
+  close(): void
 }
 
 function nodeReadableToWeb(stream: Readable): ReadableStream<Uint8Array> {
@@ -166,6 +176,32 @@ function nodeSpawnProcess(options: SpawnOptions): SpawnHandle {
     }),
     kill: () => proc.kill(),
   }
+}
+
+function nodeConnectTcp(host: string, port: number): TcpHandle {
+  const socket = createConnection({ host, port })
+  const closed = new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => resolve())
+    socket.once("error", reject)
+  })
+  return {
+    readable: nodeReadableToWeb(socket),
+    write: chunk => socket.write(chunk),
+    closed,
+    close: () => socket.destroy(),
+  }
+}
+
+function nodeFindFreeTcpPort(host = "127.0.0.1"): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once("error", reject)
+    server.listen(0, host, () => {
+      const address = server.address()
+      const port = typeof address === "object" && address ? address.port : 0
+      server.close(error => error ? reject(error) : resolve(port))
+    })
+  })
 }
 
 function nodeWhich(name: string): string | null {
@@ -256,6 +292,8 @@ export const nodeRuntime: PlatformRuntime = {
     }
   },
   spawnProcess: nodeSpawnProcess,
+  connectTcp: nodeConnectTcp,
+  findFreeTcpPort: nodeFindFreeTcpPort,
   whichExecutable: nodeWhich,
   hash(text) {
     return createHash("sha256").update(text).digest("hex")
@@ -355,6 +393,14 @@ export async function link(existingPath: string, newPath: string): Promise<void>
 /** Spawn a subprocess in Bun or Node (Electron main uses Node). */
 export function spawnProcess(options: SpawnOptions): SpawnHandle {
   return (override?.spawnProcess ?? nodeRuntime.spawnProcess)(options)
+}
+
+export function connectTcp(host: string, port: number): TcpHandle {
+  return (override?.connectTcp ?? nodeRuntime.connectTcp)!(host, port)
+}
+
+export function findFreeTcpPort(host?: string): Promise<number> {
+  return (override?.findFreeTcpPort ?? nodeRuntime.findFreeTcpPort)!(host)
 }
 
 export function hash(text: string): string {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomModifierOnlyKey } from "../src/electron/dom-key"
+import { domKeyFromKeyboardEvent, domKeyModifiers, domKeyName, domKeyTerminalBytes, isDomHideShortcut, isDomModifierOnlyKey, isDomPasteShortcut } from "../src/electron/dom-key"
 import { keyToken } from "../src/kernel/keymap"
 
 test("domKeyName maps DOM special keys to Emacs-style names", () => {
@@ -18,6 +18,21 @@ test("mac Option+v is Meta, Command+v is Super", () => {
   expect(mods({ metaKey: true })).toEqual({ super: true })
   expect(keyToken(domKeyFromKeyboardEvent({ key: "v", code: "KeyV", ctrlKey: false, metaKey: false, altKey: true, shiftKey: false }, "mac"))).toBe("M-v")
   expect(keyToken(domKeyFromKeyboardEvent({ key: "v", code: "KeyV", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }, "mac"))).toBe("s-v")
+})
+
+test("mac Command+V is reserved for host clipboard paste", () => {
+  const event = { key: "v", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }
+  expect(isDomPasteShortcut(event, "mac")).toBe(true)
+  expect(isDomPasteShortcut({ ...event, altKey: true }, "mac")).toBe(false)
+  expect(isDomPasteShortcut({ ...event, shiftKey: true }, "mac")).toBe(false)
+  expect(isDomPasteShortcut(event, "other")).toBe(false)
+})
+
+test("mac Command+H is reserved for hiding the Electron application", () => {
+  const event = { key: "h", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }
+  expect(isDomHideShortcut(event, "mac")).toBe(true)
+  expect(isDomHideShortcut({ ...event, shiftKey: true }, "mac")).toBe(false)
+  expect(isDomHideShortcut(event, "other")).toBe(false)
 })
 
 test("non-mac Alt+v is Meta, Win/Meta+v is Super", () => {
@@ -45,6 +60,20 @@ test("mac Option+v uses physical KeyV despite √ in event.key", () => {
   expect(key.name).toBe("v")
   expect(key.sequence).toBe("√")
   expect(keyToken(key)).toBe("M-v")
+})
+
+test("mac Option+Shift+, is M-< and Option+Shift+. is M->", () => {
+  const commaKey = domKeyFromKeyboardEvent(
+    { key: "¯", code: "Comma", ctrlKey: false, metaKey: false, altKey: true, shiftKey: true },
+    "mac",
+  )
+  expect(keyToken(commaKey)).toBe("M-<")
+
+  const periodKey = domKeyFromKeyboardEvent(
+    { key: "˘", code: "Period", ctrlKey: false, metaKey: false, altKey: true, shiftKey: true },
+    "mac",
+  )
+  expect(keyToken(periodKey)).toBe("M->")
 })
 
 test("raw composed glyphs stay literal in the kernel; hosts translate them", () => {

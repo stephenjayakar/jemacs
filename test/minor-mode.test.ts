@@ -37,7 +37,7 @@ test("Stephen config enables linum-mode and vertico-mode", async () => {
   expect(editor.isMinorModeEnabled("linum-mode")).toBe(true)
   expect(editor.isMinorModeEnabled("vertico-mode")).toBe(true)
   expect(editor.showLineNumbers()).toBe(true)
-  expect(editor.keymap.get("C-c g s")).toBe("magit-status")
+  expect(editor.keymap.get("C-x l")).toBe("goto-line")
   expect(editor.minorModeLighters()).toContain("Lin")
   expect(editor.minorModeLighters()).toContain("Vertico")
 })

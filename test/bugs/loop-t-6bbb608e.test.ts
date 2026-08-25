@@ -71,6 +71,8 @@ test("magit-commit: shows staged diff in a split window alongside COMMIT_EDITMSG
   await editor.run("magit-commit")
 
   expect(editor.currentBuffer.name).toBe("*COMMIT_EDITMSG*")
+  expect(editor.currentBuffer.text).toStartWith("\n# Please enter")
+  expect(editor.currentBuffer.point).toBe(0)
   const leaves = listWindowLeaves(editor.windowLayout)
   expect(leaves.length).toBeGreaterThanOrEqual(2)
   const diffBuf = [...editor.buffers.values()].find(b => b.name === "*magit-diff: staged*")
@@ -105,4 +107,18 @@ test("magit status c c opens COMMIT_EDITMSG and C-c C-c commits it", async () =>
 
   expect(editor.currentBuffer.mode).toBe("magit-status")
   expect(await git(["log", "-1", "--pretty=%s"])).toBe("transient commit\n")
+})
+
+test("magit commit explains that unstaged changes must be staged first", async () => {
+  const editor = makeEditor()
+  install(editor)
+  await writeFile(join(repo, "a.txt"), "one\nchanged but unstaged\n")
+  await editor.run("magit-status", [repo])
+  const seen: string[] = []
+  editor.events.on("message", ({ text }) => { if (text) seen.push(text) })
+
+  await editor.run("magit-commit")
+
+  expect(editor.currentBuffer.mode).toBe("magit-status")
+  expect(seen.at(-1)).toBe("Nothing staged; stage changes with s before committing")
 })

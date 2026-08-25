@@ -103,9 +103,9 @@ export async function bookmarkImportFromEmacs(
 
 export async function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): Promise<void> {
   defcustom("bookmark-file", "string", join(homedir(), ".jemacs", "bookmarks.json"),
-    "File where bookmarks are persisted.")
+    "File where bookmarks are persisted.", "files")
   defcustom("bookmark-emacs-file", "string", defaultEmacsBookmarkFile(),
-    "Emacs bookmark file to import from (jemacs-bookmark-import-from-emacs).")
+    "Emacs bookmark file to import from (jemacs-bookmark-import-from-emacs).", "files")
 
   ctx.minorMode({ name: "bookmark-mode", global: true, lighter: "" })
 

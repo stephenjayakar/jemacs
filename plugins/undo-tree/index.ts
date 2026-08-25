@@ -8,9 +8,11 @@ import { defineMode, type FaceName, type TextSpan } from "../../src/modes/mode"
 import { defcustom, getCustom } from "../../src/runtime/custom"
 import { defface } from "../../src/runtime/faces"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
+import { listWindowLeaves } from "../../src/kernel/window"
 
 const VISUALIZER_STATE = "undo-tree-visualizer-state"
 const VISUALIZER_SPANS = "undo-tree-visualizer-spans"
+const VISUALIZER_NODE_RANGES = "undo-tree-visualizer-node-ranges"
 
 type VisualizerState = {
   parentBufferId: string
@@ -30,6 +32,7 @@ type RenderedNode = {
 type RenderedTree = {
   text: string
   spans: TextSpan[]
+  nodeRanges: Array<{ start: number; end: number; nodeId: number }>
   currentPoint: number
 }
 
@@ -38,11 +41,11 @@ const FACE_CURRENT = "undo-tree-visualizer-current-face" as FaceName
 const FACE_ACTIVE = "undo-tree-visualizer-active-branch-face" as FaceName
 
 defcustom("undo-tree-visualizer-timestamps", "boolean", false,
-  "When non-nil, undo-tree visualizer nodes display timestamps.")
+  "When non-nil, undo-tree visualizer nodes display timestamps.", "editing")
 defcustom("undo-tree-auto-save-history", "boolean", true,
-  "When non-nil, save undo-tree history for file buffers after saving.")
+  "When non-nil, save undo-tree history for file buffers after saving.", "editing")
 defcustom("undo-tree-history-directory", "string", join(homedir(), ".jemacs", "undo-tree-history"),
-  "Directory where undo-tree history files are stored.")
+  "Directory where undo-tree history files are stored.", "editing")
 
 defface("undo-tree-visualizer-default-face", { inherit: ["default"] }, "Face for undo-tree visualizer nodes.")
 defface("undo-tree-visualizer-current-face", { fg: "#ff5f5f", bold: true }, "Face for the current undo-tree node.")
@@ -166,15 +169,17 @@ function renderTree(root: UndoTreeNodeView, showTimestamps: boolean): RenderedTr
     offset += line.length + 1
   }
   const spans: TextSpan[] = []
+  const nodeRanges: RenderedTree["nodeRanges"] = []
   let currentPoint = 0
   for (const item of nodes) {
     const start = lineStarts[item.y]! + item.x - Math.floor(item.label.length / 2)
     const end = start + item.label.length
+    nodeRanges.push({ start, end, nodeId: item.node.id })
     if (item.active) spans.push({ start, end, face: FACE_ACTIVE })
     spans.push({ start, end, face: item.node.current ? FACE_CURRENT : FACE_DEFAULT })
     if (item.node.current) currentPoint = start
   }
-  return { text, spans, currentPoint }
+  return { text, spans, nodeRanges, currentPoint }
 }
 
 function undoTreeFontLock(buffer: BufferModel): TextSpan[] {
@@ -217,7 +222,14 @@ function renderVisualizer(editor: Editor, visualizer: BufferModel): boolean {
   }
   const rendered = renderTree(parent.undoTreeSnapshot().root, state.showTimestamps)
   visualizer.locals.set(VISUALIZER_SPANS, rendered.spans)
+  visualizer.locals.set(VISUALIZER_NODE_RANGES, rendered.nodeRanges)
   replaceReadOnly(visualizer, rendered.text)
+  const treeWidth = Math.max(1, ...rendered.text.split("\n").map(line => line.length))
+  // The display layer's visual-fill locals work for any buffer. GNU
+  // undo-tree uses the full visualizer window but centers the drawn tree.
+  visualizer.locals.set("markdown-visual-fill-column-mode", true)
+  visualizer.locals.set("markdown-visual-fill-column-center-text", true)
+  visualizer.locals.set("markdown-fill-column", treeWidth)
   invalidateFontLock(editor, visualizer)
   visualizer.point = rendered.currentPoint
   visualizer.readOnly = true
@@ -276,11 +288,32 @@ function rerenderCurrentVisualizer(editor: Editor, buffer: BufferModel): void {
   renderVisualizer(editor, buffer)
 }
 
+function visualizerNodeIdAtPoint(buffer: BufferModel, point: number): number | null {
+  const ranges = buffer.locals.get(VISUALIZER_NODE_RANGES) as RenderedTree["nodeRanges"] | undefined
+  return ranges?.find(range => point >= range.start && point < range.end)?.nodeId ?? null
+}
+
+function setParentToVisualizerPoint(editor: Editor, visualizer: BufferModel, point: number): boolean {
+  const nodeId = visualizerNodeIdAtPoint(visualizer, point)
+  if (nodeId == null) return false
+  const parent = parentFromVisualizer(editor, visualizer)
+  if (!parent) return true
+  parent.undoToNode(nodeId)
+  rerenderCurrentVisualizer(editor, visualizer)
+  return true
+}
+
 function quitVisualizer(editor: Editor, buffer: BufferModel): void {
   const state = visualizerState(buffer)
   const parentId = state?.parentBufferId
+  if (editor.currentBuffer.id === buffer.id && listWindowLeaves(editor.windowLayout).length > 1) {
+    editor.deleteWindow()
+  }
   editor.killBuffer(buffer.id)
-  if (parentId && editor.buffers.has(parentId)) editor.switchToBuffer(parentId)
+  if (!parentId || !editor.buffers.has(parentId)) return
+  const parentWindow = listWindowLeaves(editor.windowLayout).find(leaf => leaf.bufferId === parentId)
+  if (parentWindow) editor.selectWindow(parentWindow.id)
+  else editor.switchToBuffer(parentId)
 }
 
 function switchBranch(parent: BufferModel, delta: number): boolean {
@@ -347,17 +380,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   })
 
   const visualizerMap = new Keymap("undo-tree-visualizer-mode-map")
-  for (const key of ["p", "up"]) visualizerMap.bind(key, "undo-tree-visualize-undo")
-  for (const key of ["n", "down"]) visualizerMap.bind(key, "undo-tree-visualize-redo")
-  for (const key of ["b", "left"]) visualizerMap.bind(key, "undo-tree-visualize-switch-branch-left")
-  for (const key of ["f", "right"]) visualizerMap.bind(key, "undo-tree-visualize-switch-branch-right")
+  for (const key of ["p", "C-p", "up"]) visualizerMap.bind(key, "undo-tree-visualize-undo")
+  for (const key of ["n", "C-n", "down"]) visualizerMap.bind(key, "undo-tree-visualize-redo")
+  for (const key of ["b", "C-b", "left"]) visualizerMap.bind(key, "undo-tree-visualize-switch-branch-left")
+  for (const key of ["f", "C-f", "right"]) visualizerMap.bind(key, "undo-tree-visualize-switch-branch-right")
   visualizerMap.bind("return", "undo-tree-visualizer-quit")
   visualizerMap.bind("RET", "undo-tree-visualizer-quit")
   visualizerMap.bind("q", "undo-tree-visualizer-quit")
+  visualizerMap.bind("S-q", "undo-tree-visualizer-quit")
   visualizerMap.bind("C-q", "undo-tree-visualizer-abort")
   visualizerMap.bind("t", "undo-tree-visualizer-toggle-timestamps")
   visualizerMap.bind("d", "undo-tree-visualizer-toggle-diff")
-  defineMode({ name: "undo-tree-visualizer-mode", parent: "text", keymap: visualizerMap, fontLock: undoTreeFontLock })
+  defineMode({
+    name: "undo-tree-visualizer-mode",
+    parent: "text",
+    keymap: visualizerMap,
+    fontLock: undoTreeFontLock,
+    mouseClick(buffer, point) {
+      buffer.point = point
+      setParentToVisualizerPoint(editor, buffer, point)
+      return true
+    },
+  })
 
   ctx.hook("after-save-hook", async ({ editor: ed, buffer }) => {
     if (!(getCustom<boolean>("undo-tree-auto-save-history") ?? true)) return

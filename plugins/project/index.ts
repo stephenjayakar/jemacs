@@ -144,9 +144,9 @@ function bufferContainsNul(bytes: Uint8Array): boolean {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("project-list-file", "string", join(homedir(), ".jemacs", "projects.json"),
-    "File where the list of known project roots is persisted.")
+    "File where the list of known project roots is persisted.", "tools")
   defcustom("project-switch-commands", "sexp", DEFAULT_PROJECT_SWITCH_COMMANDS,
-    "Commands offered by project-switch-project.")
+    "Commands offered by project-switch-project.", "tools")
 
   editor.commands.define("project-current", async ({ editor, args }) =>
     projectCurrent(editor, { directory: args[0] }),

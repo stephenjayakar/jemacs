@@ -123,8 +123,10 @@ test("save-some-buffers threads SaveContext: hooks fire and backups are written"
     const seen: string[] = []
     addHook("before-save-hook", () => { seen.push("before") })
     addHook("after-save-hook", () => { seen.push("after") })
-    editor.prompt = async () => "y"
-    await editor.run("save-some-buffers")
+    const done = editor.run("save-some-buffers")
+    await settle()
+    await keySeq(editor, "y")
+    await done
     expect(seen).toEqual(["before", "after"])
     expect(await readFile(path + "~", "utf8")).toBe("disk\n")
   } finally {
@@ -139,11 +141,12 @@ test("save-buffers-kill-terminal: declining the save gates quit on a second conf
   const editor = await script({ plugins: false }).done()
   const buf = editor.addBuffer(new BufferModel({ name: "f.txt", path: "/tmp/fb6410/f.txt", kind: "file", text: "" }))
   buf.insert("unsaved")
-  editor.prompt = async () => "n" // decline save-some-buffers per-file prompt
   let asked = ""
   editor.events.on("message", ({ text }) => { if (/exit anyway/i.test(text)) asked = text })
 
   const done = editor.run("save-buffers-kill-terminal")
+  await settle()
+  await keySeq(editor, "n") // decline save-some-buffers per-file prompt
   await settle()
   expect(asked).toMatch(/exit anyway/i)
   expect(editor.running).toBe(true)

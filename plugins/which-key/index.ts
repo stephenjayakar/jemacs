@@ -216,13 +216,13 @@ function schedule(editor: Editor, prefix: string): void {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("which-key-idle-delay", "number", 0.5,
-    "Seconds to wait after a prefix key before showing the which-key display.")
+    "Seconds to wait after a prefix key before showing the which-key display.", "help")
   defcustom("which-key-separator", "string", " → ",
-    "String drawn between a key and its command in the which-key display.")
+    "String drawn between a key and its command in the which-key display.", "help")
   defcustom("which-key-sort-order", "string", "key-order-alpha",
-    "Sort order for which-key entries: key-order-alpha or description-order.")
+    "Sort order for which-key entries: key-order-alpha or description-order.", "help")
   defcustom("which-key-prefix-name-alist", "sexp", [],
-    "Alist mapping prefix key sequences to which-key group names.")
+    "Alist mapping prefix key sequences to which-key group names.", "help")
 
   ctx.minorMode({
     name: "which-key-mode",

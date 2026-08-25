@@ -1,4 +1,8 @@
 * { box-sizing: border-box; }
+/* Scrolling stays; the scrollbar chrome does not. Firefox/standard property plus
+ * the Chromium pseudo-element, since Electron renders with Blink. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
 /* Bundled fonts first, system stacks as fallback. Generic last so we never
  * fall through to the UA default (Times New Roman). */
 @font-face {
@@ -26,6 +30,9 @@
 html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs-mono); background: #1e1e1e; color: #d4d4d4; }
 #jemacs-root { display: flex; flex-direction: column; height: 100%; background: #1e1e1e; color: #d4d4d4; }
 #jemacs-title { padding: 4px 8px; border-bottom: 1px solid #252526; flex-shrink: 0; }
+/* Tab bar: one row of frame chrome between the title and the window stack.
+ * `pre` keeps the separator/padding spacing the model already computed. */
+#jemacs-tab-bar { padding: 2px 8px; border-bottom: 1px solid #252526; flex-shrink: 0; white-space: pre; overflow: hidden; cursor: default; }
 #jemacs-windows { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #jemacs-minibuffer-completions, #jemacs-minibuffer, #jemacs-echo { padding: 2px 8px; border-top: 1px solid #252526; flex-shrink: 0; white-space: pre; }
 #jemacs-minibuffer-completions { max-height: 40vh; overflow: hidden; }
@@ -33,9 +40,16 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 .window-pane.selected { border-color: #264f78; }
 .window-body { flex: 1; overflow: auto; padding: 4px 8px; white-space: pre; line-height: 1.35; }
 .window-body.web-body { position: relative; white-space: normal; }
+/* `pre-wrap` keeps runs of spaces (indentation, the centering margin, the
+ * line-number gutter) that a proportional font would otherwise collapse.
+ * `min-height` gives a blank line the same box as a full one. */
 .window-body.web-body .body-row { white-space: pre-wrap; min-height: 1.35em; }
-.jemacs-caret { position: absolute; width: 2px; background: #d4d4d4; pointer-events: none; animation: jemacs-blink 1s step-end infinite; }
-@keyframes jemacs-blink { 50% { opacity: 0; } }
+.jemacs-caret { position: absolute; width: 2px; border-radius: 1px; background: #d4d4d4; pointer-events: none; animation: jemacs-blink 1.1s ease-in-out infinite; will-change: opacity; }
+/* Block cursor (`cursor-type` = box): covers the glyph under point, so it is
+ * blended rather than painted over -- `difference` against a light caret colour
+ * inverts the character instead of hiding it. */
+.jemacs-caret.block { border-radius: 0; mix-blend-mode: difference; animation: none; }
+@keyframes jemacs-blink { 0%, 45% { opacity: 1; } 55%, 100% { opacity: 0; } }
 .window-body.terminal-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
 .window-body.xterm-surface { overflow: hidden; padding: 0; line-height: 1; font-variant-ligatures: none; }
 .window-body.rich-table-surface { padding: 0; overflow: auto; white-space: normal; font-family: var(--jemacs-sans); }
@@ -60,12 +74,30 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 .rich-table-badge.sleeping { background: rgba(127,127,127,.18); }
 .rich-table-badge.stopped { background: rgba(215, 186, 125, .24); }
 .rich-table-badge.zombie { background: rgba(244, 71, 71, .22); }
+
+/* Web surface: declarative HTML/canvas panes (test results, DAP session state). */
+.window-body.web-surface { padding: 0; overflow: auto; white-space: normal; font-family: var(--jemacs-sans); }
+.web-surface-root { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; font-size: 12px; line-height: 1.45; }
+.web-node-row { display: flex; flex-direction: row; align-items: baseline; gap: 8px; }
+.web-node-column { display: flex; flex-direction: column; gap: 2px; }
+.web-node-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.web-node-clickable { cursor: pointer; border-radius: 4px; }
+.web-node-clickable:hover { background: rgba(127,127,127,.14); }
+.web-node-bar { position: relative; flex: 1 1 auto; min-width: 6ch; height: 14px; border-radius: 3px; overflow: hidden; background: rgba(127,127,127,.14); }
+.web-node-bar-fill { position: absolute; inset: 0 auto 0 0; opacity: .38; background: currentColor; }
+.web-node-bar-label { position: relative; display: block; padding: 0 5px; font-size: 11px; }
+.web-node-badge { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, currentColor 16%, transparent); font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
+.web-node-image { display: block; max-width: 100%; image-rendering: auto; }
+.web-node-selected { background: rgba(80, 133, 239, .16); box-shadow: inset 2px 0 0 currentColor; }
+.web-node-selected.web-node-clickable:hover { background: rgba(80, 133, 239, .24); }
+.web-surface-canvas { display: block; width: calc(100% - 20px); max-height: calc(100vh - 120px); margin: 4px 10px 10px; border-radius: 4px; background: rgba(127,127,127,.08); }
 .xterm-pane { width: 100%; height: 100%; overflow: hidden; }
 .xterm-pane .xterm { height: 100%; padding: 0; }
 .xterm-pane .xterm-viewport { overflow-y: hidden !important; }
 .terminal-row { height: var(--jemacs-terminal-row-px, 18px); line-height: var(--jemacs-terminal-row-px, 18px); white-space: pre; }
 .terminal-row span { display: inline-block; width: var(--jemacs-terminal-col-px, 9px); height: var(--jemacs-terminal-row-px, 18px); line-height: var(--jemacs-terminal-row-px, 18px); overflow: hidden; }
-.terminal-cursor { color: #1e1e1e; background: #d4d4d4; }
+.terminal-cursor { color: #1e1e1e; background: #d4d4d4; font-style: normal; }
+.window-footer { padding: 2px 8px; white-space: pre; flex-shrink: 0; }
 .window-modeline { padding: 2px 8px; background: #252526; flex-shrink: 0; }
 .split-row { display: flex; flex-direction: row; flex: 1; min-height: 0; }
 .split-col { display: flex; flex-direction: column; flex: 1; min-width: 0; }

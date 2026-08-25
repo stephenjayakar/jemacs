@@ -27,6 +27,11 @@ export function installConfigModes(): void {
   defineCodeMode("yaml", new Set("true false null yes no on off".split(" ")), "#", 2, "text")
   defineCodeMode("json", jsonKeywords, "//", 2, "text")
   defineCodeMode("c", cKeywords, "//", 4)
+  // Mermaid diagrams are prose-with-keywords, so `text` is the right parent: prog-mode
+  // indentation rules fight the diagram syntax.
+  defineCodeMode("mermaid", new Set(("graph flowchart sequenceDiagram classDiagram stateDiagram erDiagram journey gantt pie "
+    + "gitGraph mindmap timeline quadrantChart requirementDiagram C4Context subgraph end participant actor note over "
+    + "loop alt opt par rect activate deactivate class state direction TB TD BT RL LR title section").split(" ")), "%%", 2, "text")
   defineMode({ name: "handlebars", parent: "text", commentStart: "{{!", fontLock: handlebarsFontLock })
   defineMode({ name: "restclient", parent: "text", commentStart: "#", fontLock: restClientFontLock })
 }
@@ -153,11 +158,53 @@ function handlebarsFontLock(buffer: BufferModel): TextSpan[] {
   return spans
 }
 
-function restClientFontLock(buffer: BufferModel): TextSpan[] {
+// Mirrors `restclient-mode-keywords` in restclient.el: the face per construct
+// follows the `defface ... :inherit` chain there (method → keyword, url →
+// function-name, variable name → preprocessor, header name → variable-name,
+// header/string values → string, multiline + file upload → doc).
+const REST_LINE_RULES: Array<{ re: RegExp; faces: Array<TextSpan["face"]> }> = [
+  { re: /^[ \t]*(GET|POST|DELETE|PUT|HEAD|OPTIONS|PATCH|PROPFIND) (.*)$/d, faces: ["keyword", "function"] },
+  // `:name := elisp` / `:name = <<` / `:name = value` (multiline before plain).
+  { re: /^(:[^: ]+)[ \t]*:=[ \t]*(.+?)[ \t]*$/d, faces: ["preprocessor", "function"] },
+  { re: /^(:[^: ]+)[ \t]*:?=[ \t]*(<<)[ \t]*$/d, faces: ["preprocessor", "doc"] },
+  { re: /^(:[^:= ]+)[ \t]*=[ \t]*(.+?)[ \t]*$/d, faces: ["preprocessor", "string"] },
+  { re: /^(->) (\S+) +(.*)$/d, faces: ["preprocessor", "function", "string"] },
+  { re: /^(<[ \t]*[^<>\n\r]+[ \t]*)$/d, faces: ["doc"] },
+  { re: /^([^\](),/:;@[\\{}= \t]+): (.*)$/d, faces: ["variable", "string"] },
+  { re: /^(:[^: ]+)|({{[^} ]+}})$/d, faces: ["preprocessor", "preprocessor"] },
+]
+
+function restClientFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[] {
+  const { text, offset } = fontLockSlice(buffer, range)
   const spans: TextSpan[] = []
-  addWords(buffer.text, /^\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/gm, "keyword", spans)
-  addWords(buffer.text, /^\s*#.*$/gm, "comment", spans)
-  return spans
+
+  let lineStart = 0
+  while (lineStart <= text.length) {
+    const nl = text.indexOf("\n", lineStart)
+    const lineEndIndex = nl === -1 ? text.length : nl
+    const line = text.slice(lineStart, lineEndIndex)
+
+    if (line.startsWith("#")) {
+      spans.push({ start: offset + lineStart, end: offset + lineEndIndex, face: "comment" })
+    } else {
+      for (const { re, faces } of REST_LINE_RULES) {
+        const match = re.exec(line)
+        if (!match) continue
+        const indices = match.indices ?? []
+        for (let group = 1; group < indices.length; group++) {
+          const bounds = indices[group]
+          const face = faces[group - 1]
+          if (!bounds || !face) continue
+          spans.push({ start: offset + lineStart + bounds[0], end: offset + lineStart + bounds[1], face })
+        }
+        break
+      }
+    }
+
+    if (nl === -1) break
+    lineStart = nl + 1
+  }
+  return spans.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
 function wordCompleteAtPoint(buffer: BufferModel, keywords: Set<string>): CompletionCandidate[] {

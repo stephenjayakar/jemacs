@@ -46,15 +46,43 @@ const builtins: Array<[name: string, load: () => Promise<{ install: InstallFn }>
   ["smerge", () => import("./smerge")],
   ["osc52", () => import("./osc52")],
   ["term-v2", () => import("./term-v2")],
+  ["comint", () => import("./comint")],
+  ["winner", () => import("./winner")],
+  ["view", () => import("./view")],
+  ["tabulated-list", () => import("./tabulated-list")],
+  ["ibuffer", () => import("./ibuffer")],
+  ["whitespace", () => import("./whitespace")],
+  ["abbrev", () => import("./abbrev")],
+  ["flyspell", () => import("./flyspell")],
+  ["desktop", () => import("./desktop")],
+  ["ediff", () => import("./ediff")],
+  ["vc-dir", () => import("./vc-dir")],
+  ["man", () => import("./man")],
+  ["hi-lock", () => import("./hi-lock")],
+  ["eshell", () => import("./eshell")],
   ["jterm", () => import("./jterm")],
   ["avy", () => import("./avy")],
   ["register-text", () => import("./register-text")],
+  ["rectangle-mark", () => import("./rectangle-mark")],
   ["undo-tree", () => import("./undo-tree")],
   ["org", () => import("./org")],
   ["markdown", () => import("./markdown")],
   ["lean4", () => import("./lean4")],
   ["tiling", () => import("./tiling")],
   ["shadow", () => import("./shadow")],
+  ["git-link", () => import("./git-link")],
+  ["canvas-mode", () => import("./canvas-mode")],
+  // After save-hooks, which owns the before-save-hook dispatch this attaches to.
+  ["format-on-save", () => import("./format-on-save")],
+  // After the tree-sitter `html` editing mode, so the source/render toggle can bind
+  // into its keymap.
+  ["html-mode", () => import("./html-mode")],
+  // After tramp, which also wraps `editor.openFile`: this wrapper runs first and hands
+  // remote names back to tramp's.
+  ["image-mode", () => import("./image-mode")],
+  // Late: aliases and advice here probe for commands (avy, kill-ring-save) that
+  // earlier plugins register.
+  ["stephen-misc", () => import("./stephen-misc")],
 ]
 
 const HERE = dirname(fileURLToPath(import.meta.url))

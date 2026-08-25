@@ -1,6 +1,7 @@
 import { resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { spawnPty, type Pty } from "../../plugins/term/pty"
+import { markerEnv } from "./tui-reap"
 
 const ROOT = resolve(import.meta.dir, "../..")
 const MAIN = resolve(ROOT, "src/main.ts")
@@ -180,13 +181,16 @@ const DRIVE = resolve(ROOT, "scripts/tui-drive.sh")
 function tmuxFallback(file: string | undefined, rows: number, cols: number): XtermProbe {
   const session = `jx${process.pid}-${tmuxCounter++}`
   const sh = (args: string[]): string => {
-    const r = spawnSync(DRIVE, args, { env: { ...process.env, JEMACS_TMUX_SESSION: session }, encoding: "utf8" })
+    const r = spawnSync(DRIVE, args, { env: markerEnv(session), encoding: "utf8" })
     if (r.status !== 0 && args[0] !== "stop") {
       throw new Error(`tui-drive ${args.join(" ")} failed (${r.status}): ${r.stderr || r.stdout}`)
     }
     return r.stdout
   }
   sh(["start", ...(file ? [file] : [])])
+  // The pane is a grandchild of the tmux server, so close() alone is not enough
+  // if the runner dies first. See "Process hygiene" in ../../AGENTS.md.
+  process.on("exit", () => { sh(["stop"]) })
   return {
     rows, cols,
     async type(...keys) { sh(["keys", ...keys]) },

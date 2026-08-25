@@ -1,19 +1,20 @@
 import type { CommandContext } from "../src/kernel/command"
 import type { Editor } from "../src/kernel/editor"
 import type { PluginContext } from "../src/runtime/plugin-context"
-import type { BufferModel } from "../src/kernel/buffer"
+import { withSavedRestriction, type BufferModel } from "../src/kernel/buffer"
 import type { TextSpan } from "../src/modes/mode"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
-import { currentKill, getKillRing, killNew, killRingIndex as ringIndex } from "../src/runtime/kill-ring"
+import { currentKill, getKillRing, killNew, killRingIndex as ringIndex, setInterprogramCutFunction } from "../src/runtime/kill-ring"
 import { isPrintable, Keymap } from "../src/kernel/keymap"
 import { scrollDownCommand, scrollUpCommand, selectedWindowBodyBudget } from "../src/display/scroll"
+import { visualLineMove } from "../src/display/display-wrap"
 import { defineMode, modeFeature } from "../src/modes/mode"
 import { spawnProcess } from "../src/platform/runtime"
 import { readKey } from "./misc"
 
 const KILL_COMMANDS = new Set(["kill-line", "kill-word", "backward-kill-word", "kill-region", "clipboard-kill-region"])
 
-defcustom("read-quoted-char-radix", "number", 8,
+defcustom("read-quoted-char-radix", "integer", 8,
   "Radix for numeric character input read by `quoted-insert'.", "editing")
 
 export function install(editor: Editor, ctx?: PluginContext): void {
@@ -21,17 +22,22 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   occurMap.bind("enter", "occur-mode-goto-occurrence")
   occurMap.bind("return", "occur-mode-goto-occurrence")
   occurMap.bind("C-m", "occur-mode-goto-occurrence")
+  occurMap.bind("e", "occur-edit-mode")
   defineMode({ name: "occur-mode", parent: "text", keymap: occurMap })
+
+  const occurEditMap = new Keymap("occur-edit-mode-map")
+  occurEditMap.bind("C-c C-c", "occur-cease-edit")
+  defineMode({ name: "occur-edit-mode", parent: "text", keymap: occurEditMap })
 
   const moveChar = (buffer: BufferModel, editor: Editor, delta: number) => {
     const target = buffer.point + delta
-    if (target < 0) {
-      buffer.point = 0
+    if (target < buffer.pointMin) {
+      buffer.point = buffer.pointMin
       editor.message("Beginning of buffer")
       return
     }
-    if (target > buffer.text.length) {
-      buffer.point = buffer.text.length
+    if (target > buffer.pointMax) {
+      buffer.point = buffer.pointMax
       editor.message("End of buffer")
       return
     }
@@ -40,9 +46,12 @@ export function install(editor: Editor, ctx?: PluginContext): void {
 
   const moveLine = (buffer: BufferModel, editor: Editor, delta: number) => {
     const target = buffer.lineAt(buffer.point) + delta
+    // Emacs `line-move-visual`: with soft wrapping on, C-n/C-p step screen
+    // rows, so a wrapped paragraph takes several presses to cross.
+    if (visualLineMove(buffer, delta)) return
     buffer.moveLine(delta)
-    if (target < 0) editor.message("Beginning of buffer")
-    else if (target >= buffer.lineCount) editor.message("End of buffer")
+    if (target < buffer.lineAt(buffer.pointMin)) editor.message("Beginning of buffer")
+    else if (target > buffer.lineAt(buffer.pointMax)) editor.message("End of buffer")
   }
 
   editor.command("forward-char", ({ buffer, editor, prefixArgument }) => moveChar(buffer, editor, prefixArgument ?? 1), "Move point forward one character.")
@@ -87,7 +96,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
       buffer.markActive = false
     }
     if (prefixArgument != null) {
-      buffer.point = forwardLineFrom(buffer.text, tenthFractionPosition(buffer.text, prefixArgument, false))
+      buffer.point = forwardLineFrom(buffer.text, tenthFractionPosition(buffer.text.slice(buffer.pointMin, buffer.pointMax), prefixArgument, false) + buffer.pointMin)
     } else {
       buffer.moveToBufferStart()
     }
@@ -98,7 +107,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
       buffer.markActive = false
     }
     if (prefixArgument != null) {
-      buffer.point = forwardLineFrom(buffer.text, tenthFractionPosition(buffer.text, prefixArgument, true))
+      buffer.point = forwardLineFrom(buffer.text, tenthFractionPosition(buffer.text.slice(buffer.pointMin, buffer.pointMax), prefixArgument, true) + buffer.pointMin)
     } else {
       buffer.moveToBufferEnd()
       recenterEndOfBuffer(editor)
@@ -159,6 +168,47 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.command("end-of-defun", endOfDefun, "Move to the end of the current defun.")
   editor.command("jemacs-python-beginning-of-defun", beginningOfDefun, "Jemacs extension alias for beginning-of-defun in Python buffers.")
   editor.command("jemacs-python-end-of-defun", endOfDefun, "Jemacs extension alias for end-of-defun in Python buffers.")
+
+  editor.command("narrow-to-region", ({ buffer, editor, args }) => {
+    const parsed = args.length >= 2 ? [Number(args[0]), Number(args[1])] : null
+    if (parsed && parsed.every(Number.isFinite)) {
+      buffer.narrowToRegion(parsed[0]!, parsed[1]!)
+      return
+    }
+    if (buffer.mark == null) {
+      editor.message("The mark is not set now, so there is no region")
+      return
+    }
+    buffer.narrowToRegion(buffer.mark, buffer.point)
+  }, "Restrict editing in this buffer to the current region.")
+
+  editor.command("narrow-to-defun", ({ buffer, editor }) => {
+    const beginning = modeFeature(buffer.mode, "beginningOfDefun")
+    const end = modeFeature(buffer.mode, "endOfDefun")
+    if (!beginning || !end) {
+      editor.message("No defun navigation for this mode")
+      return
+    }
+    const original = buffer.point
+    const range = withSavedRestriction(buffer, () => {
+      buffer.widen()
+      const began = beginning(buffer)
+      const start = buffer.point
+      const ended = end(buffer)
+      const finish = buffer.point
+      return began === false || ended === false || finish < start ? null : { start, end: finish }
+    })
+    if (!range) {
+      editor.message("No defun at point")
+      return
+    }
+    buffer.narrowToRegion(range.start, range.end)
+    buffer.point = original
+  }, "Restrict editing in this buffer to the current defun.")
+
+  editor.command("widen", ({ buffer }) => {
+    buffer.widen()
+  }, "Remove narrowing from the current buffer.")
 
   // ---- kill ring / basic editing -----------------------------------------
 
@@ -231,6 +281,18 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     }
   }
 
+  // Emacs's `select-enable-clipboard`: every kill also lands on the system
+  // clipboard, so C-w / M-w / C-k are Cmd-V-able in other apps. Off under
+  // `bun test` so the suite never clobbers the developer's clipboard.
+  const selectEnableClipboard = defcustom("select-enable-clipboard", "boolean", process.env.NODE_ENV !== "test",
+    "If non-nil, killed and copied text is also written to the system clipboard.", "editing")
+
+  setInterprogramCutFunction(text => {
+    if (!selectEnableClipboard.value) return
+    void copyToClipboard(text).catch(() => {})
+  })
+  ctx?.onDispose(() => setInterprogramCutFunction(null))
+
   const readFromClipboard = async (): Promise<string | null> => {
     try {
       const pbpaste = spawnProcess({ cmd: ["pbpaste"], stdout: "pipe" })
@@ -260,6 +322,23 @@ export function install(editor: Editor, ctx?: PluginContext): void {
       if (isENOENT(err)) return null
       throw err
     }
+  }
+
+  // Emacs's `interprogram-paste-function`: before a yank, check whether another
+  // application put new text on the system clipboard. If so, push that text on
+  // the kill ring, so C-y inserts it and M-y still reaches the older kills.
+  const pullClipboardIntoKillRing = async (): Promise<void> => {
+    if (!selectEnableClipboard.value) return
+    let text: string | null = null
+    try {
+      text = await readFromClipboard()
+    } catch {
+      return
+    }
+    if (!text) return
+    if (killRing.length && killRing[0] === text) return
+    killNew(editor, text, { cut: false })
+    yankRingIndex = 0
   }
 
   const quotedKeyText = (key: CommandContext["keyEvent"], fallback?: string): string | null => {
@@ -443,16 +522,17 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     const start = buffer.point
     let end: number
     if (prefixArgument != null) {
-      end = nthLineBoundary(buffer.text, start, prefixArgument)
+      end = Math.max(buffer.pointMin, Math.min(buffer.pointMax, nthLineBoundary(buffer.text, start, prefixArgument)))
     } else {
-      if (start === buffer.text.length) {
+      if (start === buffer.pointMax) {
         editor.message("End of buffer")
         return
       }
       const nl = buffer.text.indexOf("\n", start)
-      const tail = nl === -1 ? buffer.text.slice(start) : buffer.text.slice(start, nl)
+      const lineEnd = nl === -1 ? buffer.pointMax : Math.min(nl, buffer.pointMax)
+      const tail = buffer.text.slice(start, lineEnd)
       // Emacs rule: if the rest of the line is blank, kill through the newline.
-      end = nl === -1 ? buffer.text.length : (/^\s*$/.test(tail) ? nl + 1 : nl)
+      end = nl === -1 || nl >= buffer.pointMax ? buffer.pointMax : (/^\s*$/.test(tail) ? Math.min(nl + 1, buffer.pointMax) : nl)
     }
     pushKill(buffer.deleteRange(start, end), append, end < start)
   }, "Kill text from point to end of line.")
@@ -503,7 +583,8 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     editor.message(copied ? "Killed region to clipboard" : "Killed region")
   }, "Kill the region and save it to the system clipboard.")
 
-  editor.command("yank", ({ buffer, prefixArgument }) => {
+  editor.command("yank", async ({ buffer, prefixArgument }) => {
+    await pullClipboardIntoKillRing()
     if (!killRing.length) return
     const index = ringIndex(editor, (prefixArgument ?? 1) - 1)
     const text = currentKill(editor, index)
@@ -725,7 +806,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     if (to == null) return
     const region = buffer.markActive && buffer.mark != null && buffer.mark !== buffer.point
       ? { start: Math.min(buffer.mark, buffer.point), end: Math.max(buffer.mark, buffer.point) }
-      : { start: buffer.point, end: buffer.text.length }
+      : { start: buffer.point, end: buffer.pointMax }
     const replaced = buffer.text.slice(region.start, region.end).split(from).join(to)
     buffer.replaceRange(region.start, region.end, replaced)
   }, "Replace a string in the region or current buffer.")
@@ -885,6 +966,50 @@ export function install(editor: Editor, ctx?: PluginContext): void {
     source.point = pointAtLine(source.text, target.line)
   }, "Visit the occurrence at point.")
 
+  editor.command("occur-edit-mode", ({ buffer, editor }) => {
+    if (buffer.mode !== "occur-mode") {
+      editor.message("Not in an Occur buffer")
+      return
+    }
+    buffer.readOnly = false
+    buffer.mode = "occur-edit-mode"
+    editor.message("Edit the Occur buffer, then apply with C-c C-c")
+  }, "Make the Occur buffer editable; occur-cease-edit applies edits to the source buffer.")
+
+  editor.command("occur-cease-edit", ({ buffer, editor }) => {
+    if (buffer.mode !== "occur-edit-mode") {
+      editor.message("Not in Occur edit mode")
+      return
+    }
+    const targets = (buffer.locals.get("occur-targets") as Array<{ bufferId: string; line: number } | null> | undefined) ?? []
+    const lines = buffer.text.replace(/\n$/, "").split("\n")
+    if (lines.length !== targets.length) {
+      editor.message("Occur buffer line count changed; cannot apply edits")
+      return
+    }
+    let applied = 0
+    let skipped = 0
+    for (let i = 0; i < lines.length; i++) {
+      const target = targets[i]
+      if (!target) continue
+      const match = /^\d+: /.exec(lines[i]!)
+      if (!match) { skipped++; continue }
+      const replacement = lines[i]!.slice(match[0].length)
+      const source = editor.buffers.get(target.bufferId)
+      if (!source || target.line > source.lineCount) { skipped++; continue }
+      const start = source.lineStarts[target.line - 1]!
+      const end = target.line < source.lineCount ? source.lineStarts[target.line]! - 1 : source.text.length
+      if (source.text.slice(start, end) === replacement) continue
+      source.replaceRange(start, end, replacement)
+      applied++
+    }
+    buffer.mode = "occur-mode"
+    buffer.readOnly = true
+    editor.message(skipped
+      ? `Applied ${applied} edit${applied === 1 ? "" : "s"}; skipped ${skipped} unparseable line${skipped === 1 ? "" : "s"}`
+      : `Applied ${applied} edit${applied === 1 ? "" : "s"}`)
+  }, "Apply Occur buffer edits back to the source buffer and leave edit mode.")
+
   editor.command("sort-lines", ({ buffer, editor, prefixArgument }) => {
     const region = lineSortRegion(buffer)
     if (!region) { editor.message("No mark set in this buffer"); return }
@@ -1031,7 +1156,7 @@ function recenterEndOfBuffer(editor: Editor): void {
 function replacementRegion(buffer: BufferModel): { start: number; end: number } {
   return buffer.markActive && buffer.mark != null && buffer.mark !== buffer.point
     ? { start: Math.min(buffer.mark, buffer.point), end: Math.max(buffer.mark, buffer.point) }
-    : { start: buffer.point, end: buffer.text.length }
+    : { start: buffer.point, end: buffer.pointMax }
 }
 
 function makeSearchRegexp(pattern: string, global: boolean): RegExp {
@@ -1145,22 +1270,22 @@ function startAsyncShellCommand(editor: Editor, command: string, cwd: string): B
 function deleteChars(buffer: BufferModel, count: number): string | null {
   if (count === 0) return null
   if (count > 0) {
-    if (buffer.point + count > buffer.text.length) return "End of buffer"
+    if (buffer.point + count > buffer.pointMax) return "End of buffer"
     buffer.deleteRange(buffer.point, buffer.point + count)
     return null
   }
-  if (buffer.point + count < 0) return "Beginning of buffer"
+  if (buffer.point + count < buffer.pointMin) return "Beginning of buffer"
   buffer.deleteRange(buffer.point + count, buffer.point)
   return null
 }
 
 function transposeChars(buffer: BufferModel, prefixArgument: number | null): string | null {
   if (prefixArgument === 0) return "No mark set in this buffer"
-  if (buffer.point < 1) return "Beginning of buffer"
+  if (buffer.point <= buffer.pointMin) return "Beginning of buffer"
   const text = buffer.text
   if (prefixArgument == null) {
-    const point = buffer.point >= text.length ? buffer.point - 1 : buffer.point
-    if (point < 1) return "Beginning of buffer"
+    const point = buffer.point >= buffer.pointMax ? buffer.point - 1 : buffer.point
+    if (point <= buffer.pointMin) return "Beginning of buffer"
     const pair = text.slice(point - 1, point + 1)
     if (pair.length < 2) return "End of buffer"
     buffer.replaceRange(point - 1, point + 1, pair[1]! + pair[0]!)
@@ -1169,8 +1294,8 @@ function transposeChars(buffer: BufferModel, prefixArgument: number | null): str
 
   const from = buffer.point - 1
   const to = from + prefixArgument
-  if (to < 0) return "Beginning of buffer"
-  if (to >= text.length) return "End of buffer"
+  if (to < buffer.pointMin) return "Beginning of buffer"
+  if (to >= buffer.pointMax) return "End of buffer"
   const ch = text[from]!
   const without = text.slice(0, from) + text.slice(from + 1)
   const replaced = without.slice(0, to) + ch + without.slice(to)

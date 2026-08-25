@@ -8,13 +8,18 @@
   "description": "Emacs-like editor kernel in TypeScript with first-class OpenTUI (terminal) and Electron (GUI) frontends.",
   "scripts": {
     "dev": "bun run src/main.ts",
-    "dev:gui": "bun run scripts/build-electron.ts && npx electron dist/electron/bootstrap.mjs",
-    "smoke:gui": "bun run scripts/build-electron.ts && npx electron dist/electron/bootstrap.mjs --smoke-gui",
+    "dev:gui": "JEMACS_HOME=$PWD bun run scripts/build-electron.ts && JEMACS_HOME=$PWD npx electron dist/electron/bootstrap.mjs",
+    "smoke:gui": "JEMACS_HOME=$PWD bun run scripts/build-electron.ts && JEMACS_HOME=$PWD npx electron dist/electron/bootstrap.mjs --smoke-gui",
     "preview:gui": "bun run scripts/serve-gui-preview.ts",
     "dev:self": "bun run src/main.ts src/main.ts",
     "build:gui": "bun run scripts/build-electron.ts",
     "check": "bun x tsc --noEmit",
     "test": "bun test",
+    "test:reap": "scripts/reap-strays.sh kill",
+    "test:strays": "scripts/reap-strays.sh list",
+    "test:fast": "JEMACS_SKIP_TUI=1 bun test",
+    "test:par": "JEMACS_SKIP_TUI=1 bun test --parallel",
+    "test:full": "bun test; scripts/reap-strays.sh stale",
     "postinstall": "node node_modules/electron/install.js && npx bun run scripts/postinstall-tree-sitter.ts",
     "generate:lsp-protocol": "bun run scripts/generate-lsp-protocol.ts",
     "start": "bun run src/main.ts"
@@ -37,7 +42,9 @@
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
+    "bun-types": "^1.3.14",
     "electron": "^35.0.0",
+    "happy-dom": "^20.11.1",
     "typescript": "^5.9.0",
     "typescript-language-server": "^4.3.4"
   },

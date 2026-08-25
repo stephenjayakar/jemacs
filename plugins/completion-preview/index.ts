@@ -62,8 +62,8 @@ function previewShow(editor: Editor, buffer: BufferModel): void {
 }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
-  defcustom("completion-preview-minimum-symbol-length", "number", 3,
-    "Minimum length of the symbol at point before showing a preview.")
+  defcustom("completion-preview-minimum-symbol-length", "integer", 3,
+    "Minimum length of the symbol at point before showing a preview.", "minibuffer")
 
   ctx.minorMode({
     name: "completion-preview-mode",

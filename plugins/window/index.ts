@@ -58,6 +58,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     "split-window-horizontally",
     "split-window-vertically",
     "delete-window",
+    // quit-window deletes its window through the kernel shim rather than by running
+    // `delete-window`, so it needs its own advice to match init.el's auto-balance.
+    "quit-window",
   ].map(cmd => ctx.advice(cmd, { after: balanceAfterWindowChange }))
   ctx.onDispose(() => { adviceIds = [] })
 }

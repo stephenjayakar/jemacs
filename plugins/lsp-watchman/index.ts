@@ -225,7 +225,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   })
 
   defcustom("lsp-watchman-poll-interval", "number", 1.5,
-    "Seconds between watchman since-queries for workspace/didChangeWatchedFiles.")
+    "Seconds between watchman since-queries for workspace/didChangeWatchedFiles.", "tools")
 
   for (const client of allClients()) {
     const handlers = client.requestHandlers ?? new Map()

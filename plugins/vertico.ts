@@ -12,6 +12,10 @@ type VerticoState = {
   displayCandidates: string[]
   exitInput: boolean
   input: VerticoInput | null
+  /** Set while a dynamic collection query is pending or in flight, so the count line can say so. */
+  querying: boolean
+  /** Debounce timer for the next dynamic query; cleared whenever the input moves on. */
+  debounce: ReturnType<typeof setTimeout> | null
 }
 
 type VerticoInput = {
@@ -25,6 +29,7 @@ const installedEditors = new WeakSet<Editor>()
 const verticoCompletingRead: CompletingReadFunction = async (editor, prompt, options) => {
   const promise = editor.prompt(prompt, options.initialValue ?? "", options.history, {
     collection: options.collection,
+    dynamicCollection: options.dynamicCollection,
     completion: options.completion,
     defaultDirectory: options.defaultDirectory,
   })
@@ -52,6 +57,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     onDisable: editor => {
       editor.popCompletingReadFunction(verticoCompletingRead)
       editor.popMinibufferCompletionFrontend(verticoFrontend)
+      const state = states.get(editor)
+      if (state?.debounce) clearTimeout(state.debounce)
       states.delete(editor)
     },
   })
@@ -108,11 +115,17 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 function installCustomVariables(): void {
   defvar("vertico-count-format", ["%-6s ", "%s/%s"], "Format string used for the candidate count.")
   defvar("vertico-group-format", "    %s ", "Format string used for the group title.")
-  defcustom("vertico-count", "number", 10, "Maximal number of candidates to show.")
+  defcustom("vertico-count", "integer", 10, "Maximal number of candidates to show.", "minibuffer")
+  defcustom(
+    "vertico-dynamic-debounce",
+    "number",
+    150,
+    "Milliseconds to wait after a keystroke before querying a dynamic collection.",
+  )
   defvar("vertico-preselect", "directory", "Configure if the prompt or first candidate is preselected.")
-  defcustom("vertico-scroll-margin", "number", 2, "Number of lines at the top and bottom when scrolling.")
+  defcustom("vertico-scroll-margin", "integer", 2, "Number of lines at the top and bottom when scrolling.", "minibuffer")
   defvar("vertico-resize", true, "How to resize the Vertico minibuffer window.")
-  defcustom("vertico-cycle", "boolean", false, "Enable cycling for `vertico-next' and `vertico-previous'.")
+  defcustom("vertico-cycle", "boolean", false, "Enable cycling for `vertico-next' and `vertico-previous'.", "minibuffer")
   defvar("vertico-multiline", ["<NL>", "..."], "Replacements for multiline strings.")
   defvar("vertico-sort-function", "vertico-sort-history-length-alpha", "Default sorting function.")
   defvar("vertico-sort-override-function", null, "Override sort function.")
@@ -122,6 +135,8 @@ async function verticoRefresh(editor: Editor): Promise<void> {
   const request = editor.minibuffer
   if (!request || !editor.isMinorModeEnabled("vertico-mode")) return
   if (!isCompletionPrompt(editor)) {
+    const stale = states.get(editor)
+    if (stale?.debounce) clearTimeout(stale.debounce)
     states.delete(editor)
     editor.minibufferCompletionDisplay = null
     return
@@ -129,11 +144,16 @@ async function verticoRefresh(editor: Editor): Promise<void> {
   const inputState = currentInput(editor)
   const input = inputState.text
   const fileCompletion = request.completion === "file"
+  if (request.dynamicCollection) {
+    scheduleDynamicQuery(editor, inputState)
+    return
+  }
   const candidates = request.completion === "file"
     ? await fileCompletionCandidates(input, request.fileCompletionDirectory ?? process.cwd())
     : request.collection ?? []
   if (editor.minibuffer !== request || !sameInput(inputState, currentInput(editor))) return
   const state = ensureState(editor)
+  state.querying = false
   state.candidates = sortCandidates(filterCandidates(editor, candidates, input, fileCompletion))
   state.displayCandidates = state.candidates.map(candidate => displayCandidate(candidate, input, fileCompletion))
   state.groups = state.candidates.map(candidate => candidateGroup(candidate, fileCompletion))
@@ -144,6 +164,51 @@ async function verticoRefresh(editor: Editor): Promise<void> {
   else if (preselectPrompt) state.index = -1
   else if (state.index < 0 || !promptAllowed(editor)) state.index = 0
   else if (state.index >= state.candidates.length) state.index = state.candidates.length - 1
+  computeScroll(state)
+  showVerticoCompletions(editor, state)
+}
+
+/**
+ * Queue a dynamic-collection query for `inputState`, replacing any query already queued.
+ *
+ * This returns immediately instead of awaiting the source: `verticoRefresh` runs from
+ * `post-command-hook`, which the key loop awaits, so blocking here would stall typing for as long
+ * as a remote `cs` takes. The debounce then keeps a burst of keystrokes down to a single query,
+ * and `queryDynamicCollection` aborts whichever one it supersedes.
+ */
+function scheduleDynamicQuery(editor: Editor, inputState: VerticoInput): void {
+  const request = editor.minibuffer
+  if (!request) return
+  const state = ensureState(editor)
+  if (state.debounce) clearTimeout(state.debounce)
+  state.input = inputState
+  state.querying = true
+  showVerticoCompletions(editor, state)
+  const delay = Math.max(0, getCustom<number>("vertico-dynamic-debounce") ?? 150)
+  state.debounce = setTimeout(() => {
+    state.debounce = null
+    void runDynamicQuery(editor, request, inputState)
+  }, delay)
+}
+
+async function runDynamicQuery(editor: Editor, request: NonNullable<Editor["minibuffer"]>, inputState: VerticoInput): Promise<void> {
+  if (editor.minibuffer !== request || !sameInput(inputState, currentInput(editor))) return
+  const candidates = await editor.queryDynamicCollection(inputState.text)
+  // null means the prompt closed or a newer query superseded this one; leave the display alone.
+  if (candidates === null) return
+  if (editor.minibuffer !== request || !sameInput(inputState, currentInput(editor))) return
+  const state = ensureState(editor)
+  state.querying = false
+  // A dynamic source did its own matching and ranking against the full corpus; re-filtering here
+  // would throw away candidates whose reason for matching a local matcher cannot see.
+  state.candidates = candidates
+  state.displayCandidates = candidates.map(candidate => displayCandidate(candidate))
+  state.groups = candidates.map(() => "")
+  state.exitInput = false
+  state.input = inputState
+  if (!candidates.length) state.index = promptAllowed(editor) ? -1 : 0
+  else if (state.index < 0 || !promptAllowed(editor)) state.index = 0
+  else if (state.index >= candidates.length) state.index = candidates.length - 1
   computeScroll(state)
   showVerticoCompletions(editor, state)
 }
@@ -236,8 +301,10 @@ function verticoCandidate(editor: Editor): string | undefined {
 
 function isCompletionPrompt(editor: Editor): boolean {
   const request = editor.minibuffer
-  return !!(request?.completion === "file" || request?.collection?.length)
+  return !!(request?.completion === "file" || request?.collection?.length || request?.dynamicCollection)
 }
+
+
 
 function verticoSave(editor: Editor): void {
   const state = states.get(editor)
@@ -262,6 +329,11 @@ function showVerticoCompletions(editor: Editor, state: VerticoState): void {
   editor.minibufferCompletionDisplay = {
     text: body,
     selectedLine: state.index >= state.scroll ? state.index - state.scroll + (countText ? 1 : 0) : undefined,
+    // `vertico-preselect' = directory parks the selection on the prompt itself
+    // (index -1) so RET opens the typed directory. Emacs still paints that line
+    // with `vertico-current'; without this flag no line is highlighted at all
+    // and the list looks like nothing is selected.
+    promptSelected: state.index < 0,
   }
   void editor.changed("vertico-exhibit")
 }
@@ -269,7 +341,7 @@ function showVerticoCompletions(editor: Editor, state: VerticoState): void {
 function ensureState(editor: Editor): VerticoState {
   let state = states.get(editor)
   if (!state) {
-    state = { candidates: [], index: firstCandidateIndex(editor), scroll: 0, groups: [], displayCandidates: [], exitInput: false, input: null }
+    state = { candidates: [], index: firstCandidateIndex(editor), scroll: 0, groups: [], displayCandidates: [], exitInput: false, input: null, querying: false, debounce: null }
     states.set(editor, state)
   }
   return state
@@ -310,7 +382,8 @@ function formatCount(state: VerticoState): string {
   const format = getCustom<[string, string] | null>("vertico-count-format")
   if (format == null) return ""
   const current = state.index >= 0 ? String(state.index + 1) : "*"
-  return `${current}/${state.candidates.length}`
+  // Mark an in-flight query so a slow remote source doesn't look like "no matches".
+  return `${current}/${state.candidates.length}${state.querying ? "..." : ""}`
 }
 
 function computeScroll(state: VerticoState): void {

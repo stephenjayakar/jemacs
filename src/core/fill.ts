@@ -10,8 +10,8 @@ export function currentFillColumn(buffer: BufferModel): number {
 }
 
 export function installFillCommands(editor: Editor): void {
-  defcustom("fill-column", "number", 70,
-    "Column beyond which automatic line-wrapping should happen.")
+  defcustom("fill-column", "integer", 70,
+    "Column beyond which automatic line-wrapping should happen.", "fill")
 
   editor.command("set-fill-column", ({ buffer, editor, prefixArgument }) => {
     const previous = currentFillColumn(buffer)

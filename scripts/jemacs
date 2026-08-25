@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve sibling repos / install directory from this script's real path (follow ~/.local/bin/jemacs symlink).
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="${DIR}/${SOURCE}"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+CORE_REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+if [[ -d "${CORE_REPO}/src" ]]; then
+  export JEMACS_HOME="${JEMACS_HOME:-${CORE_REPO}}"
+else
+  export JEMACS_HOME="${JEMACS_HOME:-${DATA_HOME}/jemacs}"
+fi
+export JEMACS_INIT_PATH="${JEMACS_INIT_PATH:-${HOME}/.jemacs/init.ts}"
+export JEMACS_PACKAGES="${JEMACS_PACKAGES:-${HOME}/.jemacs/packages}"
+# An init file that loads out-of-tree plugin repositories exports its own paths;
+# core reads only JEMACS_HOME, JEMACS_INIT_PATH and JEMACS_PACKAGES.
+export PATH="${JEMACS_HOME}/node_modules/.bin:${PATH}"
+
+if [[ ! -f "${JEMACS_HOME}/src/main.ts" ]]; then
+  echo "jemacs: core is not installed at ${JEMACS_HOME}" >&2
+  echo "Run scripts/install.sh from the jemacs core checkout, or set JEMACS_HOME." >&2
+  exit 1
+fi
+
+run_bun() {
+  if command -v bun >/dev/null 2>&1; then
+    bun "$@"
+  else
+    npx bun "$@"
+  fi
+}
+
+# Auto install dependencies if node_modules is missing or package.json/lock is newer
+ensure_dependencies() {
+  local target_dir="${JEMACS_HOME}"
+  if [[ -d "${target_dir}" ]]; then
+    if [[ ! -d "${target_dir}/node_modules" ]] || \
+       [[ "${target_dir}/package.json" -nt "${target_dir}/node_modules" ]] || \
+       [[ -f "${target_dir}/bun.lock" && "${target_dir}/bun.lock" -nt "${target_dir}/node_modules" ]]; then
+      echo "[jemacs] Package dependencies changed or missing. Running bun install..." >&2
+      (cd "${target_dir}" && run_bun install >/dev/null 2>&1 || run_bun install)
+    fi
+  fi
+
+  # Also check sibling packages repo if it exists
+  local packages_dir="$(cd "${CORE_REPO}/../jemacs-packages" 2>/dev/null && pwd || true)"
+  if [[ -n "${packages_dir}" && -d "${packages_dir}" ]]; then
+    if [[ ! -d "${packages_dir}/node_modules" ]] || \
+       [[ "${packages_dir}/package.json" -nt "${packages_dir}/node_modules" ]]; then
+      echo "[jemacs] Updating dependencies in jemacs-packages..." >&2
+      (cd "${packages_dir}" && run_bun install >/dev/null 2>&1 || run_bun install)
+    fi
+  fi
+}
+
+# Rebuild Electron assets when they are missing or renderer sources changed.
+gui_build_stale() {
+  local home="$1"
+  local renderer="${home}/dist/electron/renderer.js"
+  [[ -f "${home}/dist/electron/bootstrap.mjs" && -f "${renderer}" ]] || return 0
+  [[ "${JEMACS_GUI_REBUILD:-}" == "1" ]] && return 0
+  [[ "${home}/scripts/build-electron.ts" -nt "${renderer}" ]] && return 0
+  [[ "${home}/package.json" -nt "${renderer}" ]] && return 0
+  find "${home}/src" -type f \
+    \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' -o -name '*.html' -o -name '*.mjs' \) \
+    -newer "${renderer}" -print -quit | grep -q .
+}
+
+ensure_gui_build() {
+  cd "${JEMACS_HOME}"
+  if [[ "${JEMACS_GUI_SKIP_REBUILD:-}" == "1" ]]; then
+    [[ -f dist/electron/bootstrap.mjs && -f dist/electron/renderer.js ]] \
+      || run_bun run scripts/build-electron.ts
+    return
+  fi
+  if gui_build_stale "${JEMACS_HOME}"; then
+    echo "[jemacs] Rebuilding Electron GUI assets..." >&2
+    run_bun run scripts/build-electron.ts
+  fi
+}
+
+gui=0
+filtered=()
+for arg in "$@"; do
+  if [[ "$arg" == "--gui" ]]; then
+    gui=1
+  elif [[ "$arg" == "--smoke-gui" ]]; then
+    gui=1
+    filtered+=("$arg")
+  else
+    filtered+=("$arg")
+  fi
+done
+
+ensure_dependencies
+
+if [[ "$gui" -eq 1 ]]; then
+  ensure_gui_build
+  cd "${JEMACS_HOME}"
+  # Bash 3.2 treats an empty array expansion as an unset variable under -u.
+  # No filename is a valid GUI invocation, so relax nounset only for exec.
+  set +u
+  if command -v electron >/dev/null 2>&1; then
+    exec electron dist/electron/bootstrap.mjs "${filtered[@]}"
+  else
+    exec npx electron dist/electron/bootstrap.mjs "${filtered[@]}"
+  fi
+else
+  if command -v bun >/dev/null 2>&1; then
+    exec bun run "${JEMACS_HOME}/src/main.ts" "$@"
+  else
+    exec npx bun run "${JEMACS_HOME}/src/main.ts" "$@"
+  fi
+fi

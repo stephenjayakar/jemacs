@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import type { BufferModel } from "../kernel/buffer"
 import { whichExecutable } from "../platform/runtime"
+import { getCustom } from "../runtime/custom"
 
 /** Same layout as lsp-mode `lsp--npm-dependency-path` (~/.emacs.d/.cache/lsp/npm/…/bin/). */
 export function emacsLspNpmBinary(packageName: string, binaryName = packageName): string | null {
@@ -79,5 +80,6 @@ export function searchRootForBuffer(buffer?: BufferModel): string {
 }
 
 export function serverBinaryAvailable(name: string, buffer?: BufferModel): boolean {
+  if (getCustom<string>("lsp-remote-host")) return true
   return findServerBinary(name, searchRootForBuffer(buffer)) != null
 }

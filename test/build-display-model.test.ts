@@ -170,6 +170,54 @@ test("buildDisplayModel renders markdown emphasis as italic", () => {
   expect(italic).toBeDefined()
 })
 
+test("a font-metric host gets a caret position and no block glyph in the body", () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  installMarkdown(editor)
+  const buffer = editor.scratch("md-italic-cursor", "plain *italic* text\n", "markdown")
+  const line = "plain *italic* text"
+
+  for (let point = 0; point < line.length; point++) {
+    buffer.point = point
+    const model = buildDisplayModel(editor, {
+      lastMessage: "",
+      viewport: { rows: 24, cols: 80 },
+      hostCapabilities: { unit: "pixels", mouse: true, clipboard: true, osc52: false, perFaceFonts: true },
+    })
+    const leaf = model.windows.kind === "leaf" ? model.windows.pane : null
+    // The █ is a char-grid affordance. A host that measures real glyphs draws
+    // its own caret, so the body must be the buffer text and nothing else --
+    // otherwise the block displaces a character and mis-sizes itself inside
+    // scaled/proportional faces.
+    const text = leaf!.body.chunks.map(chunk => chunk.text).join("")
+    expect(text).not.toContain("\u2588")
+    expect(leaf!.cursor).toEqual({ row: 0, colOffset: point })
+  }
+})
+
+test("a char-grid host still gets the cursor block, and it is never italic", () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultConfig(editor)
+  installMarkdown(editor)
+  const buffer = editor.scratch("md-italic-cursor-tui", "plain *italic* text\n", "markdown")
+
+  for (let point = 0; point < "plain *italic* text".length; point++) {
+    buffer.point = point
+    const model = buildDisplayModel(editor, {
+      lastMessage: "",
+      viewport: { rows: 24, cols: 80 },
+      hostCapabilities: { unit: "cells", mouse: true, clipboard: true, osc52: false },
+    })
+    const leaf = model.windows.kind === "leaf" ? model.windows.pane : null
+    const cursorChunk = leaf!.body.chunks.find(chunk => chunk.text.includes("\u2588"))
+    expect(cursorChunk).toBeDefined()
+    expect(cursorChunk!.italic).toBeFalsy()
+    expect(leaf!.cursor).toBeUndefined()
+  }
+})
+
 test("buildDisplayModel centers markdown body at markdown-fill-column", () => {
   installDefaultModes()
   const editor = new Editor()

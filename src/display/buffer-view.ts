@@ -1,16 +1,17 @@
 import type { BufferModel } from "../kernel/buffer"
-import type { TextSpan } from "../modes/mode"
+import type { GutterDecoration, TextSpan } from "../modes/mode"
 import {
   adjustSpansForLineNumbers,
   displayLineNumbersType,
   firstVisibleLineNumber,
   formatWithLineNumbers,
   gutterSpans,
+  mapVisibleOffset,
   regionSpansWithLineNumbers,
 } from "../ui/line-numbers"
 import { textWithCursor } from "../ui/text-display"
 import { applyTheme, type Theme } from "./theme"
-import type { ThemedText } from "./themed-text"
+import { unitalicizeCharAt, type ThemedText } from "./themed-text"
 import { visibleTextRegion, visibleTextRegionFromStart } from "./viewport"
 
 export function visibleStyledText(
@@ -24,6 +25,7 @@ export function visibleStyledText(
     buffer?: BufferModel
     maxLines?: number
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
   },
   lineBudget?: number,
 ): ThemedText {
@@ -42,9 +44,12 @@ export function visibleStyledTextFromStart(
     buffer?: BufferModel
     maxLines?: number
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
     mark?: number | null
     markActive?: boolean
     showCursor?: boolean
+    /** "insert" keeps the character under point (host draws its own caret). */
+    cursorMode?: "overwrite" | "insert"
   },
 ): ThemedText {
   const budget = options.maxLines ?? 24
@@ -63,7 +68,9 @@ function styledRegion(
     theme: Theme
     buffer?: BufferModel
     showLineNumbers?: boolean
+    gutterDecorations?: GutterDecoration[]
     showCursor?: boolean
+    cursorMode?: "overwrite" | "insert"
   },
 ): ThemedText {
   const visibleEnd = region.visibleStart + region.visible.length
@@ -81,20 +88,27 @@ function styledRegion(
     }))
   let visible = region.visible
   let shiftedSpans = visibleSpans
+  let cursorOffset = -1
   if (options.showCursor && point >= region.visibleStart && point <= visibleEnd) {
     const cursorPos = point - region.visibleStart
-    visible = textWithCursor(region.visible, cursorPos)
+    visible = textWithCursor(region.visible, cursorPos, options.cursorMode)
+    cursorOffset = cursorPos
     if (visible.length > region.visible.length) {
       const shift = (n: number) => (n >= cursorPos ? n + 1 : n)
       shiftedSpans = visibleSpans.map(s => ({ ...s, start: shift(s.start), end: shift(s.end) }))
     }
   }
-  if (!options.showLineNumbers) return applyTheme(visible, shiftedSpans, options.theme, { buffer: options.buffer })
+  if (!options.showLineNumbers) {
+    return unitalicizeCharAt(
+      applyTheme(visible, shiftedSpans, options.theme, { buffer: options.buffer }),
+      cursorOffset,
+    )
+  }
 
   const firstLine = firstVisibleLineNumber(region.visibleStart, text)
   const visibleLineCount = visible.split("\n").length
   const cursorLine = text.slice(0, Math.min(point, text.length)).split("\n").length
-  const format = formatWithLineNumbers(visible, firstLine, displayLineNumbersType(), cursorLine)
+  const format = formatWithLineNumbers(visible, firstLine, displayLineNumbersType(), cursorLine, options.gutterDecorations)
   const currentLineIndex = options.showCursor
     && cursorLine >= firstLine
     && cursorLine < firstLine + visibleLineCount
@@ -112,8 +126,12 @@ function styledRegion(
     : []
   const displaySpans = [
     ...gutterSpans(format.text, format.prefixLen, currentLineIndex),
+    ...format.decorationSpans,
     ...adjustSpansForLineNumbers(contentSpans, visible, format.prefixLen),
     ...regionSpans,
   ]
-  return applyTheme(format.text, displaySpans, options.theme, { buffer: options.buffer })
+  return unitalicizeCharAt(
+    applyTheme(format.text, displaySpans, options.theme, { buffer: options.buffer }),
+    cursorOffset < 0 ? -1 : mapVisibleOffset(cursorOffset, visible, format.prefixLen),
+  )
 }

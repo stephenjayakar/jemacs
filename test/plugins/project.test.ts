@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { makeEditor } from "./helper"
@@ -28,7 +28,7 @@ async function git(args: string[], cwd: string): Promise<void> {
 }
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "jemacs-project-"))
+  dir = await realpath(await mkdtemp("/tmp/jemacs-project-"))
   repo = join(dir, "repo")
   listFile = join(dir, "projects.json")
   await mkdir(join(repo, "src", "deep"), { recursive: true })

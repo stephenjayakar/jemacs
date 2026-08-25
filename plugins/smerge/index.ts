@@ -273,7 +273,7 @@ function gotoConflict(editor: Editor, buffer: BufferModel, dir: 1 | -1): void {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("smerge-auto-leave", "boolean", true,
-    "Non-nil means to leave `smerge-mode' when the last conflict is resolved.")
+    "Non-nil means to leave `smerge-mode' when the last conflict is resolved.", "tools")
 
   ctx.minorMode({
     name: "smerge-mode",

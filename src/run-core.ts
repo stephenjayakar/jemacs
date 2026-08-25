@@ -6,9 +6,23 @@ import { findPaneInModel } from "./display/find-pane"
 import type { DisplayModel, InputHandler, UiHost } from "./display/protocol"
 import { scrollWindowByLines } from "./display/scroll"
 import { modeSystem } from "./kernel/extension-points"
+import { tabBarHitTest } from "./display/tab-bar"
 
 export type JemacsHostBinding = {
   present: () => void
+  /**
+   * Build the model for one frame using the *same* options `present` uses.
+   *
+   * Multi-frame hosts paint each OS window separately, but they must not build
+   * their own options: `buildDisplayModel` persists a corrected `startLine`
+   * back onto the window as a side effect, and that correction depends on
+   * `hostCapabilities` (`perFaceFonts` selects font-metric row costs over unit
+   * rows). Two callers passing different capabilities write different
+   * corrections on alternate frames and the pane oscillates. Capabilities also
+   * gate `webSurface`, so a caller that omits them drops canvas/HTML panes to
+   * their plain-text fallback every other frame.
+   */
+  modelFor: (frameId?: string) => DisplayModel
   onInput: InputHandler
 }
 
@@ -21,18 +35,32 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
     lastMessage = text
   })
 
-  const present = () => {
-    const viewport = host.getViewport()
-    lastModel = buildDisplayModel(editor, {
+  const modelFor = (frameId?: string): DisplayModel => {
+    const model = buildDisplayModel(editor, {
       lastMessage,
-      viewport,
+      viewport: host.getViewport(),
       hostLabel: host.label,
       hostCapabilities: host.capabilities,
+      frameId,
     })
-    host.present(lastModel)
+    // `onInput` maps clicks through `pane.clickState`, which only exists on a built
+    // model. Recording here rather than in `present` keeps that mapping available to
+    // multi-frame hosts, which never call `present` at all. Frames other than the
+    // selected one cannot receive input without first being focused (the host reports
+    // the originating frame, and `onInput` selects it), so the last frame built is a
+    // safe source for the panes any subsequent event can name.
+    lastModel = model
+    return model
   }
 
-  const onInput: InputHandler = async input => {
+  const present = () => {
+    host.present(modelFor())
+  }
+
+  const onInput: InputHandler = async (input, frameId) => {
+    // Multi-frame hosts report which frame the event came from; focusing it
+    // first makes every command act on the frame the user actually typed into.
+    if (frameId) editor.selectFrame(frameId)
     try {
       if (input.type === "key") {
         await editor.handleKey(input.key)
@@ -54,7 +82,7 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
         const buffer = leaf && editor.buffers.get(leaf.bufferId)
         if (pane && buffer) {
           const point = pointFromWindowClick(buffer.text, pane.clickState, input.row, input.col, pane.bodyLineBudget)
-          editor.clickWindow(input.windowId, point)
+          editor.clickWindow(input.windowId, point, input.drag === true)
         }
       } else if (input.type === "wheel") {
         const leaf = findWindowLeaf(editor.windowLayout, input.windowId)
@@ -64,6 +92,13 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
           scrollWindowByLines(editor, requestedLines)
           await editor.changed("wheel-scroll")
         }
+      } else if (input.type === "tab-bar") {
+        // Emacs's tab bar is a keymap of clickable items; the hit test names
+        // which item was pressed and each maps to the command Emacs binds.
+        const hit = tabBarHitTest(editor, input.col)
+        if (hit?.kind === "select") await editor.run("tab-bar-select-tab", [String(hit.index + 1)])
+        else if (hit?.kind === "close") await editor.run("tab-bar-close-tab", [String(hit.index + 1)])
+        else if (hit?.kind === "new") await editor.run("tab-bar-new-tab")
       } else if (input.type === "pane-action") {
         const leaf = findWindowLeaf(editor.windowLayout, input.windowId)
         const buffer = leaf && editor.buffers.get(leaf.bufferId)
@@ -85,7 +120,7 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
     }
   }
 
-  return { present, onInput }
+  return { present, modelFor, onInput }
 }
 
 /** Host bootstrap without OpenTUI-specific wiring (safe for Electron main bundle). */
@@ -94,8 +129,18 @@ export async function runJemacsCore(editor: Editor, host: UiHost): Promise<Jemac
 
   const binding = bindJemacsHost(editor, host)
 
+  // One redisplay must paint each frame exactly once. A multi-frame host paints
+  // through `syncFrames`, which already covers the selected frame, so calling
+  // `present` as well would build a second model for the same window. Both
+  // builds persist a corrected `startLine` as a side effect, so two builds per
+  // redisplay let the window settle on a different scroll position on alternate
+  // frames -- flicker with no user input.
+  const redisplay = host.syncFrames
+    ? () => host.syncFrames!(editor.frames, binding.modelFor)
+    : binding.present
+
   host.onInput(binding.onInput)
-  host.onResize(() => binding.present())
+  host.onResize(redisplay)
   editor.events.on("terminalData", payload => {
     host.sendTerminalData?.(payload)
   })
@@ -106,11 +151,11 @@ export async function runJemacsCore(editor: Editor, host: UiHost): Promise<Jemac
     scheduled = true
     queueMicrotask(() => {
       scheduled = false
-      binding.present()
+      redisplay()
       if (!editor.running) host.destroy()
     })
   })
 
-  binding.present()
+  redisplay()
   return binding
 }

@@ -3,10 +3,11 @@
  */
 export { Editor } from "../kernel/editor"
 export { BufferModel } from "../kernel/buffer"
-export { defcustom, defvar, getCustom, setCustom, saveCustom, resetCustom, resetCustomToSaved, patchCustom, restoreCustom, listCustomVariables } from "./custom"
+export { defcustom, defgroup, defineIcon, defvar, getCustom, setCustom, setCustomValue, saveCustom, resetCustom, resetCustomToSaved, patchCustom, restoreCustom, listCustomVariables, listCustomGroups, listCustomIcons, customSetVariables, customSetIcons } from "./custom"
 export { currentKill, getKillRing, killNew, killRingIndex } from "./kill-ring"
 export {
   defface,
+  customSetFaces,
   setFaceAttribute,
   faceRemapAddRelative,
   faceRemapReset,

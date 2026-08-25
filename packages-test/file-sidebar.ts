@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { listWindowLeaves } from "../../src/kernel/window"
-import { makeEditor } from "../plugins/helper"
-import { install } from "../../../jemacs-packages/file-sidebar/file-sidebar"
-import {
+import { homedir } from "node:os"
+import { join } from "node:path"
+import { listWindowLeaves } from "../src/kernel/window"
+import { makeEditor } from "../test/plugins/helper"
+const packagesDir = process.env.JEMACS_PACKAGES ?? join(homedir(), ".jemacs", "packages")
+const { install } = await import(join(packagesDir, "file-sidebar/file-sidebar.ts"))
+const {
   buildFileTree,
   defaultExpandedPaths,
   renderFileTree,
   sidebarFontLock,
   sidebarLineAtPoint,
-} from "../../../jemacs-packages/file-sidebar/tree"
+} = await import(join(packagesDir, "file-sidebar/tree.ts"))
 
 describe("file-sidebar tree", () => {
   test("buildFileTree groups paths into nested directories", () => {
@@ -88,6 +91,6 @@ describe("file-sidebar-mode", () => {
   })
 })
 
-function sidebarBuffer(editor: import("../../src/kernel/editor").Editor) {
+function sidebarBuffer(editor: import("../src/kernel/editor").Editor) {
   return [...editor.buffers.values()].find(b => b.name === "*File Sidebar*")
 }

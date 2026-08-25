@@ -47,6 +47,59 @@ scripts/tui-drive.sh stop
 
 `tui-drive.sh` uses `scripts/bun-cmd.sh` (`bun` or `npx bun`). Startup waits up to 12s for the first frame.
 
+#### Process hygiene (fixed — keep it that way)
+
+Layer-3 TUI probes used to leak `bun run src/main.ts` processes. On 2026-08-03 a
+machine accumulated **414 orphaned jemacs processes consuming ~7.3 GB RSS**, driving
+swap to 21 GB. All were `bun run src/main.ts --config test/fixtures/stephen-config.ts`
+with `ppid=1`, some 19+ hours old.
+
+Why it happened:
+
+- `tui-drive.sh start` runs `exec $BUN run src/main.ts $*` inside a tmux pane. The bun
+  process is a **grandchild of the tmux server**, not of the test runner.
+- `tuiProbe()` only stops the session in a `finally`. If the test runner dies first
+  (Ctrl-C, `bun test` timeout, OOM, crash) that `finally` never runs.
+- Even on `tmux kill-session`, bun does not reliably die on `SIGHUP`, so it gets
+  reparented to `launchd` (`ppid=1`) and lives forever — nothing ever reaps it.
+- Each orphan holds ~18 MB, so a few interrupted suite runs cost gigabytes.
+
+How it is prevented now (four independent layers — keep all of them):
+
+1. **Marker.** `tui-drive.sh start` tags each spawn on the *command line* with
+   `--jemacs-test-marker=$JEMACS_TEST_MARKER:$JEMACS_TEST_RUN_ID` (macOS `ps -E`
+   cannot show the environment, so an env-only marker would not be greppable).
+   `parseStartupArgs()` ignores unknown `--flags`, so it is inert to jemacs. A real
+   interactive editor carries no marker and is therefore never a sweep target.
+2. **Escalation.** `tui-drive.sh stop` snapshots the pane pids *before*
+   `kill-session` (afterwards they are reparented and unwalkable), then hands the
+   tree to `reap-strays.sh kill-pids`: `TERM`, brief grace, `KILL`. The OpenTUI host
+   ignores both `SIGHUP` and `SIGTERM` in raw mode, so `KILL` is load-bearing.
+3. **Global sweep.** `test/preload.ts` (wired via `bunfig.toml`) reaps *stale* runs at
+   startup and this run's spawns on `exit`/`SIGINT`/`SIGTERM`/`SIGHUP` — the backstop
+   for when `finally` never runs. A run-id is `<runner-pid>-<rand>`, so `stale` only
+   reaps runs whose runner pid is gone: a concurrent suite is left alone.
+4. **One session per runner.** `tuiProbe()` reuses `jt<pid>`; `start` kills and
+   respawns the pane per probe, so isolation is unchanged but a leak cannot multiply.
+
+Rules when touching the TUI harness or writing layer-3 tests:
+
+- Never rely on `finally` alone for cleanup, and never match on `src/main.ts` to kill
+  things — that would also kill a real interactive editor. Match the marker.
+- Escalate `TERM` → `KILL`; do not assume `SIGHUP`/`kill-session` is enough for bun.
+
+Check for strays before and after running the suite:
+
+```bash
+scripts/reap-strays.sh list        # marked test spawns: pid, run-id, age
+scripts/reap-strays.sh stale       # reap runs whose runner is gone
+scripts/reap-strays.sh kill        # reap every marked spawn
+bun run test:strays                # same as `list`
+
+# raw check for orphaned editors (ppid=1); expected to print nothing
+ps -eo pid,ppid,rss,etime,command | awk '$2==1 && /src\/main\.ts/'
+```
+
 ### Emacs parity (tmux)
 
 When porting GNU/Stephen Emacs behavior (major modes, hooks, keymaps), compare against **Stephen's Emacs** in tmux — not batch `emacs --batch` (markdown-mode hooks such as inline images fail there).

@@ -229,3 +229,38 @@ test("formatHttpResponse leaves non-json and invalid json bodies untouched", () 
   expect(formatHttpResponse(html, true)).toBe(html)
   expect(formatHttpResponse(invalid, true)).toBe(invalid)
 })
+
+test("restclient font-lock faces match restclient-mode-keywords", () => {
+  const editor = makeEditor()
+  install(editor)
+  const text = [
+    "# comment",
+    ":host = https://api.example.test",
+    ":tok := (getenv \"TOK\")",
+    ":body = <<",
+    "POST :host/users",
+    "Authorization: Bearer :tok",
+    "-> on-response run-hook arg",
+    "< /tmp/upload.bin",
+  ].join("\n")
+  const buffer = editor.scratch("faces.http", text, "restclient")
+  const faced = editor.fontLock(buffer).map(span => [span.face, text.slice(span.start, span.end)])
+
+  expect(faced).toEqual([
+    ["comment", "# comment"],
+    ["preprocessor", ":host"],
+    ["string", "https://api.example.test"],
+    ["preprocessor", ":tok"],
+    ["function", "(getenv \"TOK\")"],
+    ["preprocessor", ":body"],
+    ["doc", "<<"],
+    ["keyword", "POST"],
+    ["function", ":host/users"],
+    ["variable", "Authorization"],
+    ["string", "Bearer :tok"],
+    ["preprocessor", "->"],
+    ["function", "on-response"],
+    ["string", "run-hook arg"],
+    ["doc", "< /tmp/upload.bin"],
+  ])
+})

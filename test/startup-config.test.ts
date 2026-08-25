@@ -20,7 +20,7 @@ test("loadStartupConfig loads the Stephen config fixture", async () => {
   const fixture = join(import.meta.dir, "fixtures/stephen-config.ts")
   await loadStartupConfig(editor, evaluator, fixture)
 
-  expect(editor.keymap.get("s-f")).toBe("counsel-ag")
+  expect(editor.keymap.get("s-f")).toBe("project-find-regexp")
   expect(editor.isMinorModeEnabled("linum-mode")).toBe(true)
 })
 

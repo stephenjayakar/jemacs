@@ -7,7 +7,7 @@ const MARK_RING_MAX = 16
 const GLOBAL_MARK_RING_MAX = 16
 
 defcustom("set-mark-command-repeat-pop", "boolean", false,
-  "When non-nil, repeating set-mark-command after popping mark pops it again.")
+  "When non-nil, repeating set-mark-command after popping mark pops it again.", "editing")
 
 type GlobalMark = { bufferId: string; position: number }
 

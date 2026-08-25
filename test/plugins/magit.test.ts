@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { makeEditor } from "./helper"
@@ -157,7 +157,7 @@ test("magit-file-checkout checks out current file from a revision and reverts bu
 
 test("magit-status outside a repo just messages", async () => {
   const editor = ed()
-  const island = await mkdtemp(join(tmpdir(), "jemacs-magit-none-"))
+  const island = await realpath(await mkdtemp("/tmp/jemacs-magit-none-"))
   let last = ""
   editor.events.on("message", ({ text }) => { last = text })
   await editor.run("magit-status", [island])

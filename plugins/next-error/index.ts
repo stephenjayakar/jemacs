@@ -20,6 +20,11 @@ type State = {
   index: number
 }
 
+type GrepRerun =
+  | { kind: "grep"; command: string; cwd: string }
+  | { kind: "rg"; pattern: string; cwd: string }
+  | { kind: "rgrep"; regexp: string; files: string; dir: string }
+
 const states = new WeakMap<Editor, State>()
 
 function stateFor(editor: Editor): State {
@@ -97,15 +102,16 @@ export async function grepProject(
   ])
   const exit = await proc.exited
   const text = exit === 0 || stdout ? stdout : stderr
-  return grepBuffer(editor, text, cwd)
+  return grepBufferWithRerun(editor, text, cwd, { kind: "rg", pattern, cwd })
 }
 
-async function grepBuffer(editor: Editor, text: string, cwd: string): Promise<BufferModel> {
+async function grepBufferWithRerun(editor: Editor, text: string, cwd: string, rerun?: GrepRerun): Promise<BufferModel> {
   const locations = parseGrepOutput(text, cwd)
   setLocationList(editor, locations)
   const buf = editor.scratch("*grep*", text || "No matches\n", "grep")
   buf.kind = "grep"
   buf.locals.set("default-directory", cwd)
+  if (rerun) buf.locals.set("grep-rerun", rerun)
   const byLine = new Map<number, ErrorLocation>()
   let li = 0, i = 0
   for (const raw of text.split("\n")) {
@@ -130,7 +136,7 @@ async function runGrepCommand(editor: Editor, command: string, cwd: string): Pro
   ])
   const exit = await proc.exited
   const text = exit === 0 || stdout ? stdout : stderr
-  return grepBuffer(editor, text, cwd)
+  return grepBufferWithRerun(editor, text, cwd, { kind: "grep", command, cwd })
 }
 
 function currentDirectory(buffer: BufferModel): string {
@@ -160,12 +166,71 @@ async function nextError(editor: Editor, n: number, reset: boolean): Promise<voi
   editor.message(`${label} error (${target + 1}/${s.locations.length}): ${loc.file}:${loc.line}`)
 }
 
+export function nextErrorLineTarget(buffer: BufferModel, direction: 1 | -1): number | null {
+  const stored = buffer.locals.get("next-error-locations") as
+    | Map<number, ErrorLocation>
+    | ErrorLocation[]
+    | undefined
+  let lines: number[]
+  if (stored instanceof Map) {
+    lines = [...stored.keys()]
+  } else if (Array.isArray(stored)) {
+    lines = stored.map((_, i) => i + 1)
+  } else {
+    lines = []
+    let line = 0
+    for (const raw of buffer.text.split("\n")) {
+      line++
+      if (GREP_LINE.test(raw)) lines.push(line)
+    }
+  }
+  lines.sort((a, b) => a - b)
+  if (!lines.length) return null
+  const current = buffer.lineAt(buffer.point) + 1
+  if (direction > 0) return lines.find(line => line > current) ?? null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (line < current) return line
+  }
+  return null
+}
+
+function moveResultLine(buffer: BufferModel, editor: Editor, direction: 1 | -1): void {
+  const target = nextErrorLineTarget(buffer, direction)
+  if (target == null) {
+    editor.message(direction > 0 ? "No next match" : "No previous match")
+    return
+  }
+  buffer.point = buffer.lineStarts[target - 1] ?? buffer.point
+}
+
+async function runRgrep(editor: Editor, regexp: string, files: string, dir: string): Promise<BufferModel> {
+  const globArgs = files === "*" ? [] : ["--glob", files]
+  const proc = spawnProcess({
+    cmd: ["rg", "--line-number", "--column", "--no-heading", ...globArgs, "--", regexp],
+    cwd: dir,
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr] = await Promise.all([
+    proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
+  ])
+  const exit = await proc.exited
+  return grepBufferWithRerun(editor, exit === 0 || stdout ? stdout : stderr, dir, { kind: "rgrep", regexp, files, dir })
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   const keymap = new Keymap("grep-map")
   keymap.bind("enter", "compile-goto-error")
   keymap.bind("return", "compile-goto-error")
   keymap.bind("C-m", "compile-goto-error")
-  defineMode({ name: "grep", parent: "text", keymap })
+  keymap.bind("n", "next-error-buffer-next")
+  keymap.bind("p", "next-error-buffer-previous")
+  keymap.bind("q", "quit-window")
+  keymap.bind("g", "grep-rerun")
+  defineMode({ name: "grep-mode", parent: "text", keymap })
+  defineMode({ name: "grep", parent: "grep-mode", keymap })
 
   editor.command("next-error", ({ editor, prefixArgument }) =>
     nextError(editor, prefixArgument ?? 1, false),
@@ -210,6 +275,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await visit(editor, loc)
   }, "Visit the source for the grep/compile match at point.")
 
+  editor.command("next-error-buffer-next", ({ editor, buffer }) => {
+    moveResultLine(buffer, editor, 1)
+  }, "Move point to the next error or match in the current result buffer.")
+
+  editor.command("next-error-buffer-previous", ({ editor, buffer }) => {
+    moveResultLine(buffer, editor, -1)
+  }, "Move point to the previous error or match in the current result buffer.")
+
+  editor.command("grep-mode", ({ editor, buffer }) => {
+    editor.enterMode(buffer, "grep-mode")
+  }, "Major mode for grep results.")
+
   editor.command("counsel-ag", async ({ editor, buffer, args }) => {
     const cwd = buffer.path ? await findProjectRoot(buffer.path) : process.cwd()
     await grepProject(editor, { cwd, pattern: args[0], prompt: "Search project: " })
@@ -222,6 +299,21 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await runGrepCommand(editor, command, cwd)
   }, "Run Grep with user-specified COMMAND-ARGS.")
 
+  editor.command("grep-rerun", async ({ editor, buffer }) => {
+    const rerun = buffer.locals.get("grep-rerun") as GrepRerun | undefined
+    if (!rerun) {
+      editor.message("No grep command to rerun")
+      return
+    }
+    if (rerun.kind === "grep") {
+      await runGrepCommand(editor, rerun.command, rerun.cwd)
+    } else if (rerun.kind === "rg") {
+      await grepProject(editor, { cwd: rerun.cwd, pattern: rerun.pattern })
+    } else {
+      await runRgrep(editor, rerun.regexp, rerun.files, rerun.dir)
+    }
+  }, "Rerun the grep command that produced this buffer.")
+
   editor.command("rgrep", async ({ editor, buffer, args }) => {
     const regexp = args[0] ?? await editor.prompt("Search for: ", "", "grep-regexp")
     if (!regexp) return
@@ -231,19 +323,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!dirInput) return
     const dir = resolve(dirInput)
     if (!dir) return
-    const globArgs = files === "*" ? [] : ["--glob", files]
-    const proc = spawnProcess({
-      cmd: ["rg", "--line-number", "--column", "--no-heading", ...globArgs, "--", regexp],
-      cwd: dir,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    const [stdout, stderr] = await Promise.all([
-      proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
-      proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
-    ])
-    const exit = await proc.exited
-    await grepBuffer(editor, exit === 0 || stdout ? stdout : stderr, dir)
+    await runRgrep(editor, regexp, files, dir)
   }, "Recursively grep for REGEXP in FILES in directory tree rooted at DIR.")
 
   editor.key("M-g n", "next-error")

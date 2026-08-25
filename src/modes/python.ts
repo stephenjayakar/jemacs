@@ -19,6 +19,7 @@ const defunRegex = /^[ \t]*(async\s+def|def|class)\s+([A-Za-z_]\w*)/gm
 
 export function installPythonMode(): void {
   const keymap = new Keymap("python-map")
+  keymap.bind("return", "newline-and-indent")
   keymap.bind("C-M-a", "beginning-of-defun")
   keymap.bind("C-M-e", "end-of-defun")
   keymap.bind("C-c C-p", "run-python")

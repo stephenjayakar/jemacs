@@ -171,19 +171,18 @@ test("xref-find-references with multiple results lists them in *xref*", async ()
     ]
   })
   buffer.point = 6
-  const pending = editor.run("jemacs-lsp-find-references")
-  await new Promise(r => setTimeout(r, 0))
+  await editor.run("jemacs-lsp-find-references")
   const refCall = calls.find(c => c.method === "textDocument/references")
   expect((refCall!.params as { context: { includeDeclaration: boolean } }).context.includeDeclaration).toBe(true)
   const xref = [...editor.buffers.values()].find(b => b.name === "*xref*")
   expect(xref).toBeDefined()
-  const lines = xref!.text.split("\n")
-  expect(lines).toHaveLength(2)
-  expect(lines[0]).toContain(":1:7")
-  expect(lines[0]).toContain("const foo = 1")
-  expect(lines[1]).toContain(":2:13")
-  editor.minibufferCancel()
-  await pending
+  expect(xref!.mode).toBe("xref-mode")
+  const lines = xref!.text.trimEnd().split("\n")
+  expect(lines).toHaveLength(3)
+  expect(lines[0]).toBe(pathA)
+  expect(lines[1]).toContain("1:7")
+  expect(lines[1]).toContain("const foo = 1")
+  expect(lines[2]).toContain("2:13")
 })
 
 test("xref-find-references messages when no results", async () => {

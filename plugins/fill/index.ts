@@ -11,8 +11,8 @@ type LineInfo = { offsets: number[]; lines: string[] }
 type ParagraphSpan = { startLine: number; endLine: number; start: number; end: number }
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
-  defcustom("fill-column", "number", 70,
-    "Column beyond which automatic line-wrapping should happen.")
+  defcustom("fill-column", "integer", 70,
+    "Column beyond which automatic line-wrapping should happen.", "fill")
 
   editor.command("fill-paragraph", ({ buffer }) => {
     fillParagraphAt(buffer, buffer.point)

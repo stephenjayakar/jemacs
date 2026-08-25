@@ -3,8 +3,9 @@ import { chmod, cp, cwd, isDirectory, isSymbolicLink, link, lstat, mkdir, readdi
 import type { Editor } from "../kernel/editor"
 import { expandUserPath } from "../kernel/completion"
 import { BufferModel } from "../kernel/buffer"
-import { Keymap } from "../kernel/keymap"
+import { Keymap, keyToken } from "../kernel/keymap"
 import { defineMode, type TextSpan } from "./mode"
+import { defcustom, getCustom } from "../runtime/custom"
 
 export type DiredEntry = {
   name: string
@@ -29,6 +30,13 @@ export type DiredFileOps = {
 }
 
 export const diredEntryLines = new WeakMap<BufferModel, DiredEntry[]>()
+defcustom(
+  "dired-hide-details-mode-default",
+  "boolean",
+  false,
+  "Start Dired buffers with details hidden (Emacs: dired-mode-hook -> dired-hide-details-mode).",
+)
+
 const diredMarks = new WeakMap<BufferModel, Map<string, DiredMark>>()
 const diredSortOrders = new WeakMap<BufferModel, DiredSortOrder>()
 
@@ -126,6 +134,12 @@ export async function refreshDiredBuffer(buffer: BufferModel): Promise<void> {
   }
   diredMarks.set(buffer, marks)
   diredEntryLines.set(buffer, entries)
+  // Seed hide-details from the global default the first time a buffer is rendered;
+  // afterwards the buffer-local value wins so a manual toggle survives a refresh.
+  if (buffer.locals.get("dired-hide-details-mode") == null) {
+    buffer.locals.set("dired-hide-details-mode",
+      getCustom<boolean>("dired-hide-details-mode-default") === true)
+  }
   renderDiredBuffer(buffer, entries)
 }
 
@@ -347,15 +361,42 @@ export function diredFlaggedEntries(buffer: BufferModel): DiredEntry[] {
   return (diredEntryLines.get(buffer) ?? []).filter(entry => diredMarks.get(buffer)?.get(entry.path) === "delete" && !diredSpecialEntry(entry))
 }
 
+/** dired.el `dired-mark-prompt`: "foo.txt", "[next 3 files]" or "D [3 files]". */
+function diredMarkPrompt(entries: DiredEntry[], markChar: string, prefixArgument: number | null): string {
+  if (entries.length === 1) return entries[0]!.name
+  if (prefixArgument != null) return `[next ${prefixArgument} files]`
+  return `${markChar} [${entries.length} files]`
+}
+
+/** dired.el `dired-deletion-confirmer`, with `yes-or-no-p` aliased to `y-or-n-p`. */
+async function diredConfirmDeletion(editor: Editor, prompt: string): Promise<boolean> {
+  const answer = await diredReadKey(editor, `${prompt}(y or n) `)
+  editor.clearMessage()
+  return answer === "y" || answer === "Y"
+}
+
+/** Read one keystroke without opening a minibuffer. Resolves to `null` on C-g. */
+function diredReadKey(editor: Editor, prompt: string): Promise<string | null> {
+  editor.message(prompt)
+  return new Promise(resolveKey => {
+    const original = editor.handleKey
+    editor.handleKey = async key => {
+      editor.handleKey = original
+      const token = keyToken(key)
+      resolveKey(token === "C-g" ? null : token)
+      return { status: "command", command: "read-key" }
+    }
+  })
+}
+
 export async function diredDoFlaggedDelete(editor: Editor, buffer: BufferModel): Promise<void> {
   const flagged = diredFlaggedEntries(buffer)
   if (!flagged.length) {
-    editor.message("No files flagged for deletion")
+    editor.message("(No deletions requested)")
     return
   }
-  const answer = await editor.prompt(`Delete ${flagged.length} flagged file(s)? (yes/no): `, "no", "dired-delete")
-  if (answer?.toLowerCase() !== "yes") {
-    editor.message("Cancelled")
+  if (!await diredConfirmDeletion(editor, `Delete ${diredMarkPrompt(flagged, "D", null)} `)) {
+    editor.message("(No deletions performed)")
     return
   }
   await diredRemoveEntries(editor, buffer, flagged)
@@ -370,9 +411,8 @@ export async function diredDoDelete(editor: Editor, buffer: BufferModel, prefixA
     editor.message("No file to delete")
     return
   }
-  const answer = await editor.prompt(`Delete ${entries.length} file(s)? (yes/no): `, "no", "dired-delete")
-  if (answer?.toLowerCase() !== "yes") {
-    editor.message("Cancelled")
+  if (!await diredConfirmDeletion(editor, `Delete ${diredMarkPrompt(entries, "*", prefixArgument)} `)) {
+    editor.message("(No deletions performed)")
     return
   }
   await diredRemoveEntries(editor, buffer, entries)

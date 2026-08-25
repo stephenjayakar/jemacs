@@ -45,31 +45,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.selectWindow(nextWindowId(editor.windowLayout, editor.selectedWindowId, delta))
   }
 
-  const switchTab = (editor: Editor, delta: number) => {
-    if (!editor.tabs.length) return
-    editor.selectedTab = ((editor.selectedTab + delta) % editor.tabs.length + editor.tabs.length) % editor.tabs.length
-    editor.switchToBuffer(editor.tabs[editor.selectedTab]!.bufferId)
-  }
-
-  const closeTab = (editor: Editor, tabNumber: number | null) => {
-    if (editor.tabs.length <= 1) return
-    const target = tabNumber != null && tabNumber > 0 ? tabNumber - 1 : editor.selectedTab
-    if (target < 0 || target >= editor.tabs.length) return
-    editor.tabs.splice(target, 1)
-    if (target < editor.selectedTab) editor.selectedTab--
-    else if (target === editor.selectedTab) editor.selectedTab = Math.min(editor.selectedTab, editor.tabs.length - 1)
-    editor.switchToBuffer(editor.tabs[editor.selectedTab]!.bufferId)
-  }
-
-  const newTab = (editor: Editor, prefixArgument: number | null) => {
-    const offset = prefixArgument ?? 1
-    const target = Math.max(0, Math.min(editor.tabs.length, editor.selectedTab + offset))
-    const bufferId = editor.currentBufferId
-    editor.tabs.splice(target, 0, { name: String(editor.tabs.length + 1), bufferId })
-    editor.selectedTab = target
-    editor.switchToBuffer(bufferId)
-  }
-
   const cycleBuffer = (editor: Editor, delta: number) => {
     return editor.cycleBuffer(delta)
   }
@@ -93,6 +68,45 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("jemacs-other-window-backward", previousWindow, "Jemacs extension alias for previous-window-any-frame.")
   editor.command("next-window-any-frame", ({ editor }) => otherWindow(editor, 1), "Select the next window.")
   editor.command("previous-window-any-frame", previousWindow, "Select the previous window.")
+
+  // Frames. Each frame owns its own window layout but shares the buffer list,
+  // so the same buffer can be edited from several frames at once.
+  editor.command("make-frame-command", ({ editor }) => {
+    const frame = editor.makeFrame()
+    editor.message(`Created frame ${frame.name}`)
+  }, "Create a new frame showing the current buffer and select it.")
+
+  editor.command("delete-frame", ({ editor }) => {
+    const name = editor.selectedFrame.name
+    if (!editor.deleteFrame()) {
+      editor.message("Attempt to delete the sole frame")
+      return
+    }
+    editor.message(`Deleted frame ${name}`)
+  }, "Delete the selected frame.")
+
+  editor.command("other-frame", ({ editor, prefixArgument }) => {
+    if (editor.frames.length < 2) {
+      editor.message("No other frame")
+      return
+    }
+    editor.selectFrame(editor.otherFrameId(prefixArgument ?? 1))
+    editor.message(`Frame ${editor.selectedFrame.name}`)
+  }, "Select another frame.")
+
+  editor.command("select-frame-by-name", async ({ editor, args }) => {
+    const name = args?.[0] ?? await editor.completingRead("Select frame: ", {
+      collection: editor.frames.map(frame => frame.name),
+      history: "frame-name",
+    })
+    if (!name) return
+    const frame = editor.frames.find(candidate => candidate.name === name)
+    if (!frame) {
+      editor.message(`No frame named ${name}`)
+      return
+    }
+    editor.selectFrame(frame.id)
+  }, "Select a frame by name.")
 
   ctx.onDispose(editor.events.on("changed", ({ reason }) => {
     if (reason.startsWith("command:") && reason !== "command:recenter-top-bottom") recenterCycle.delete(editor)
@@ -226,13 +240,6 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.message(`Saved window configuration to register ${register}`)
   }, "Save the current window configuration to a register.")
 
-  editor.command("tab-bar-new-tab", ({ editor, prefixArgument }) => newTab(editor, prefixArgument), "Create a new tab.")
-
-  editor.command("tab-bar-close-tab", ({ editor, prefixArgument }) => closeTab(editor, prefixArgument), "Close the current tab.")
-
-  editor.command("tab-bar-switch-to-next-tab", ({ editor, prefixArgument }) => switchTab(editor, prefixArgument ?? 1), "Switch to the next tab.")
-  editor.command("tab-bar-switch-to-prev-tab", ({ editor, prefixArgument }) => switchTab(editor, -(prefixArgument ?? 1)), "Switch to the previous tab.")
-
   editor.command("next-buffer", ({ editor, prefixArgument }) => {
     const b = cycleBuffer(editor, -(prefixArgument ?? 1))
     editor.message(`Switched to ${editor.bufferDisplayName(b)}`)
@@ -263,6 +270,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.key("C-x 2", "split-window-below")
   editor.key("C-x 3", "split-window-right")
   editor.key("C-x o", "other-window")
+  // GNU Emacs frame prefix.
+  editor.key("C-x 5 2", "make-frame-command")
+  editor.key("C-x 5 0", "delete-frame")
+  editor.key("C-x 5 o", "other-frame")
+  editor.key("C-x 5 b", "select-frame-by-name")
   // GNU Emacs: C-tab → other-window; C-S-tab → (other-window -1). Also accept common terminal names.
   for (const key of ["C-tab"]) editor.key(key, "other-window")
   for (const key of ["C-S-tab", "C-S-iso-lefttab", "C-iso-lefttab", "C-backtab"]) {
@@ -280,10 +292,4 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.key("C-x 4 f", "find-file-other-window")
   editor.key("C-x 4 C-o", "display-buffer")
   editor.key("C-x r w", "window-configuration-to-register")
-  editor.key("C-M-tab", "tab-bar-switch-to-next-tab")
-  editor.key("C-M-S-tab", "tab-bar-switch-to-prev-tab")
-  editor.key("s-}", "tab-bar-switch-to-next-tab")
-  editor.key("s-{", "tab-bar-switch-to-prev-tab")
-  editor.key("s-t", "tab-bar-new-tab")
-  editor.key("s-w", "tab-bar-close-tab")
 }

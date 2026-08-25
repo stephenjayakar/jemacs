@@ -16,6 +16,7 @@ export type LineWrapOptions = {
   wrapCols?: number
   gutterPrefixLen?: number
   wordWrap?: boolean
+  adaptiveWrap?: boolean
   /** Compute only this inclusive line range; omitted entries behave as 1 row. */
   fromLine?: number
   toLine?: number
@@ -28,39 +29,6 @@ export type LineWrapOptions = {
 function bodyDefaultFontPx(theme: Theme, buffer?: BufferModel): number {
   const defaultStyle = resolveFace("default", theme, buffer)
   return defaultStyle?.height != null ? defaultStyle.height / 10 : DOM_FRAME_BODY_FONT_PX_FALLBACK
-}
-
-function lineMaxFontPx(
-  lineStart: number,
-  lineEnd: number,
-  spans: TextSpan[],
-  fromSpan: number,
-  theme: Theme,
-  buffer: BufferModel | undefined,
-  textScale: number,
-  defaultPx: number,
-): number {
-  let maxPx = effectiveFontSizePx({ text: "" }, textScale, defaultPx) ?? defaultPx * textScale
-  for (let i = fromSpan; i < spans.length; i++) {
-    const span = spans[i]!
-    if (span.start >= lineEnd) break
-    if (span.end <= lineStart) continue
-    const style = resolveFace(span.face, theme, buffer)
-    const px = effectiveFontSizePx({ text: "", ...styleToChunk(style) }, textScale, defaultPx)
-    if (px != null && px > maxPx) maxPx = px
-  }
-  return maxPx
-}
-
-function spansSortedByStart(spans: TextSpan[]): TextSpan[] {
-  for (let i = 1; i < spans.length; i++) {
-    const prev = spans[i - 1]!
-    const cur = spans[i]!
-    if (cur.start < prev.start || (cur.start === prev.start && cur.end < prev.end)) {
-      return [...spans].sort((a, b) => a.start - b.start || a.end - b.end)
-    }
-  }
-  return spans
 }
 
 /** GUI visual row cost per logical line (1.0 ≈ one `DOM_FRAME_ROW_PX` row). */
@@ -78,26 +46,86 @@ export function computeLineVisualRows(
   const toLine = Math.max(fromLine, Math.min(wrap?.toLine ?? lines.length - 1, lines.length - 1))
   const defaultPx = bodyDefaultFontPx(theme, buffer)
   const rowPx = DOM_FRAME_ROW_PX * textScale
-  const sortedSpans = spansSortedByStart(spans)
-  const rows: number[] = new Array(lines.length)
-  let offset = 0
-  for (let i = 0; i < fromLine; i++) offset += lines[i]!.length + 1
-  let spanCursor = 0
-  while (spanCursor < sortedSpans.length && sortedSpans[spanCursor]!.end <= offset) spanCursor++
+
+  const L = lines.length
+  const lineStarts = new Int32Array(L)
+  const lineEnds = new Int32Array(L)
+  let currentOffset = 0
+  for (let i = 0; i < L; i++) {
+    lineStarts[i] = currentOffset
+    lineEnds[i] = currentOffset + lines[i]!.length
+    currentOffset += lines[i]!.length + 1
+  }
+
+  const defaultStylePx = effectiveFontSizePx({ text: "" }, textScale, defaultPx) ?? defaultPx * textScale
+  const maxPx = new Float32Array(L)
+  for (let i = 0; i < L; i++) {
+    maxPx[i] = defaultStylePx
+  }
+
+  const findFirstOverlappingLine = (start: number): number => {
+    let low = 0
+    let high = L - 1
+    let ans = L
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      if (lineEnds[mid]! > start) {
+        ans = mid
+        high = mid - 1
+      } else {
+        low = mid + 1
+      }
+    }
+    return ans
+  }
+
+  const findLastOverlappingLine = (end: number): number => {
+    let low = 0
+    let high = L - 1
+    let ans = -1
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      if (lineStarts[mid]! < end) {
+        ans = mid
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+    return ans
+  }
+
+  const facePxCache = new Map<string, number>()
+
+  for (const span of spans) {
+    if (span.end <= span.start) continue
+    const firstLine = findFirstOverlappingLine(span.start)
+    const lastLine = findLastOverlappingLine(span.end)
+    if (firstLine <= lastLine) {
+      let px = facePxCache.get(span.face)
+      if (px === undefined) {
+        const style = resolveFace(span.face, theme, buffer)
+        px = effectiveFontSizePx({ text: "", ...styleToChunk(style) }, textScale, defaultPx) ?? defaultStylePx
+        facePxCache.set(span.face, px)
+      }
+      for (let i = firstLine; i <= lastLine; i++) {
+        if (px > maxPx[i]!) {
+          maxPx[i] = px
+        }
+      }
+    }
+  }
+
+  const rows: number[] = new Array(L)
   for (let i = fromLine; i <= toLine; i++) {
     const line = lines[i]!
-    const lineStart = offset
-    const lineEnd = offset + line.length
-    while (spanCursor < sortedSpans.length && sortedSpans[spanCursor]!.end <= lineStart) spanCursor++
-    const maxPx = lineMaxFontPx(lineStart, lineEnd, sortedSpans, spanCursor, theme, buffer, textScale, defaultPx)
-    let cost = (maxPx * DOM_FRAME_LINE_HEIGHT_RATIO) / rowPx
+    let cost = (maxPx[i]! * DOM_FRAME_LINE_HEIGHT_RATIO) / rowPx
     if (wrap?.wrapCols != null) {
       const displayLine = wrap.displayLines?.[i]
       const lineForWrap = displayLine ?? wrap.displayLineLengths?.[i] ?? line.length
-      cost *= wrapRowsForContent(lineForWrap, wrap.wrapCols, wrap.gutterPrefixLen ?? 0, wrap.wordWrap)
+      cost *= wrapRowsForContent(lineForWrap, wrap.wrapCols, wrap.gutterPrefixLen ?? 0, wrap.wordWrap, wrap.adaptiveWrap)
     }
     rows[i] = cost
-    offset = lineEnd + 1
   }
   return rows
 }
@@ -118,7 +146,7 @@ export function computeWrappedLineRows(
   const toLine = Math.max(fromLine, Math.min(wrap.toLine ?? lines.length - 1, lines.length - 1))
   const rows: number[] = new Array(lines.length)
   for (let i = fromLine; i <= toLine; i++) {
-    rows[i] = wrapRowsForContent(lines[i] ?? "", wrap.wrapCols, wrap.gutterPrefixLen ?? 0, wrap.wordWrap)
+    rows[i] = wrapRowsForContent(lines[i] ?? "", wrap.wrapCols, wrap.gutterPrefixLen ?? 0, wrap.wordWrap, wrap.adaptiveWrap)
   }
   return rows
 }

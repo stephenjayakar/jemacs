@@ -238,7 +238,7 @@ async function avyCopyOrMoveLine(editor: Editor, move: boolean): Promise<void> {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("avy-timeout-seconds", "number", 0.5,
-    "Seconds avy-goto-char-timer waits for the next char before searching.")
+    "Seconds avy-goto-char-timer waits for the next char before searching.", "convenience")
   editor.addOverlaySource(avySpans)
 
   editor.command("avy-goto-char", async ({ editor }) => {

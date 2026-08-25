@@ -25,7 +25,7 @@ type PythonShellState = {
 
 const states = new WeakMap<Editor, PythonShellState>()
 
-defcustom("python-shell-interpreter", "string", "python3", "Python interpreter used by run-python.")
+defcustom("python-shell-interpreter", "string", "python3", "Python interpreter used by run-python.", "processes")
 
 export function installPythonShellCommands(editor: Editor, factory: PythonShellFactory = spawnPythonJtermSession): void {
   editor.command("run-python", async ({ editor }) => {

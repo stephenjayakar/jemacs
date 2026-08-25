@@ -11,6 +11,16 @@ export type WindowClickState = {
   displayText?: string
   leftPadding?: number
   displayToBuffer?: (n: number) => number
+  /**
+   * Physical-row map, when the pane's text was hard-wrapped.
+   *
+   * Without it `row` is read as an offset from `startLine` in *logical* lines,
+   * which is only correct while nothing wraps: one long line renders as many
+   * rows, so every click below it lands too far down the buffer. Each entry
+   * gives the logical line (relative to `startLine`) and the character range of
+   * that line the row displays, plus the row's own left padding (`pad`).
+   */
+  wrappedRows?: Array<{ line: number; start: number; end: number; pad?: number }>
 }
 
 export function windowClickState(
@@ -37,11 +47,19 @@ export function pointFromWindowClick(
 ): number {
   const hitText = state.displayText ?? text
   const lines = hitText.split("\n")
-  const lineIdx = Math.max(0, Math.min(state.startLine + Math.max(0, row), lines.length - 1))
+  const wrapped = state.wrappedRows
+  // A wrapped row shows a slice of its logical line, and continuation rows are
+  // left-padded by the gutter width. Resolve the row through the map so the
+  // column is measured against the characters actually on that row.
+  const hit = wrapped?.[Math.max(0, Math.min(row, wrapped.length - 1))]
+  const lineIdx = Math.max(0, Math.min(state.startLine + Math.max(0, hit ? hit.line : row), lines.length - 1))
   const lineStart = lines.slice(0, lineIdx).join("\n").length + (lineIdx > 0 ? 1 : 0)
   const line = lines[lineIdx] ?? ""
-  const visualPrefix = state.gutterPrefixLen + (state.leftPadding ?? 0)
-  const colInLine = Math.max(0, Math.min(col - visualPrefix, line.length))
+  // Continuation rows of an adaptive-wrapped line carry extra left padding.
+  const visualPrefix = (hit?.pad ?? state.gutterPrefixLen) + (state.leftPadding ?? 0)
+  const rowStart = Math.min(hit ? hit.start : 0, line.length)
+  const rowEnd = Math.min(hit ? hit.end : line.length, line.length)
+  const colInLine = Math.max(rowStart, Math.min(col - visualPrefix + rowStart, rowEnd))
   const displayPoint = lineStart + colInLine
   const point = state.displayToBuffer ? state.displayToBuffer(displayPoint) : displayPoint
   const maxPoint = state.displayToBuffer ? Number.POSITIVE_INFINITY : hitText.length

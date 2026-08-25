@@ -7,9 +7,9 @@ const SUBWORD_FORWARD = "[^A-Za-z0-9]*(?:[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A
 const SUBWORD_BACKWARD = "[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+"
 
 defcustom("subword-forward-regexp", "string", SUBWORD_FORWARD,
-  "Regexp matching one subword after point, with leading non-word skip.")
+  "Regexp matching one subword after point, with leading non-word skip.", "editing")
 defcustom("subword-backward-regexp", "string", SUBWORD_BACKWARD,
-  "Regexp matching a single subword token; the last match before point is its start.")
+  "Regexp matching a single subword token; the last match before point is its start.", "editing")
 
 function applySubword(buffer: BufferModel | null): void {
   if (!buffer) return

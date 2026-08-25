@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
-import { script } from "../harness"
+import { script, keySeq } from "../harness"
 import { BufferModel } from "../../src/kernel/buffer"
+
+const settle = () => new Promise(r => setTimeout(r, 0))
 
 // t-audit-d3c507ca: save-some-buffers must not abort the loop when one b.save() throws.
 // Per-buffer failures are caught, the remaining buffers still save, and the final
@@ -25,8 +27,10 @@ test("save-some-buffers continues past a failing save and reports a summary", as
   b.save = async () => { throw new Error("disk full") }
   c.save = async () => { saved.push("c"); c.dirty = false }
 
-  ed.prompt = async () => "!"
-  await ed.run("save-some-buffers")
+  const done = ed.run("save-some-buffers")
+  await settle()
+  await keySeq(ed, "!")
+  await done
 
   expect(saved).toEqual(["a", "c"])
   expect(c.dirty).toBe(false)

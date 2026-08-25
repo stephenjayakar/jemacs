@@ -42,6 +42,33 @@ describe.skipIf(SKIP)("markdown parity: jemacs vs Emacs (tmux)", () => {
     expect(normalizeMarkdownBuffer(emacs).split("\n")[0]).toBe("line with spaces")
   }, TIMEOUT)
 
+  test("Stephen config RET continues a checklist with a new unchecked item", async () => {
+    const src = scratchMd("ret-list-src-", "- [ ] first\n- [ ] second\n")
+    const { jemacs, emacs } = await driveBoth(src, ["C-n", "C-e", "Enter"])
+    expect(normalizeMarkdownBuffer(jemacs)).toBe("- [ ] first\n- [ ] second\n- [ ]")
+    expect(normalizeMarkdownBuffer(jemacs)).toBe(normalizeMarkdownBuffer(emacs))
+  }, TIMEOUT)
+
+  test("TAB on a flat checklist matches Emacs' first two-column step", async () => {
+    const src = scratchMd("tab-list-src-", "- [ ] first\n- [ ] second\n")
+    const { jemacs, emacs } = await driveBoth(src, ["C-n", "C-a", "Tab"])
+    expect(normalizeMarkdownBuffer(jemacs)).toBe("- [ ] first\n  - [ ] second")
+    expect(normalizeMarkdownBuffer(jemacs)).toBe(normalizeMarkdownBuffer(emacs))
+  }, TIMEOUT)
+
+  test("repeated TAB cycles a flat checklist through the same indentation stops", async () => {
+    const src = scratchMd("tab-cycle-src-", "- [ ] first\n- [ ] second\n")
+    const { jemacs, emacs } = await driveBoth(src, ["C-n", "C-a", "Tab", "Tab", "Tab", "Tab"])
+    expect(normalizeMarkdownBuffer(jemacs)).toBe("- [ ] first\n- [ ] second")
+    expect(normalizeMarkdownBuffer(jemacs)).toBe(normalizeMarkdownBuffer(emacs))
+  }, TIMEOUT)
+
+  test("TAB on a nested checklist matches Emacs' list-aware indentation", async () => {
+    const src = scratchMd("tab-nested-src-", "- [ ] parent\n    - [ ] child\n    - [ ] sibling\n")
+    const { jemacs, emacs } = await driveBoth(src, ["C-n", "C-n", "C-a", "Tab"])
+    expect(normalizeMarkdownBuffer(jemacs)).toBe(normalizeMarkdownBuffer(emacs))
+  }, TIMEOUT)
+
   test("TAB on ATX heading reports FOLDED without mutating heading text", async () => {
     const src = scratchMd("tab-src-", "# Guide\nbody\n")
     const jpath = scratchMd("jt-", "# Guide\nbody\n")
@@ -62,6 +89,14 @@ describe.skipIf(SKIP)("markdown parity: jemacs vs Emacs (tmux)", () => {
     expect(j.screen).toMatch(/URL or \[reference\]/)
     expect(e.screen).toMatch(/URL or \[reference\]/)
     expect(readFileSync(jpath, "utf8")).toBe("text\n")
+  }, TIMEOUT)
+
+  test("C-s [ starts a literal bracket search", async () => {
+    const src = scratchMd("search-src-", "before [bracket] after\n")
+    const j = await tuiProbe({ file: src, keys: ["C-s", "["] })
+    const e = await emacsProbe({ file: src, keys: ["C-s", "["] })
+    expect(j.screen).toContain("I-search: [")
+    expect(e.screen).toContain("I-search: [")
   }, TIMEOUT)
 
   test("double RET on empty list item yields blank line (guide.md list)", async () => {

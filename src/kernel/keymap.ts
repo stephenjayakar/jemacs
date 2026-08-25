@@ -18,15 +18,36 @@ export type KeyLookupResult =
 
 export class Keymap {
   private bindings = new Map<string, string>()
+  private eagerBindings = new Set<string>()
+  private remaps = new Map<string, string>()
 
   constructor(readonly name = "keymap") {}
 
-  bind(sequence: string, commandName: string): void {
+  /** Emacs `[remap CMD]`: any key bound to `from` runs `to` while this map is active. */
+  remap(from: string, to: string): void {
+    this.remaps.set(from, to)
+  }
+
+  remapped(command: string): string | undefined {
+    return this.remaps.get(command)
+  }
+
+  hasRemaps(): boolean {
+    return this.remaps.size > 0
+  }
+
+  bind(sequence: string, commandName: string, options: { eager?: boolean } = {}): void {
     const norm = normalizeSequence(sequence)
     this.bindings.set(norm, commandName)
+    if (options.eager) this.eagerBindings.add(norm)
+    else this.eagerBindings.delete(norm)
     // Emacs ESC-is-Meta: any M-<k> binding is also reachable as `esc <k>`.
     const escForm = metaToEscPrefix(norm)
-    if (escForm !== norm) this.bindings.set(escForm, commandName)
+    if (escForm !== norm) {
+      this.bindings.set(escForm, commandName)
+      if (options.eager) this.eagerBindings.add(escForm)
+      else this.eagerBindings.delete(escForm)
+    }
   }
 
   get(sequence: string): string | undefined {
@@ -36,6 +57,10 @@ export class Keymap {
   hasPrefix(sequence: string): boolean {
     const normalized = normalizeSequence(sequence)
     return [...this.bindings.keys()].some(k => k.startsWith(normalized + " "))
+  }
+
+  isEager(sequence: string): boolean {
+    return this.eagerBindings.has(normalizeSequence(sequence))
   }
 
   all(): Array<[string, string]> {
@@ -69,11 +94,36 @@ export class KeymapStack {
 
     for (const { name, keymap } of this.maps()) {
       const command = keymap.get(normalized)
-      if (command) return { status: "matched", command, mapName: name }
-      if (keymap.hasPrefix(normalized)) return { status: "pending", mapName: name }
+      const prefix = keymap.hasPrefix(normalized)
+      // Some commands (notably Transient prefix launchers) install their own
+      // temporary keymap. Run those eagerly, then let the temporary map own
+      // subsequent keys even when compatibility bindings also use this prefix.
+      if (command && keymap.isEager(normalized)) return { status: "matched", command: this.applyRemap(command), mapName: name }
+      // A keymap cannot meaningfully execute an exact binding when the same
+      // sequence also prefixes longer bindings. Treat it as a prefix, matching
+      // Emacs's define-key behavior when a plugin claims a former command key.
+      if (prefix) return { status: "pending", mapName: name }
+      if (command) return { status: "matched", command: this.applyRemap(command), mapName: name }
     }
 
     return { status: "unmatched", sequence: normalized }
+  }
+
+  /** Emacs command remapping: the first active map with a `[remap CMD]` entry wins. */
+  applyRemap(command: string): string {
+    const seen = new Set<string>()
+    let current = command
+    while (!seen.has(current)) {
+      seen.add(current)
+      let next: string | undefined
+      for (const { keymap } of this.maps()) {
+        next = keymap.remapped(current)
+        if (next) break
+      }
+      if (!next) return current
+      current = next
+    }
+    return current
   }
 
   describe(sequence: string): { sequence: string; command: string; mapName: string } | null {
@@ -136,19 +186,31 @@ export function metaToEscPrefix(normalized: string): string {
 export function normalizeToken(token: string): string {
   const raw = token.trim()
   if (!raw) return raw
+
+  // Tokens starting with '-' and followed by alphanumerics (e.g. "-p", "-c") without modifier prefixes
+  // are multi-key sequences "-" followed by the key (e.g. "- p").
+  if (raw.startsWith("-") && raw.length > 1 && !/^(C|M|S|s|ctrl|meta|shift|super|alt|cmd)-/i.test(raw)) {
+    return `- ${normalizeToken(raw.slice(1))}`
+  }
+
   let parts: string[]
   let key: string
+  let originalKey = ""
   if (raw.endsWith("-")) {
     key = "-"
     parts = raw.slice(0, -2).split("-").filter(Boolean)
   } else {
     parts = raw.split("-")
-    key = normalizeKeyName(parts.pop() ?? "")
+    originalKey = parts.pop() ?? ""
+    key = normalizeKeyName(originalKey)
   }
   const lowerMods = new Set(parts.map(p => p.toLowerCase()))
   let hasCtrl = lowerMods.has("c") || lowerMods.has("ctrl")
   const hasMeta = lowerMods.has("m") || lowerMods.has("meta") || lowerMods.has("alt")
-  const hasShift = parts.some(p => p === "S" || p.toLowerCase() === "shift")
+  let hasShift = parts.some(p => p === "S" || p.toLowerCase() === "shift")
+  if (originalKey.length === 1 && originalKey >= "A" && originalKey <= "Z") {
+    hasShift = true
+  }
   const hasSuper = parts.some(p => p === "s" || ["super", "cmd", "command"].includes(p.toLowerCase()))
 
   // Control-char ↔ named-key aliases. Terminals report one form, bindings use the
@@ -224,6 +286,14 @@ function rawLooksLikeTab(raw: string): boolean {
     || raw === "\x1b[Z"
 }
 
+const SHIFTED_PRINTABLE_KEYS: Record<string, string> = {
+  "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+  "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+  "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+  ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?",
+  "`": "~",
+}
+
 /** Normalize terminal-specific Tab encodings (Emacs `<backtab>`, `<C-tab>`, Kitty CSI-u, etc.). */
 export function canonicalizeKeyEvent(key: KeyEventLike): KeyEventLike {
   let name = normalizeKeyName(key.name)
@@ -231,6 +301,10 @@ export function canonicalizeKeyEvent(key: KeyEventLike): KeyEventLike {
   let shift = key.shift === true
   const seq = key.sequence
   const raw = key.raw ?? seq ?? ""
+
+  if (shift && name in SHIFTED_PRINTABLE_KEYS) {
+    name = SHIFTED_PRINTABLE_KEYS[name]!
+  }
 
   const tabMods = kittyTabModifiers(raw)
   if (tabMods) {

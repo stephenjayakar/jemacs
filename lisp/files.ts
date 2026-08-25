@@ -6,6 +6,7 @@ import type { Editor } from "../src/kernel/editor"
 import { setModeSystem } from "../src/kernel/extension-points"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { readKey } from "./misc"
+import { FUNDAMENTAL_MODE, REVERT_BUFFER_FUNCTION_KEY } from "../src/kernel/buffer"
 import { readFileText } from "../src/platform/runtime"
 import { defcustom, getCustom } from "../src/runtime/custom"
 import { saveContextOptions } from "../src/core/save-context"
@@ -54,10 +55,10 @@ import {
 setModeSystem({ makeDirectoryBuffer: makeDiredBuffer })
 
 defcustom("make-backup-files", "boolean", true,
-  "Non-nil means make a backup of a file the first time it is saved.")
+  "Non-nil means make a backup of a file the first time it is saved.", "backup")
 
-defcustom("large-file-warning-threshold", "number", 10 * 1024 * 1024,
-  "Files larger than this many bytes are visited literally, skipping expensive mode setup. Set to 0 to disable.")
+defcustom("large-file-warning-threshold", "integer", 10 * 1024 * 1024,
+  "Files larger than this many bytes are visited literally, skipping expensive mode setup. Set to 0 to disable.", "files")
 
 /** Emacs `substitute-in-file-name`: typing an absolute path or `~` after the
  *  prefilled directory restarts from there, so `/a/b//etc/x` → `/etc/x`.
@@ -142,6 +143,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     await editor.normalMode(buffer)
   }, "Re-infer and enable the normal major mode for the current buffer.")
 
+  editor.command(FUNDAMENTAL_MODE, ({ editor, buffer }) => {
+    editor.enterMode(buffer, FUNDAMENTAL_MODE)
+  }, "Major mode not specialized for anything in particular.")
+
   editor.command("write-file", async ({ buffer, editor, args }) => {
     const path = args[0] ?? await editor.prompt("Write file: ", buffer.path ?? "", "write-file")
     if (!path) return
@@ -201,6 +206,14 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }, "Kill the current buffer or a specified buffer.")
 
   const revertBuffer = async ({ buffer, editor, args }: CommandContext) => {
+    // Emacs dispatches through the buffer-local `revert-buffer-function` first
+    // (files.el); special modes like `custom-theme-choose-mode` set it to
+    // rebuild their generated contents instead of re-reading a file.
+    const revertFunction = buffer.locals.get(REVERT_BUFFER_FUNCTION_KEY)
+    if (typeof revertFunction === "string") {
+      await editor.run(revertFunction, args)
+      return
+    }
     if (!buffer.path) {
       editor.message("Current buffer is not visiting a file")
       return
@@ -234,10 +247,18 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
       }
       // Buffers with buffer-save-without-query set save silently (files.el:6370).
       if (b.locals.get("buffer-save-without-query")) { await trySave(saveCtx({ runHook, force: true })); continue }
-      let answer = saveAll ? "y" : (await editor.prompt(`Save file ${b.path}? (y, n, !, ., q) `, "", "save-some-buffers"))?.trim()
-      if (answer == null || answer === "q") break
+      let answer = "y"
+      if (!saveAll) {
+        while (true) {
+          answer = await readKey(editor, `Save file ${b.path}? (y, n, !, ., q) `) ?? "q"
+          if (["y", "space", "n", "backspace", "delete", "!", ".", "q", "esc"].includes(answer)) break
+          editor.message("Please answer y, n, !, . or q.")
+        }
+      }
+      if (answer === "q" || answer === "esc") break
+      if (answer === "n" || answer === "backspace" || answer === "delete") continue
       if (answer === "!") { saveAll = true; answer = "y" }
-      if (answer === "y" || answer === ".") await trySave(saveCtx({ runHook }))
+      if (answer === "y" || answer === "space" || answer === ".") await trySave(saveCtx({ runHook }))
       if (answer === ".") break
     }
     const summary = dirty.length ? `Saved ${saved} of ${dirty.length} file(s)` : "(No files need saving)"

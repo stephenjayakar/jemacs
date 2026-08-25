@@ -146,7 +146,7 @@ function highlightInlineRegion(
         pushSpan(spans, inlineNode, "markdown-emphasis" as FaceName)
         break
       case "code_span":
-        pushSpan(spans, inlineNode, "string")
+        pushSpan(spans, inlineNode, "markdown-inline-code" as FaceName)
         break
       case "shortcut_link":
       case "inline_link":
@@ -159,7 +159,7 @@ function highlightInlineRegion(
         break
       case "link_destination":
       case "uri_autolink":
-        pushSpan(spans, inlineNode, "string")
+        pushSpan(spans, inlineNode, "markdown-link" as FaceName)
         break
       case "backslash_escape":
       case "hard_line_break":
@@ -167,7 +167,7 @@ function highlightInlineRegion(
         break
       case "code_span_delimiter":
       case "emphasis_delimiter":
-        pushSpan(spans, inlineNode, "keyword")
+        pushSpan(spans, inlineNode, "markdown-markup" as FaceName)
         break
       default:
         break
@@ -177,16 +177,21 @@ function highlightInlineRegion(
   walkInline(tree.rootNode)
 }
 
-function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCtor): TextSpan[] {
+function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCtor, range?: FontLockRange): TextSpan[] {
   const spans: TextSpan[] = []
   if (!markdownInlineLanguage) return spans
   const inlineParser = parserForInline("markdown-inline", markdownInlineLanguage, ParserCtor)
 
   const walkBlock = (node: SyntaxNode): void => {
+    // The display layer asks for a viewport-sized range.  Prune whole
+    // subtrees before visiting Markdown's many inline nodes; walking the full
+    // document here made every C-v proportional to file size even though the
+    // parser tree itself was already cached.
+    if (range && (node.endIndex < range.start || node.startIndex > range.end)) return
     switch (node.type) {
       case "atx_heading": {
         const marker = node.children.find(child => child.type.startsWith("atx_h"))
-        if (marker) pushSpan(spans, marker, "keyword")
+        if (marker) pushSpan(spans, marker, "markdown-markup" as FaceName)
         const inline = node.children.find(child => child.type === "inline")
         if (inline) {
           pushSpan(spans, inline, "type")
@@ -197,7 +202,7 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
       case "setext_heading": {
         for (const child of node.children) {
           if (child.type === "paragraph") pushSpan(spans, child, "type")
-          else if (child.type.startsWith("setext_h")) pushSpan(spans, child, "keyword")
+          else if (child.type.startsWith("setext_h")) pushSpan(spans, child, "markdown-markup" as FaceName)
         }
         return
       }
@@ -206,7 +211,7 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
         pushSpan(spans, node, "string")
         return
       case "block_quote":
-        pushSpan(spans, node, "comment")
+        pushSpan(spans, node, "markdown-blockquote" as FaceName)
         return
       case "thematic_break":
       case "list_marker_plus":
@@ -215,7 +220,7 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
       case "list_marker_dot":
       case "list_marker_parenthesis":
       case "block_quote_marker":
-        pushSpan(spans, node, "keyword")
+        pushSpan(spans, node, "markdown-markup" as FaceName)
         return
       case "html_block":
       case "html_comment":
@@ -243,11 +248,40 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
       default:
         break
     }
-    for (const child of node.children) walkBlock(child)
+    walkChildrenInRange(node, range, walkBlock)
   }
 
   walkBlock(root)
   return spans.sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
+/** Visit only children intersecting a byte range without materializing
+ * `node.children`.  Markdown documents commonly have one root child per
+ * paragraph; allocating and linearly scanning that entire array was still an
+ * O(document) cost after subtree pruning was added. */
+function walkChildrenInRange(
+  node: SyntaxNode,
+  range: FontLockRange | undefined,
+  visit: (child: SyntaxNode) => void,
+): void {
+  if (!range) {
+    for (const child of node.children) visit(child)
+    return
+  }
+  let lo = 0
+  let hi = node.childCount
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    const child = node.child(mid)
+    if (child && child.endIndex < range.start) lo = mid + 1
+    else hi = mid
+  }
+  for (let i = lo; i < node.childCount; i++) {
+    const child = node.child(i)
+    if (!child) continue
+    if (child.startIndex > range.end) break
+    visit(child)
+  }
 }
 
 function hybridFontLock(
@@ -302,11 +336,11 @@ export function registerTreeSitterGrammars(): void {
   })
   registerTreeSitterLanguage("markdown", {
     language: Markdown as Language,
-    highlight: (root, text = "") => highlightMarkdown(root, text, ParserCtor),
+    highlight: (root, text = "", range) => highlightMarkdown(root, text, ParserCtor, range),
   })
   registerTreeSitterLanguage("gfm", {
     language: Markdown as Language,
-    highlight: (root, text = "") => highlightMarkdown(root, text, ParserCtor),
+    highlight: (root, text = "", range) => highlightMarkdown(root, text, ParserCtor, range),
   })
   registered = true
 }

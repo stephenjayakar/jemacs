@@ -121,7 +121,7 @@ function refresh(editor: Editor): void {
 
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
   defcustom("show-paren-when-point-inside-paren", "boolean", false,
-    "If non-nil, show parens when point is just inside one.")
+    "If non-nil, show parens when point is just inside one.", "matching")
   defface("show-paren-match", { bg: "#2e5c78", bold: true }, "Face for a matching paren pair.")
   defface("show-paren-mismatch", { bg: "#8b2e2e", bold: true }, "Face for a mismatched paren pair.")
   editor.addOverlaySource(showParenSpans)

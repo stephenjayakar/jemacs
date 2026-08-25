@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { basename, join, parse, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { Editor } from "../../src/kernel/editor"
-import { BufferModel, inferMode } from "../../src/kernel/buffer"
+import { BufferModel, FUNDAMENTAL_MODE, inferMode } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { FaceName, FontLockRange, TextSpan } from "../../src/modes/mode"
 import { defineMode, enterMode, getMode } from "../../src/modes/mode"
@@ -1653,7 +1653,8 @@ function orgLangMode(lang: string): string {
     lang,
     lang.toLowerCase(),
   ]
-  for (const mode of candidates) if (mode !== "text" && getMode(mode)) return mode
+  // `text` and `fundamental-mode` are inferMode's fallbacks, not real matches.
+  for (const mode of candidates) if (mode !== "text" && mode !== FUNDAMENTAL_MODE && getMode(mode)) return mode
   return "text"
 }
 

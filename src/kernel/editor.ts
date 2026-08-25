@@ -1,5 +1,6 @@
-import { basename, dirname, resolve, sep } from "node:path"
-import { BufferModel, inferMode } from "./buffer"
+import { readFileSync } from "node:fs"
+import { basename, dirname, join, resolve, sep } from "node:path"
+import { BufferModel, FUNDAMENTAL_MODE, inferMode } from "./buffer"
 import { CommandRegistry, type CommandFn } from "./command"
 import { Emitter } from "./events"
 import { emacsKeyDescription, isPrintable, Keymap, KeymapStack, keyToken, normalizeSequence, type KeyEventLike } from "./keymap"
@@ -7,15 +8,16 @@ import { digitFromKey, PrefixArgumentState } from "./prefix-argument"
 import type {
   CompletionCandidate,
   FontLockRange,
+  GutterDecoration,
   MinorModeSpec as MinorMode,
   TextSpan,
   Theme,
 } from "./extension-points"
-import { displaySystem, modeSystem } from "./extension-points"
+import { displaySystem, modeSystem, pointKeymaps } from "./extension-points"
 import type { HostCapabilities } from "../display/protocol"
 import type { TerminalData } from "../display/protocol"
 import type { ViewportSize } from "../display/viewport"
-import { composeTheme } from "../runtime/faces"
+import { composeTheme, defface } from "../runtime/faces"
 import { fileCompletionCandidates } from "./completion"
 import { findMatchBackward, findMatchForward, isearchPrompt, type IsearchMatch, type IsearchState } from "./isearch"
 import {
@@ -35,17 +37,20 @@ import {
   setWindowLeafDedicated,
   setWindowLeafPoint,
   setWindowLeafStartLine,
+  setWindowSplitRatioForLeaf,
   splitWindowLeaf,
   type ChildFrameRecord,
   type ChildFrameParameters,
+  type WindowId,
   type WindowNode,
 } from "./window"
+import { createFrame, makeTab, tabTimestamp, type FrameRecord, type TabRecord } from "./frame"
 import type { RegisterContents } from "./register"
-import { modeHookName, runHooks } from "./hooks"
+import { modeHookName, runHooks, runHooksMaybeAsync } from "./hooks"
 import type { LspManager } from "../lsp/manager"
-import { fileExists, isDirectory, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
+import { fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
-import { getCustom } from "../runtime/custom"
+import { defcustom, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
 import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
 import type { SourceLocation } from "../runtime/source"
@@ -64,6 +69,8 @@ type MinibufferRequest = {
   historyIndex: number | null
   mask?: boolean
   collection?: string[]
+  /** Async candidate source re-queried on every input change (consult-style). */
+  dynamicCollection?: DynamicCollection
   completion?: "file"
   fileCompletionDirectory?: string
   resolve: (value: string | null) => void
@@ -92,11 +99,22 @@ const LARGE_FILE_SIZE_LOCAL = "large-file-size"
 
 export type CompletingReadOptions = {
   collection?: string[]
+  dynamicCollection?: DynamicCollection
   completion?: "file"
   history?: string
   initialValue?: string
   defaultDirectory?: string
 }
+
+/**
+ * Candidate source consulted on every input change, for collections too large or too remote to
+ * enumerate up front (code search, a language server, an HTTP index).
+ *
+ * The returned candidates are taken as-is: the source already did the matching and the ranking,
+ * so the frontend must not re-filter or re-sort them. `signal` aborts as soon as the input moves
+ * on, so an implementation is expected to kill its process/request rather than finish it.
+ */
+export type DynamicCollection = (input: string, signal: AbortSignal) => Promise<string[]>
 
 export type MinibufferCompletionFrontend = {
   refresh?: (editor: Editor) => void | Promise<void>
@@ -110,41 +128,88 @@ export type MinibufferCompletionFrontend = {
 export type MinibufferCompletionDisplay = {
   text: string
   selectedLine?: number
+  /** The selection sits on the prompt line rather than on a candidate, so the
+   *  minibuffer input itself carries the current-candidate highlight. */
+  promptSelected?: boolean
 }
+
+/** Emacs `:description`: either a literal string or a thunk evaluated on every redisplay. */
+export type TransientText = string | (() => string)
 
 export type TransientInfix = {
   key: string
-  label: string
+  label: TransientText
+  description?: string
   argument: string
-  kind?: "toggle" | "value"
+  /** `variable` mirrors Emacs `transient-lisp-variable`, rendered as `" %k %d %v"`. */
+  kind?: "toggle" | "value" | "variable"
   defaultValue?: boolean | string
   prompt?: string
+  choices?: string[]
+  style?: "equals"
+  level?: number
+  if?: () => boolean
+  inaptIf?: () => boolean
+  /**
+   * Emacs `transient-format-value` override: return the complete `%v` text for
+   * this infix, or `""` to render nothing. Used by infix classes that show
+   * `(value)` when set and nothing at all when unset.
+   */
+  formatValue?: (value: string | null) => string
 }
 
 export type TransientSuffix = {
   key: string
-  label: string
+  label: TransientText
+  description?: string
   command: string
   args?: string[]
+  transient?: true | "stay" | "return"
+  level?: number
+  if?: () => boolean
+  inaptIf?: () => boolean
 }
 
 export type TransientGroup = {
-  title: string
+  /** An empty title renders no heading line, matching Emacs `[[...][...]]` column rows. */
+  title: TransientText
+  level?: number
+  /** Emacs `:pad-keys`: pad this group's keys to a common width. Inherited by subgroups. */
+  padKeys?: boolean
+  /** Emacs group-level `:if`/`:if-derived`: hide the whole group when this returns false. */
+  if?: () => boolean
   infixes?: TransientInfix[]
   suffixes?: TransientSuffix[]
+  subgroups?: TransientGroup[]
 }
 
 export type TransientDefinition = {
   name: string
   title: string
   groups: TransientGroup[]
+  defaultLevel?: number
+  /** Emacs `:incompatible`: each set lists arguments that cannot be active together. */
+  incompatible?: string[][]
 }
 
 export type TransientState = {
   definition: TransientDefinition
   values: Map<string, boolean | string>
   pending: string[]
+  helpPending: string[] | null
+  historyIndex: number | null
+  windowId: string
 }
+
+type TransientValue = boolean | string
+type TransientValueSnapshot = Record<string, TransientValue>
+export type TransientDisplay = { text: string; spans: TextSpan[] }
+type TransientEngineCommand =
+  | "transient-set"
+  | "transient-save"
+  | "transient-reset"
+  | "transient-history-prev"
+  | "transient-history-next"
 
 export type CompletingReadFunction = (editor: Editor, prompt: string, options: CompletingReadOptions) => Promise<string | null>
 
@@ -165,6 +230,7 @@ export class Editor {
   readonly buffers = new Map<string, BufferModel>()
   private readonly fontLockCache = new WeakMap<BufferModel, { text: string; key: string; spans: TextSpan[] }>()
   private readonly overlaySources: Array<(buffer: BufferModel) => TextSpan[]> = []
+  private readonly gutterDecorationSources: Array<(buffer: BufferModel) => GutterDecoration[]> = []
   readonly commands = new CommandRegistry()
   readonly keymap = new Keymap("global-map")
   readonly minibufferKeymap = new Keymap("minibuffer-local-map")
@@ -174,20 +240,41 @@ export class Editor {
   readonly registers = new Map<string, RegisterContents>()
   /** Editor-scoped scratch storage for plugins (parallels BufferModel.locals). */
   readonly locals = new Map<string, unknown>()
-  readonly tabs: Array<{ name: string; bufferId: string }> = []
   readonly childFrames = new Map<string, ChildFrameRecord>()
-  private _windowLayout!: WindowNode
-  /** Read-only view of the window tree. Mutate via kernel primitives (setSelectedWindowPoint etc). */
-  get windowLayout(): WindowNode { return this._windowLayout }
-  private set windowLayout(layout: WindowNode) { this._windowLayout = layout }
-  selectedWindowId: string
+  /** Open frames, in creation order. Never empty; `selectedFrameId` names the focused one. */
+  readonly frames: FrameRecord[] = []
+  selectedFrameId!: string
+  /** Buffer offset where the last mouse press landed; drag events extend the region from it. */
+  private dragAnchor: number | null = null
+  /** Read-only view of the selected frame's window tree. Mutate via kernel primitives (setSelectedWindowPoint etc). */
+  get windowLayout(): WindowNode { return this.selectedFrame.layout }
+  private set windowLayout(layout: WindowNode) { this.selectedFrame.layout = layout }
+  get selectedWindowId(): WindowId { return this.selectedFrame.selectedWindowId }
+  set selectedWindowId(id: WindowId) { this.selectedFrame.selectedWindowId = id }
+
+  /** Tab-bar tabs of the selected frame (Emacs keeps `tabs` per frame). */
+  get tabs(): TabRecord[] { return this.selectedFrame.tabs }
+  get selectedTab(): number { return this.selectedFrame.selectedTab }
+  set selectedTab(index: number) { this.selectedFrame.selectedTab = index }
+  /** Tabs closed by `tab-bar-close-tab`, most recent first (`tab-bar-closed-tabs`). */
+  readonly closedTabs: Array<{ frameId: string; index: number; tab: TabRecord }> = []
+
+  get selectedFrame(): FrameRecord {
+    return this.frames.find(frame => frame.id === this.selectedFrameId) ?? this.frames[0]!
+  }
   // Real theme arrives via `setTheme` from installDefaultConfig / load-theme;
   // a bare kernel renders unstyled rather than reaching into themes/.
   theme: Theme = { name: "none", faces: {} }
   private baseTheme: Theme = this.theme
-  selectedTab = 0
   minibuffer: MinibufferRequest | null = null
   transient: TransientState | null = null
+  private readonly transientStack: TransientState[] = []
+  private suspendedTransient: { active: TransientState; stack: TransientState[] } | null = null
+  private readonly transientSessionValues = new Map<string, TransientValueSnapshot>()
+  private transientSavedValues = new Map<string, TransientValueSnapshot>()
+  private transientSavedValuesFile: string | null = null
+  private transientSavedValuesFileExists = false
+  private readonly transientHistory = new Map<string, TransientValueSnapshot[]>()
   isearch: IsearchState | null = null
   /** Per-key dispatch while isearch is active; the UI loop is owned by lisp/isearch-ui (DESIGN.md). */
   isearchKeyHandler: ((key: KeyEventLike) => Promise<KeyDispatchResult | null>) | null = null
@@ -211,6 +298,8 @@ export class Editor {
   private readonly completingReadFns: CompletingReadFunction[] = []
   private readonly completionFrontends: MinibufferCompletionFrontend[] = []
   minibufferCompletionDisplay: MinibufferCompletionDisplay | null = null
+  /** In-flight `dynamicCollection` query; aborted whenever the input moves on. */
+  private dynamicCollectionAbort: AbortController | null = null
   completer: Completer | null = null
   /** Gutter predicate consulted by build-display-model; modes (linum) install the policy. */
   showLineNumbers: (buffer?: BufferModel) => boolean = () => false
@@ -232,6 +321,17 @@ export class Editor {
   set currentBufferId(id: string) {
     this._currentBufferId = id
     if (this.buffers.get(id)?.kind === "minibuffer") return
+    // Emacs's current tab holds no buffer of its own: it *is* the live window
+    // configuration, so its name and buffer follow the selected window. Track
+    // that here rather than at each call site, or a tab left via any path the
+    // commands don't own keeps a stale name. `frames` is empty during the
+    // constructor's first assignment.
+    const frame = this.frames.length ? this.selectedFrame : null
+    const tab = frame?.tabs[frame.selectedTab]
+    if (tab) {
+      tab.bufferId = id
+      if (!tab.explicitName) tab.name = this.bufferDisplayName(id)
+    }
     if (!this.recordBufferRecency) return
     const i = this.bufferRecency.indexOf(id)
     if (i !== -1) this.bufferRecency.splice(i, 1)
@@ -244,10 +344,20 @@ export class Editor {
     this.addBuffer(scratch)
     this.addBuffer(messages)
     this.currentBufferId = scratch.id
-    const rootWindow = createLeafWindow(scratch.id, scratch.point)
-    this.windowLayout = rootWindow
-    this.selectedWindowId = rootWindow.id
-    this.tabs.push({ name: "1", bufferId: scratch.id })
+    const initialFrame = createFrame(scratch.id, "F1", scratch.point)
+    initialFrame.tabs[0]!.name = scratch.name
+    this.frames.push(initialFrame)
+    this.selectedFrameId = initialFrame.id
+    defcustom("transient-values-file", "string", join(homedir(), ".jemacs", "transient.json"), "File where transient-saved values are persisted.", "transient")
+    defcustom("transient-default-level", "integer", 4, "Default visibility level for transient groups and suffixes.", "transient")
+    this.command("transient-resume", ({ editor }) => editor.resumeTransient(), "Resume the last suspended transient popup.")
+    this.command("transient-quit-one", ({ editor }) => editor.transientQuitOne(), "Quit the active transient popup.")
+    this.command("transient-quit-all", ({ editor }) => editor.transientQuitAll(), "Quit the active transient popup and its stack.")
+    this.command("transient-set", ({ editor }) => editor.transientSet(), "Set the active transient values for this session.")
+    this.command("transient-save", async ({ editor }) => editor.transientSave(), "Save the active transient values across sessions.")
+    this.command("transient-reset", async ({ editor }) => editor.transientReset(), "Reset the active transient values to their defaults.")
+    this.command("transient-history-prev", ({ editor }) => editor.transientHistoryCycle("prev"), "Load older transient argument history.")
+    this.command("transient-history-next", ({ editor }) => editor.transientHistoryCycle("next"), "Load newer transient argument history.")
   }
 
   get completingReadFunction(): CompletingReadFunction | null {
@@ -296,12 +406,12 @@ export class Editor {
    *  this to build split/delete/balance commands without the kernel owning each wrapper. */
   mutateWindowLayout(fn: (layout: WindowNode) => WindowNode, reason?: string): void {
     this.persistSelectedWindowPoint()
-    this.windowLayout = fn(this._windowLayout)
-    if (!findWindowLeaf(this._windowLayout, this.selectedWindowId)) {
-      this.selectedWindowId = listWindowLeaves(this._windowLayout)[0]!.id
+    this.windowLayout = fn(this.windowLayout)
+    if (!findWindowLeaf(this.windowLayout, this.selectedWindowId)) {
+      this.selectedWindowId = listWindowLeaves(this.windowLayout)[0]!.id
     }
     this.pruneWindowBufferHistories()
-    this.currentBufferId = findWindowLeaf(this._windowLayout, this.selectedWindowId)!.bufferId
+    this.currentBufferId = findWindowLeaf(this.windowLayout, this.selectedWindowId)!.bufferId
     this.restoreSelectedWindowPoint()
     if (reason) void this.changed(reason)
   }
@@ -339,13 +449,25 @@ export class Editor {
 
   /** Select a window and move point. The host bridge maps cell→point before calling
    *  (display/ owns that math), so the kernel only sees the resolved buffer offset. */
-  clickWindow(windowId: string, point: number): void {
+  clickWindow(windowId: string, point: number, drag = false): void {
     const leaf = findWindowLeaf(this.windowLayout, windowId)
     if (!leaf) return
     this.selectWindow(windowId)
     const buffer = this.buffers.get(leaf.bufferId)
-    if (!buffer || buffer.readOnly && buffer.kind !== "minibuffer") return
+    if (!buffer) return
+    if (drag) {
+      // The press recorded the anchor; moving point with the mark active there
+      // paints the region as the cursor sweeps.
+      if (this.dragAnchor == null) return
+      buffer.mark = this.dragAnchor
+      buffer.markActive = true
+      buffer.point = point
+      this.windowLayout = setWindowLeafPoint(this.windowLayout, windowId, point)
+      void this.changed("mouse-drag")
+      return
+    }
     buffer.point = point
+    this.dragAnchor = point
     buffer.deactivateMark()
     this.windowLayout = setWindowLeafPoint(this.windowLayout, windowId, point)
     const click = modeSystem.modeFeature(buffer.mode, "mouseClick")
@@ -369,6 +491,154 @@ export class Editor {
     )
     if (otherId) this.selectWindow(otherId)
     else this.selectWindow(this.splitSelectedWindow("vertical"))
+  }
+
+  /**
+   * Create a new frame showing `bufferId` (default: the current buffer) and
+   * select it. Buffers are editor-global, so the new frame shares them with
+   * every existing frame — editing in one is immediately visible in the others.
+   */
+  makeFrame(bufferId = this.currentBufferId, name?: string): FrameRecord {
+    this.persistSelectedWindowPoint()
+    // Freeze the departing frame's tab, so its name and layout stay correct
+    // while another frame is focused.
+    this.captureSelectedTab()
+    const buffer = this.buffers.get(bufferId) ?? this.currentBuffer
+    const frame = createFrame(buffer.id, name ?? this.nextFrameName())
+    frame.tabs[0]!.name = this.bufferDisplayName(buffer)
+    this.frames.push(frame)
+    this.selectedFrameId = frame.id
+    this.currentBufferId = buffer.id
+    this.restoreSelectedWindowPoint()
+    void this.changed("make-frame")
+    return frame
+  }
+
+  selectFrame(frameId: string): boolean {
+    if (frameId === this.selectedFrameId) return true
+    if (!this.frames.some(frame => frame.id === frameId)) return false
+    this.persistSelectedWindowPoint()
+    this.captureSelectedTab()
+    this.selectedFrameId = frameId
+    // Point lives on the shared buffer, so adopt the point this frame last
+    // parked in its selected window rather than the other frame's cursor.
+    this.currentBufferId = this.selectedWindowLeaf()?.bufferId ?? this.currentBufferId
+    this.restoreSelectedWindowPoint()
+    void this.changed("select-frame")
+    return true
+  }
+
+  /** Close a frame. The last remaining frame is never deleted (as in Emacs). */
+  deleteFrame(frameId = this.selectedFrameId): boolean {
+    if (this.frames.length <= 1) return false
+    const index = this.frames.findIndex(frame => frame.id === frameId)
+    if (index === -1) return false
+    // Tabs of a deleted frame can never be reopened, so drop their undo entries.
+    const doomed = this.frames[index]!
+    for (let i = this.closedTabs.length - 1; i >= 0; i--) {
+      if (this.closedTabs[i]!.frameId === doomed.id) this.closedTabs.splice(i, 1)
+    }
+    this.frames.splice(index, 1)
+    if (frameId === this.selectedFrameId) {
+      const next = this.frames[Math.min(index, this.frames.length - 1)]!
+      this.selectedFrameId = next.id
+      this.currentBufferId = this.selectedWindowLeaf()?.bufferId ?? this.currentBufferId
+      this.restoreSelectedWindowPoint()
+    }
+    void this.changed("delete-frame")
+    return true
+  }
+
+  otherFrameId(delta = 1): string {
+    const index = this.frames.findIndex(frame => frame.id === this.selectedFrameId)
+    const count = this.frames.length
+    return this.frames[(((index + delta) % count) + count) % count]!.id
+  }
+
+  private nextFrameName(): string {
+    const used = new Set(this.frames.map(frame => frame.name))
+    for (let n = 1; ; n++) {
+      const name = `F${n}`
+      if (!used.has(name)) return name
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tab-bar tabs. A tab is a named window configuration, as in tab-bar.el: the
+  // selected tab keeps no stored config because its layout is the frame's live
+  // one, and `captureSelectedTab` freezes it the moment the tab is left.
+  // Commands live in lisp/tab-bar.ts; the kernel owns only the state.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emacs `tab-bar-tab-name-current`: the name shown on a tab.
+   *
+   * Only the current tab tracks its buffer live; `tab-bar-tabs` refreshes that
+   * one name per redisplay and leaves every other tab with the name it had when
+   * it was last left. An explicitly renamed tab keeps its name in both cases.
+   */
+  tabName(tab: TabRecord): string {
+    if (tab.explicitName) return tab.name
+    const live = tab === this.selectedFrame.tabs[this.selectedFrame.selectedTab]
+    return live ? this.bufferDisplayName(this.currentBufferId) : tab.name
+  }
+
+  /** Emacs `tab-bar--tab`: write the live window configuration onto the selected tab. */
+  captureSelectedTab(): void {
+    const frame = this.selectedFrame
+    const tab = frame.tabs[frame.selectedTab]
+    if (!tab) return
+    tab.config = this.currentWindowConfiguration()
+    tab.bufferId = this.currentBufferId
+    if (!tab.explicitName) tab.name = this.bufferDisplayName(this.currentBufferId)
+  }
+
+  /** A tab recording the current window configuration. */
+  makeTabFromCurrent(name = "", explicitName = false): TabRecord {
+    const tab = makeTab(this.currentBufferId, name, explicitName)
+    if (!explicitName) tab.name = this.bufferDisplayName(this.currentBufferId)
+    tab.config = this.currentWindowConfiguration()
+    return tab
+  }
+
+  /**
+   * Emacs `tab-bar-select-tab`: select tab `index` of the selected frame and
+   * restore its window configuration. Selecting the current tab only refreshes
+   * its recency stamp, exactly as Emacs does.
+   */
+  selectTab(index: number): boolean {
+    const frame = this.selectedFrame
+    const tab = frame.tabs[index]
+    if (!tab) return false
+    if (index === frame.selectedTab) {
+      tab.time = tabTimestamp()
+      return true
+    }
+    this.captureSelectedTab()
+    frame.selectedTab = index
+    tab.time = tabTimestamp()
+    if (tab.config) this.restoreWindowConfiguration(tab.config)
+    tab.bufferId = this.currentBufferId
+    void this.changed("select-tab")
+    return true
+  }
+
+  /** Point every saved tab configuration away from a buffer that is being killed. */
+  private replaceBufferInTabs(bufferId: string, fallbackId: string): void {
+    const patch = (tab: TabRecord) => {
+      if (tab.bufferId === bufferId) {
+        tab.bufferId = fallbackId
+        if (!tab.explicitName) tab.name = this.bufferDisplayName(fallbackId)
+      }
+      if (!tab.config) return
+      tab.config = {
+        ...tab.config,
+        layout: removeBufferFromWindows(tab.config.layout, bufferId, fallbackId),
+        currentBufferId: tab.config.currentBufferId === bufferId ? fallbackId : tab.config.currentBufferId,
+      }
+    }
+    for (const frame of this.frames) for (const tab of frame.tabs) patch(tab)
+    for (const closed of this.closedTabs) patch(closed.tab)
   }
 
   currentWindowConfiguration(): Extract<RegisterContents, { kind: "window-configuration" }> {
@@ -673,7 +943,6 @@ export class Editor {
       ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
       ?? this.addBuffer(new BufferModel({ name: idOrName }))
     this.setSelectedWindowBuffer(found.id, options)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = found.id
     void this.changed("switch-buffer")
     return found
   }
@@ -687,7 +956,6 @@ export class Editor {
     this.addBuffer(buffer)
     if (buffer.kind === "file" && !options.skipLsp) this.lsp?.attachBuffer(buffer)
     this.setSelectedWindowBuffer(buffer.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     this.enterMode(buffer, mode ?? buffer.mode)
     await this.changed("visit-path")
     if (buffer.kind === "file" && !options.skipFileHooks) await this.runHook("find-file-hook", buffer)
@@ -709,7 +977,8 @@ export class Editor {
   private async openFileLiterally(full: string, mtime: number | undefined, size: number, options: { readOnly?: boolean } = {}): Promise<BufferModel> {
     const existing = [...this.buffers.values()].find(b => b.path === full)
     if (existing) return this.switchToBuffer(existing.id)
-    const buffer = new BufferModel({ name: basename(full), path: full, text: "", kind: "file", mode: "text" })
+    // `find-file-literally` leaves the buffer in fundamental-mode in Emacs.
+    const buffer = new BufferModel({ name: basename(full), path: full, text: "", kind: "file", mode: FUNDAMENTAL_MODE })
     buffer.locals.set(LARGE_FILE_LITERAL_LOCAL, true)
     buffer.locals.set("so-long-mode", true)
     buffer.locals.set(LARGE_FILE_LOADING_LOCAL, true)
@@ -717,7 +986,6 @@ export class Editor {
     buffer.readOnly = true
     this.addBuffer(buffer)
     this.setSelectedWindowBuffer(buffer.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
     await this.changed("visit-large-file")
     this.message(`Opening ${buffer.name} literally (${formatBytes(size)})`)
 
@@ -767,22 +1035,24 @@ export class Editor {
     return this.visitPath(resolve(path), make, "dired")
   }
 
-  scratch(name: string, text = "", mode = "text"): BufferModel {
+  scratch(name: string, text = "", mode = FUNDAMENTAL_MODE, select = true): BufferModel {
     const existing = [...this.buffers.values()].find(b => b.name === name)
     if (existing) {
       existing.setText(text, false)
       existing.kind = name === "*messages*" ? "messages" : "scratch"
       this.enterMode(existing, mode)
-      this.setSelectedWindowBuffer(existing.id)
-      if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = existing.id
+      if (select) {
+        this.setSelectedWindowBuffer(existing.id)
+      }
       void this.changed("scratch-update")
       return existing
     }
     const buffer = new BufferModel({ name, text, kind: "scratch", mode })
     this.addBuffer(buffer)
     this.enterMode(buffer, mode)
-    this.setSelectedWindowBuffer(buffer.id)
-    if (this.tabs[this.selectedTab]) this.tabs[this.selectedTab]!.bufferId = buffer.id
+    if (select) {
+      this.setSelectedWindowBuffer(buffer.id)
+    }
     void this.changed("scratch")
     return buffer
   }
@@ -792,7 +1062,7 @@ export class Editor {
   }
 
   enterMode(buffer: BufferModel, modeName: string): void {
-    const resolved = modeSystem.getMode(modeName) ? modeName : "text"
+    const resolved = modeSystem.getMode(modeName) ? modeName : FUNDAMENTAL_MODE
     modeSystem.enterMode(buffer, resolved)
     void this.runHook(modeHookName(resolved), buffer)
   }
@@ -884,8 +1154,11 @@ export class Editor {
     }
     const ctx = { editor: this, buffer: this.activeBuffer, args: runArgs, prefixArgument, keyEvent }
     this.clearMessage()
+    const preCommandHooks = runHooksMaybeAsync("pre-command-hook", { editor: this, buffer: this.activeBuffer })
+    if (preCommandHooks) await preCommandHooks
     const result = await invokeWithAdvice(name, spec.fn, ctx)
-    await this.runHook("post-command-hook", this.activeBuffer)
+    const postCommandHooks = runHooksMaybeAsync("post-command-hook", { editor: this, buffer: this.activeBuffer })
+    if (postCommandHooks) await postCommandHooks
     await this.changed(`command:${name}`)
     return result
   }
@@ -902,7 +1175,7 @@ export class Editor {
       if (isearchResult) return isearchResult
     }
 
-    if (this.transient) {
+    if (this.transient && !this.minibuffer) {
       const transientResult = await this.handleTransientKey(key)
       if (transientResult) return transientResult
     }
@@ -970,7 +1243,7 @@ export class Editor {
     prompt: string,
     initialValue = "",
     historyName?: string,
-    options: { collection?: string[]; completion?: "file"; defaultDirectory?: string; mask?: boolean } = {},
+    options: { collection?: string[]; dynamicCollection?: DynamicCollection; completion?: "file"; defaultDirectory?: string; mask?: boolean } = {},
   ): Promise<string | null> {
     const previous = this.minibuffer
     return await new Promise((resolve, reject) => {
@@ -978,6 +1251,10 @@ export class Editor {
       const buffer = new BufferModel({ name: ` *Minibuffer-${depth}*`, text: initialValue, kind: "minibuffer", mode: "minibuffer" })
       const cleanup = () => {
         this.buffers.delete(buffer.id)
+        // A dynamic collection usually owns a subprocess or a request; closing the prompt has
+        // to cancel it, otherwise the last query outlives the minibuffer that asked for it.
+        this.dynamicCollectionAbort?.abort()
+        this.dynamicCollectionAbort = null
         this.minibuffer = previous
         this.minibufferCompletionDisplay = null
         this.minibufferDepth--
@@ -993,6 +1270,7 @@ export class Editor {
           historyIndex: null,
           mask: options.mask,
           collection: options.collection,
+          dynamicCollection: options.dynamicCollection,
           completion: options.completion,
           fileCompletionDirectory: options.completion === "file"
             ? (options.defaultDirectory ?? this.currentBuffer.directory() ?? process.cwd())
@@ -1048,63 +1326,162 @@ export class Editor {
     if (this.completingReadFunction) return this.completingReadFunction(this, prompt, options)
     return this.prompt(prompt, options.initialValue ?? "", options.history, {
       collection: options.collection,
+      dynamicCollection: options.dynamicCollection,
       completion: options.completion,
       defaultDirectory: options.defaultDirectory,
     })
   }
 
   openTransient(definition: TransientDefinition): void {
-    const values = new Map<string, boolean | string>()
-    for (const group of definition.groups) {
-      for (const infix of group.infixes ?? []) values.set(infix.argument, infix.defaultValue ?? false)
-    }
-    this.transient = { definition, values, pending: [] }
-    this.minibufferCompletionDisplay = { text: this.formatTransient(definition, values) }
+    this.loadTransientSavedValues()
+    const values = transientDefaultValues(definition)
+    const saved = this.transientSavedValues.get(definition.name)
+    if (saved) applyTransientValueSnapshot(definition, values, saved)
+    const session = this.transientSessionValues.get(definition.name)
+    if (session) applyTransientValueSnapshot(definition, values, session)
+    if (this.transient) this.transientStack.push(this.transient)
+    this.transient = { definition, values, pending: [], helpPending: null, historyIndex: null, windowId: this.selectedWindowId }
     void this.changed("transient-open")
   }
 
   cancelTransient(message = "Quit"): void {
     if (!this.transient) return
     this.transient = null
-    this.minibufferCompletionDisplay = null
+    this.transientStack.length = 0
     this.message(message)
     void this.changed("transient-cancel")
+  }
+
+  private resumeTransient(): void {
+    if (!this.suspendedTransient) return
+    this.transientStack.length = 0
+    this.transientStack.push(...this.suspendedTransient.stack)
+    this.transient = this.suspendedTransient.active
+    this.suspendedTransient = null
+    void this.changed("transient-resume")
+  }
+
+  transientDisplayText(): string | null {
+    return this.transientDisplay()?.text ?? null
+  }
+
+  transientDisplay(): TransientDisplay | null {
+    const state = this.transient
+    if (!state) return null
+    return this.formatTransient(state)
   }
 
   private async handleTransientKey(key: KeyEventLike): Promise<KeyDispatchResult | null> {
     const state = this.transient
     if (!state) return null
+    if (state.helpPending) return this.handleTransientHelpKey(state, key)
     const token = keyToken(key)
     const sequence = [...state.pending, token].join(" ")
-    if (!state.pending.length && (token === "C-g" || token === "esc" || token === "q")) {
-      this.transient = null
-      this.minibufferCompletionDisplay = null
+    const infix = transientInfix(state, sequence)
+    const suffix = transientSuffix(state, sequence)
+    const hasExplicitBinding = Boolean(infix ?? suffix)
+    const hasDefinitionPrefix = transientHasPrefix(state, sequence)
+    if (!hasExplicitBinding && token === "C-q") {
+      this.transientQuitAll()
+      await this.changed("transient-cancel")
+      return { status: "command", command: "transient-quit-all" }
+    }
+    if (!hasExplicitBinding && (token === "C-g" || token === "esc") && state.pending.length) {
+      state.pending = []
+      await this.changed("transient-prefix-cancel")
+      return { status: "command", command: "transient-quit-one" }
+    }
+    if (!state.pending.length && !hasExplicitBinding && (token === "C-g" || token === "esc")) {
+      this.transientQuitOne()
       await this.changed("transient-cancel")
       return { status: "command", command: "transient-quit-one" }
     }
-    const infix = transientInfix(state.definition, sequence)
-    if (infix) {
+    if (!state.pending.length && !hasExplicitBinding && token === "C-z") {
+      this.suspendTransient()
+      await this.changed("transient-suspend")
+      return { status: "command", command: "transient-suspend" }
+    }
+    const prefixCommand = this.transientPrefixArgumentCommand(token, hasExplicitBinding || hasDefinitionPrefix)
+    if (prefixCommand) {
       state.pending = []
-      if ((infix.kind ?? "toggle") === "value") {
-        const value = await this.prompt(`${infix.label}: `, String(state.values.get(infix.argument) ?? ""), `transient-${state.definition.name}-${infix.argument}`)
-        if (value != null) state.values.set(infix.argument, value)
-      } else {
-        state.values.set(infix.argument, !state.values.get(infix.argument))
+      await this.changed(`transient-${prefixCommand}`)
+      return { status: "command", command: prefixCommand }
+    }
+    if (!hasExplicitBinding && !hasDefinitionPrefix && (token === "C-h" || token === "?")) {
+      state.pending = []
+      state.helpPending = []
+      this.message("Describe key: ")
+      await this.changed("transient-help")
+      return { status: "pending" }
+    }
+    const engineCommand = transientEngineCommand(sequence)
+    if (!hasExplicitBinding && !hasDefinitionPrefix && engineCommand) {
+      state.pending = []
+      await this.runTransientEngineCommand(engineCommand)
+      return { status: "command", command: engineCommand }
+    }
+    if (infix) {
+      const item = infix.item
+      state.pending = []
+      if (infix.inapt) {
+        this.message(`Suffix ${transientText(item.label)} is not applicable`)
+        await this.changed("transient-inapt-suffix")
+        return { status: "command", command: "transient-inapt-suffix" }
       }
-      this.minibufferCompletionDisplay = { text: this.formatTransient(state.definition, state.values) }
+      state.historyIndex = null
+      const previous = state.values.get(item.argument)
+      if (item.choices?.length) {
+        const current = state.values.get(item.argument)
+        const index = typeof current === "string" ? item.choices.indexOf(current) : -1
+        const next = index === -1 ? item.choices[0] : item.choices[index + 1]
+        state.values.set(item.argument, next ?? false)
+      } else if (item.kind === "value" || item.kind === "variable") {
+        const current = state.values.get(item.argument)
+        const initial = typeof current === "string" ? current : ""
+        const savedTransient = this.transient
+        this.transient = null
+        const value = await this.prompt(item.prompt ?? `${transientText(item.label)}: `, initial, `transient-${state.definition.name}-${item.argument}`)
+        this.transient = savedTransient
+        if (value === "") state.values.set(item.argument, false)
+        else if (value != null) state.values.set(item.argument, value)
+      } else {
+        state.values.set(item.argument, !state.values.get(item.argument))
+      }
+      if (state.values.get(item.argument) !== previous) {
+        transientEnforceIncompatible(state.definition, state.values, item.argument)
+      }
       await this.changed("transient-infix")
       return { status: "command", command: "transient-infix" }
     }
-    const suffix = transientSuffix(state.definition, sequence)
     if (suffix) {
+      const item = suffix.item
       state.pending = []
-      const args = [...transientArguments(state), ...(suffix.args ?? [])]
-      this.transient = null
-      this.minibufferCompletionDisplay = null
-      await this.run(suffix.command, args, key)
-      return { status: "command", command: suffix.command }
+      if (suffix.inapt) {
+        this.message(`Suffix ${transientText(item.label)} is not applicable`)
+        await this.changed("transient-inapt-suffix")
+        return { status: "command", command: "transient-inapt-suffix" }
+      }
+      if (item.command === "transient-quit-one") {
+        this.transientQuitOne()
+        await this.changed("transient-cancel")
+        return { status: "command", command: item.command }
+      }
+      if (item.command === "transient-quit-all") {
+        this.transientQuitAll()
+        await this.changed("transient-cancel")
+        return { status: "command", command: item.command }
+      }
+      const args = [...transientArguments(state), ...(item.args ?? [])]
+      if (!item.transient) this.transientQuitAll("", false)
+      await this.run(item.command, args, key)
+      if (args.length) this.pushTransientHistory(state.definition.name, transientValueSnapshot(state))
+      if (item.transient === "return" && this.transient === state) {
+        this.transientQuitOne("")
+        await this.changed("transient-return")
+      }
+      return { status: "command", command: item.command }
     }
-    if (transientHasPrefix(state.definition, sequence)) {
+    if (hasDefinitionPrefix || transientEngineHasPrefix(sequence)) {
       state.pending.push(token)
       await this.changed("transient-prefix")
       return { status: "pending" }
@@ -1115,21 +1492,236 @@ export class Editor {
     return { status: "unmatched" }
   }
 
-  private formatTransient(definition: TransientDefinition, values: ReadonlyMap<string, boolean | string>): string {
-    const lines = [definition.title]
-    for (const group of definition.groups) {
-      lines.push("")
-      lines.push(group.title)
-      for (const infix of group.infixes ?? []) {
-        const value = values.get(infix.argument)
-        const marker = value === true ? "*" : value ? String(value) : " "
-        lines.push(` ${infix.key.padEnd(8)} [${marker}] ${infix.label}`)
-      }
-      for (const suffix of group.suffixes ?? []) {
-        lines.push(` ${suffix.key.padEnd(8)} ${suffix.label}`)
+  private transientPrefixArgumentCommand(token: string, shadowed: boolean): "universal-argument" | "negative-argument" | "digit-argument" | null {
+    if (shadowed) return null
+    if (token === "C-u") {
+      this.prefixArg.universalArgument()
+      return "universal-argument"
+    }
+    if (token === "C--" || token === "M--") {
+      this.prefixArg.toggleNegative()
+      return "negative-argument"
+    }
+    const digit = digitFromKey(token)
+    if (digit != null && this.prefixArg.acceptsDigitKey()) {
+      this.prefixArg.addDigit(digit)
+      return "digit-argument"
+    }
+    return null
+  }
+
+  private async handleTransientHelpKey(state: TransientState, key: KeyEventLike): Promise<KeyDispatchResult> {
+    const token = keyToken(key)
+    if (token === "C-g") {
+      state.helpPending = null
+      this.message("Quit")
+      await this.changed("transient-help-cancel")
+      return { status: "command", command: "keyboard-quit" }
+    }
+    state.helpPending!.push(token)
+    const sequence = state.helpPending!.join(" ")
+    const infix = transientInfix(state, sequence)
+    if (infix) {
+      state.helpPending = null
+      this.message(infix.item.description ?? transientText(infix.item.label))
+      await this.changed("transient-help-describe")
+      return { status: "command", command: "transient-help" }
+    }
+    const suffix = transientSuffix(state, sequence)
+    if (suffix) {
+      state.helpPending = null
+      this.message(suffix.item.description ?? this.commands.get(suffix.item.command)?.description ?? transientText(suffix.item.label))
+      await this.changed("transient-help-describe")
+      return { status: "command", command: "transient-help" }
+    }
+    if (transientHasPrefix(state, sequence)) {
+      this.message(`Describe key: ${emacsKeyDescription(sequence)}`)
+      await this.changed("transient-help-prefix")
+      return { status: "pending" }
+    }
+    state.helpPending = null
+    this.message(`No transient binding: ${emacsKeyDescription(sequence)}`)
+    await this.changed("transient-help-unmatched")
+    return { status: "unmatched" }
+  }
+
+  private async runTransientEngineCommand(command: TransientEngineCommand): Promise<void> {
+    switch (command) {
+      case "transient-set":
+        this.transientSet()
+        return
+      case "transient-save":
+        await this.transientSave()
+        return
+      case "transient-reset":
+        await this.transientReset()
+        return
+      case "transient-history-prev":
+        this.transientHistoryCycle("prev")
+        return
+      case "transient-history-next":
+        this.transientHistoryCycle("next")
+        return
+    }
+  }
+
+  private transientSet(): void {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.transientSessionValues.set(state.definition.name, transientValueSnapshot(state))
+    this.message(`Set transient values for ${state.definition.name}`)
+    void this.changed("transient-set")
+  }
+
+  private async transientSave(): Promise<void> {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.loadTransientSavedValues()
+    const snapshot = transientValueSnapshot(state)
+    this.transientSessionValues.set(state.definition.name, snapshot)
+    this.transientSavedValues.set(state.definition.name, snapshot)
+    await this.writeTransientSavedValues()
+    this.message(`Saved transient values for ${state.definition.name}`)
+    await this.changed("transient-save")
+  }
+
+  private async transientReset(): Promise<void> {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    this.loadTransientSavedValues()
+    this.transientSessionValues.delete(state.definition.name)
+    const hadSaved = this.transientSavedValues.delete(state.definition.name)
+    state.values = transientDefaultValues(state.definition)
+    state.historyIndex = null
+    if (hadSaved || this.transientSavedValuesFileExists) await this.writeTransientSavedValues()
+    this.message(`Reset transient values for ${state.definition.name}`)
+    await this.changed("transient-reset")
+  }
+
+  private transientHistoryCycle(direction: "prev" | "next"): void {
+    const state = this.transient
+    if (!state) {
+      this.message("No active transient")
+      return
+    }
+    const history = this.transientHistory.get(state.definition.name) ?? []
+    if (!history.length) {
+      this.message(`No transient history for ${state.definition.name}`)
+      return
+    }
+    const nextIndex = direction === "prev"
+      ? state.historyIndex == null ? 0 : (state.historyIndex + 1) % history.length
+      : state.historyIndex == null ? history.length - 1 : (state.historyIndex - 1 + history.length) % history.length
+    state.historyIndex = nextIndex
+    applyTransientValueSnapshot(state.definition, state.values, history[nextIndex]!)
+    this.message(`Transient history ${nextIndex + 1}/${history.length}`)
+    void this.changed(`transient-history-${direction}`)
+  }
+
+  private pushTransientHistory(name: string, snapshot: TransientValueSnapshot): void {
+    const history = this.transientHistory.get(name) ?? []
+    history.unshift(snapshot)
+    if (history.length > TRANSIENT_HISTORY_LIMIT) history.length = TRANSIENT_HISTORY_LIMIT
+    this.transientHistory.set(name, history)
+  }
+
+  private transientValuesFile(): string {
+    return getCustom<string>("transient-values-file") ?? join(homedir(), ".jemacs", "transient.json")
+  }
+
+  private loadTransientSavedValues(): void {
+    const file = this.transientValuesFile()
+    if (this.transientSavedValuesFile === file) return
+    this.transientSavedValuesFile = file
+    this.transientSavedValues = new Map()
+    this.transientSavedValuesFileExists = false
+    let text: string
+    try {
+      text = readFileSync(file, "utf8")
+      this.transientSavedValuesFileExists = true
+    } catch {
+      return
+    }
+    let data: unknown
+    try {
+      data = JSON.parse(text)
+    } catch {
+      return
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return
+    for (const [name, value] of Object.entries(data)) {
+      const snapshot = parseTransientValueSnapshot(value)
+      if (snapshot) this.transientSavedValues.set(name, snapshot)
+    }
+  }
+
+  private async writeTransientSavedValues(): Promise<void> {
+    const file = this.transientValuesFile()
+    if (!this.transientSavedValues.size) {
+      await unlink(file).catch(() => undefined)
+      this.transientSavedValuesFile = file
+      this.transientSavedValuesFileExists = false
+      return
+    }
+    const data: Record<string, TransientValueSnapshot> = {}
+    for (const [name, snapshot] of this.transientSavedValues) data[name] = snapshot
+    await mkdir(dirname(file), { recursive: true })
+    await writeFileText(file, JSON.stringify(data, null, 2))
+    this.transientSavedValuesFile = file
+    this.transientSavedValuesFileExists = true
+  }
+
+  private transientQuitOne(message = "Quit", clearPrefix = true): void {
+    if (clearPrefix) this.prefixArg.clear()
+    this.transient = this.transientStack.pop() ?? null
+    if (!this.transient && message) this.message(message)
+  }
+
+  private transientQuitAll(message = "Quit", clearPrefix = true): void {
+    if (clearPrefix) this.prefixArg.clear()
+    this.transient = null
+    this.transientStack.length = 0
+    if (message) this.message(message)
+  }
+
+  private suspendTransient(): void {
+    if (!this.transient) return
+    this.suspendedTransient = { active: this.transient, stack: [...this.transientStack] }
+    this.transient = null
+    this.transientStack.length = 0
+  }
+
+  private formatTransient(state: TransientState): TransientDisplay {
+    const { definition, values } = state
+    const lines: TransientLine[] = [transientHeadingLine(definition.title)]
+    if (state.pending.length || this.prefixArg.isActive()) {
+      lines.push(transientPendingLine(state.pending, this.prefixArg.peek()))
+      if (normalizeSequence(state.pending.join(" ")) === "C-x") {
+        lines.push(transientCommonLine())
       }
     }
-    return lines.join("\n")
+    for (const group of definition.groups) {
+      if (!transientGroupVisible(state, group)) continue
+      // Emacs `transient--insert-groups` only emits groups that have visible
+      // children, so a group whose every entry is hidden by a predicate leaves
+      // no heading and no blank separator behind.
+      const body = transientGroupLines(state, group, values)
+      if (!body.length) continue
+      lines.push(transientPlainLine(""))
+      const title = transientText(group.title)
+      if (title) lines.push(transientHeadingLine(title))
+      lines.push(...body)
+    }
+    return transientDisplayFromLines(lines)
   }
 
   indentLine(buffer = this.activeBuffer): void {
@@ -1193,8 +1785,27 @@ export class Editor {
 
   /** Register a span producer consulted on every render (minor-mode overlays
    *  like smerge/show-paren) — kept out of the text-keyed font-lock cache. */
-  addOverlaySource(fn: (buffer: BufferModel) => TextSpan[]): void {
+  addOverlaySource(fn: (buffer: BufferModel) => TextSpan[]): () => void {
     this.overlaySources.push(fn)
+    return () => {
+      const index = this.overlaySources.indexOf(fn)
+      if (index >= 0) this.overlaySources.splice(index, 1)
+    }
+  }
+
+  /** Register one-based line decorations rendered in the line-number gutter. */
+  addGutterDecorationSource(fn: (buffer: BufferModel) => GutterDecoration[]): () => void {
+    this.gutterDecorationSources.push(fn)
+    return () => {
+      const index = this.gutterDecorationSources.indexOf(fn)
+      if (index >= 0) this.gutterDecorationSources.splice(index, 1)
+    }
+  }
+
+  gutterDecorations(buffer: BufferModel): GutterDecoration[] {
+    return this.gutterDecorationSources
+      .flatMap(source => source(buffer))
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
   }
 
   setTheme(theme: Theme): void {
@@ -1212,6 +1823,10 @@ export class Editor {
   splitWindowBelow(): void { void this.splitSelectedWindow("vertical") }
   /** @deprecated Compat shim — call `mutateWindowLayout` with `splitWindowLeaf`, or `run("split-window-right")`. */
   splitWindowRight(): void { void this.splitSelectedWindow("horizontal") }
+
+  setWindowSplitRatio(windowId: string, ratio: number): void {
+    this.mutateWindowLayout(layout => setWindowSplitRatioForLeaf(layout, windowId, ratio), "set-window-split-ratio")
+  }
 
   private splitSelectedWindow(orientation: "vertical" | "horizontal"): string {
     const buffer = this.currentBuffer
@@ -1248,10 +1863,11 @@ export class Editor {
     }, "delete-window")
   }
 
-  killBuffer(idOrName?: string): BufferModel | null {
-    const target = idOrName
-      ? this.buffers.get(idOrName)
-        ?? [...this.buffers.values()].find(b => b.name === idOrName || this.displayNames.get(b.id) === idOrName)
+  killBuffer(bufferOrId?: BufferModel | string): BufferModel | null {
+    const target = bufferOrId
+      ? (typeof bufferOrId === "string"
+          ? (this.buffers.get(bufferOrId) ?? [...this.buffers.values()].find(b => b.name === bufferOrId || this.displayNames.get(b.id) === bufferOrId))
+          : bufferOrId)
       : this.currentBuffer
     if (!target || target.kind === "minibuffer") return null
     const survivors = [...this.buffers.values()].filter(b => b.kind !== "minibuffer" && b.id !== target.id)
@@ -1270,9 +1886,9 @@ export class Editor {
     if (findWindowLeaf(this.windowLayout, this.selectedWindowId) == null) {
       this.selectedWindowId = listWindowLeaves(this.windowLayout)[0]!.id
     }
-    this.tabs.forEach(tab => {
-      if (tab.bufferId === target.id) tab.bufferId = fallbackId
-    })
+    // Saved tab configurations hold their own window trees, so a killed buffer
+    // survives there until the tab is selected again. Patch them all now.
+    this.replaceBufferInTabs(target.id, fallbackId)
     if (this.currentBufferId === target.id) this.switchToBuffer(fallbackId)
     void this.runHook("kill-buffer-hook", target)
     void this.changed("kill-buffer")
@@ -1366,8 +1982,8 @@ export class Editor {
     const buffer = this.buffers.get(state.bufferId)
     if (!buffer) return
     const match = state.direction === 1
-      ? findMatchForward(buffer.text, state.string, buffer.point, state.regexp ?? false)
-      : findMatchBackward(buffer.text, state.string, buffer.point, state.regexp ?? false)
+      ? findRestrictedMatchForward(buffer, state.string, buffer.point, state.regexp ?? false)
+      : findRestrictedMatchBackward(buffer, state.string, buffer.point, state.regexp ?? false)
     if (match == null) {
       this.message(`Search failed: ${state.string}`)
       return
@@ -1407,8 +2023,8 @@ export class Editor {
       return
     }
     const match = state.direction === 1
-      ? findMatchForward(buffer.text, string, state.startPoint, state.regexp ?? false)
-      : findMatchBackward(buffer.text, string, state.startPoint, state.regexp ?? false)
+      ? findRestrictedMatchForward(buffer, string, state.startPoint, state.regexp ?? false)
+      : findRestrictedMatchBackward(buffer, string, state.startPoint, state.regexp ?? false)
     if (match == null) {
       state.match = undefined
       this.message(`Failing I-search: ${string}`)
@@ -1472,10 +2088,34 @@ export class Editor {
   async minibufferCollection(): Promise<string[]> {
     const request = this.minibuffer
     if (!request) return []
+    if (request.dynamicCollection) return await this.queryDynamicCollection(this.minibufferInput()) ?? []
     if (request.completion === "file") {
       return fileCompletionCandidates(this.minibufferInput(), request.fileCompletionDirectory ?? process.cwd())
     }
     return request.collection ?? []
+  }
+
+  /**
+   * Run the active request's `dynamicCollection`, aborting whichever query is still in flight.
+   *
+   * Returns null when the result must be discarded -- the prompt closed, or a newer keystroke
+   * already started another query -- so callers never paint candidates for stale input.
+   */
+  async queryDynamicCollection(input: string): Promise<string[] | null> {
+    const request = this.minibuffer
+    if (!request?.dynamicCollection) return null
+    this.dynamicCollectionAbort?.abort()
+    const controller = new AbortController()
+    this.dynamicCollectionAbort = controller
+    let candidates: string[]
+    try {
+      candidates = await request.dynamicCollection(input, controller.signal)
+    } catch {
+      return null
+    }
+    if (controller.signal.aborted || this.minibuffer !== request) return null
+    if (this.dynamicCollectionAbort === controller) this.dynamicCollectionAbort = null
+    return candidates
   }
 
   /** Incremental completion (icomplete-style) while typing in the minibuffer. */
@@ -1486,9 +2126,15 @@ export class Editor {
       await this.minibufferCompletionFrontend.refresh(this)
       return
     }
+    const text = this.minibufferInput()
+    if (request.dynamicCollection) {
+      const candidates = await this.queryDynamicCollection(text)
+      // The source already matched and ranked; filtering again would drop its results.
+      if (candidates && candidates.length > 1) this.showCompletions(candidates)
+      return
+    }
     const collection = request.collection
     if (!collection?.length) return
-    const text = this.minibufferInput()
     const matches = this.completer
       ? this.completer(text, collection)
       : collection.filter(item => item.startsWith(text))
@@ -1534,12 +2180,18 @@ export class Editor {
     const input = this.minibufferInput()
     const collection = request.completion === "file"
       ? await fileCompletionCandidates(input, request.fileCompletionDirectory ?? process.cwd())
-      : request.collection ?? []
+      : request.dynamicCollection
+        ? await this.queryDynamicCollection(input) ?? []
+        : request.collection ?? []
     if (!collection.length) return
 
-    const matches = this.completer
-      ? this.completer(input, collection)
-      : collection.filter(item => item.startsWith(input))
+    // Dynamic candidates arrive pre-matched, so completion only extends the input to their
+    // common prefix instead of re-running a matcher the source did not use.
+    const matches = request.dynamicCollection
+      ? collection
+      : this.completer
+        ? this.completer(input, collection)
+        : collection.filter(item => item.startsWith(input))
     if (matches.length === 1) {
       this.setMinibufferText(matches[0]!, matches[0]!.length)
       return
@@ -1650,6 +2302,9 @@ export class Editor {
     for (const mode of this.activeMinorModes()) {
       if (mode.keymap) maps.push({ name: `${mode.name}-map`, keymap: mode.keymap })
     }
+    for (const keymap of pointKeymaps(this.currentBuffer, this.currentBuffer.point)) {
+      maps.push({ name: keymap.name, keymap })
+    }
     for (const mode of modeSystem.modeLineage(this.currentBuffer.mode)) {
       if (mode.keymap) maps.push({ name: `${mode.name}-map`, keymap: mode.keymap })
     }
@@ -1673,6 +2328,32 @@ function shouldOpenLiterally(size: number | undefined): boolean {
   return threshold > 0 && size > threshold
 }
 
+const TRANSIENT_HISTORY_LIMIT = 10
+const TRANSIENT_ENGINE_BINDINGS = new Map<string, TransientEngineCommand>([
+  ["C-x s", "transient-set"],
+  ["C-x C-s", "transient-save"],
+  ["C-x C-r", "transient-reset"],
+  ["C-x p", "transient-history-prev"],
+  ["C-x n", "transient-history-next"],
+])
+
+defface("transient-heading", { inherit: ["keyword"], bold: true }, "Face for transient popup headings.", "transient")
+defface("transient-key", { inherit: ["builtin"], bold: true }, "Face for transient keys.", "transient")
+defface("transient-argument", { inherit: ["string"], bold: true }, "Face for enabled transient arguments.", "transient")
+defface("transient-inactive-argument", { inherit: ["comment"] }, "Face for disabled transient arguments.", "transient")
+defface("transient-value", { inherit: ["string"] }, "Face for transient values.", "transient")
+defface("transient-inapt-suffix", { inherit: ["comment"], italic: true }, "Face for inapplicable transient suffixes.", "transient")
+
+const TRANSIENT_HEADING_FACE = "transient-heading" as TextSpan["face"]
+const TRANSIENT_KEY_FACE = "transient-key" as TextSpan["face"]
+const TRANSIENT_ARGUMENT_FACE = "transient-argument" as TextSpan["face"]
+const TRANSIENT_INACTIVE_ARGUMENT_FACE = "transient-inactive-argument" as TextSpan["face"]
+const TRANSIENT_VALUE_FACE = "transient-value" as TextSpan["face"]
+const TRANSIENT_INAPT_FACE = "transient-inapt-suffix" as TextSpan["face"]
+/** Emacs `transient--column-stops` reduces column widths with a `(+ 2 ...)` seed,
+ *  so adjacent columns are separated by exactly two spaces. */
+const TRANSIENT_COLUMN_PADDING = 2
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`
@@ -1680,39 +2361,416 @@ function formatBytes(size: number): string {
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
-function transientInfix(definition: TransientDefinition, key: string): TransientInfix | undefined {
-  for (const group of definition.groups) {
-    const found = group.infixes?.find(infix => normalizeSequence(infix.key) === normalizeSequence(key))
-    if (found) return found
-  }
-  return undefined
+function transientEngineCommand(key: string): TransientEngineCommand | undefined {
+  return TRANSIENT_ENGINE_BINDINGS.get(normalizeSequence(key))
 }
 
-function transientSuffix(definition: TransientDefinition, key: string): TransientSuffix | undefined {
-  for (const group of definition.groups) {
-    const found = group.suffixes?.find(suffix => normalizeSequence(suffix.key) === normalizeSequence(key))
-    if (found) return found
-  }
-  return undefined
-}
-
-function transientHasPrefix(definition: TransientDefinition, key: string): boolean {
+function transientEngineHasPrefix(key: string): boolean {
   const prefix = `${normalizeSequence(key)} `
-  for (const group of definition.groups) {
-    if (group.infixes?.some(infix => normalizeSequence(infix.key).startsWith(prefix))) return true
-    if (group.suffixes?.some(suffix => normalizeSequence(suffix.key).startsWith(prefix))) return true
+  for (const sequence of TRANSIENT_ENGINE_BINDINGS.keys()) {
+    if (sequence.startsWith(prefix)) return true
   }
   return false
 }
 
+type TransientResolved<T extends TransientInfix | TransientSuffix> = {
+  item: T
+  inapt: boolean
+}
+
+type TransientLine = {
+  text: string
+  spans: TextSpan[]
+}
+
+type TransientLineBuilder = {
+  line: TransientLine
+  append: (text: string, face?: TextSpan["face"]) => void
+  appendLine: (line: TransientLine) => void
+}
+
+function transientInfix(state: TransientState, key: string): TransientResolved<TransientInfix> | undefined {
+  const normalized = normalizeSequence(key)
+  for (const group of transientVisibleGroups(state)) {
+    for (const infix of group.infixes ?? []) {
+      if (!transientItemVisible(state, infix)) continue
+      if (normalizeSequence(infix.key) === normalized) return { item: infix, inapt: transientItemInapt(infix) }
+    }
+  }
+  return undefined
+}
+
+function transientSuffix(state: TransientState, key: string): TransientResolved<TransientSuffix> | undefined {
+  const normalized = normalizeSequence(key)
+  for (const group of transientVisibleGroups(state)) {
+    for (const suffix of group.suffixes ?? []) {
+      if (!transientItemVisible(state, suffix)) continue
+      if (normalizeSequence(suffix.key) === normalized) return { item: suffix, inapt: transientItemInapt(suffix) }
+    }
+  }
+  return undefined
+}
+
+function transientHasPrefix(state: TransientState, key: string): boolean {
+  const prefix = `${normalizeSequence(key)} `
+  for (const group of transientVisibleGroups(state)) {
+    for (const infix of group.infixes ?? []) {
+      if (transientItemVisible(state, infix) && normalizeSequence(infix.key).startsWith(prefix)) return true
+    }
+    for (const suffix of group.suffixes ?? []) {
+      if (transientItemVisible(state, suffix) && normalizeSequence(suffix.key).startsWith(prefix)) return true
+    }
+  }
+  return false
+}
+
+function* transientVisibleGroups(state: TransientState, groups: TransientGroup[] = state.definition.groups): Generator<TransientGroup> {
+  for (const group of groups) {
+    if (!transientGroupVisible(state, group)) continue
+    yield group
+    if (group.subgroups?.length) yield* transientVisibleGroups(state, group.subgroups)
+  }
+}
+
+function transientGroupVisible(state: TransientState, group: TransientGroup): boolean {
+  return transientLevelVisible(group.level, transientActiveLevel(state.definition)) && group.if?.() !== false
+}
+
+function transientItemVisible(state: TransientState, item: TransientInfix | TransientSuffix): boolean {
+  return transientLevelVisible(item.level, transientActiveLevel(state.definition)) && item.if?.() !== false
+}
+
+function transientItemInapt(item: TransientInfix | TransientSuffix): boolean {
+  return item.inaptIf?.() === true
+}
+
+function transientLevelVisible(level: number | undefined, activeLevel: number): boolean {
+  return level == null || level <= activeLevel
+}
+
+function transientActiveLevel(definition: TransientDefinition): number {
+  const raw = definition.defaultLevel ?? getCustom<number>("transient-default-level") ?? 4
+  if (!Number.isFinite(raw)) return 4
+  return Math.max(1, Math.min(7, Math.floor(raw)))
+}
+
+function transientDefaultValues(definition: TransientDefinition): Map<string, TransientValue> {
+  const values = new Map<string, TransientValue>()
+  for (const infix of transientAllInfixes(definition)) values.set(infix.argument, infix.defaultValue ?? false)
+  return values
+}
+
+function transientValueSnapshot(state: TransientState): TransientValueSnapshot {
+  const snapshot: TransientValueSnapshot = {}
+  for (const infix of transientAllInfixes(state.definition)) snapshot[infix.argument] = state.values.get(infix.argument) ?? false
+  return snapshot
+}
+
+function applyTransientValueSnapshot(definition: TransientDefinition, values: Map<string, TransientValue>, snapshot: TransientValueSnapshot): void {
+  for (const infix of transientAllInfixes(definition)) {
+    if (Object.hasOwn(snapshot, infix.argument)) values.set(infix.argument, snapshot[infix.argument]!)
+  }
+}
+
+function parseTransientValueSnapshot(value: unknown): TransientValueSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const snapshot: TransientValueSnapshot = {}
+  for (const [argument, entry] of Object.entries(value)) {
+    if (typeof entry === "boolean" || typeof entry === "string") snapshot[argument] = entry
+  }
+  return snapshot
+}
+
 function transientArguments(state: TransientState): string[] {
   const args: string[] = []
-  for (const group of state.definition.groups) {
+  for (const group of transientVisibleGroups(state)) {
     for (const infix of group.infixes ?? []) {
+      if (!transientItemVisible(state, infix) || transientItemInapt(infix)) continue
       const value = state.values.get(infix.argument)
       if (value === true) args.push(infix.argument)
-      else if (typeof value === "string" && value) args.push(infix.argument, value)
+      else if (typeof value === "string" && value) {
+        if (infix.style === "equals") args.push(`${infix.argument}=${value}`)
+        else args.push(infix.argument, value)
+      }
     }
   }
   return args
+}
+
+/** Emacs transient `:incompatible`: activating an argument deactivates every other argument
+ *  listed in the same mutually exclusive set. Deactivating an argument affects nothing. */
+function transientEnforceIncompatible(definition: TransientDefinition, values: Map<string, TransientValue>, changedArgument: string): void {
+  if (!transientValueActive(values.get(changedArgument))) return
+  for (const set of definition.incompatible ?? []) {
+    if (!set.includes(changedArgument)) continue
+    for (const argument of set) {
+      if (argument !== changedArgument) values.set(argument, false)
+    }
+  }
+}
+
+function transientValueActive(value: TransientValue | undefined): boolean {
+  return value === true || (typeof value === "string" && value !== "")
+}
+
+function* transientAllInfixes(definition: TransientDefinition): Generator<TransientInfix> {
+  yield* transientAllGroupInfixes(definition.groups)
+}
+
+function* transientAllGroupInfixes(groups: TransientGroup[]): Generator<TransientInfix> {
+  for (const group of groups) {
+    yield* (group.infixes ?? [])
+    if (group.subgroups?.length) yield* transientAllGroupInfixes(group.subgroups)
+  }
+}
+
+function transientPlainLine(text: string): TransientLine {
+  return { text, spans: [] }
+}
+
+function transientHeadingLine(text: string): TransientLine {
+  const line = transientPlainLine(text)
+  if (text) line.spans.push({ start: 0, end: text.length, face: TRANSIENT_HEADING_FACE })
+  return line
+}
+
+/** Resolve an Emacs `:description`, which may be a literal string or a thunk evaluated at
+ *  redisplay time. A thunk must never break redisplay, so a throwing thunk yields "". */
+function transientText(value: TransientText): string {
+  if (typeof value === "string") return value
+  try {
+    return value()
+  } catch {
+    return ""
+  }
+}
+
+function transientPendingLine(pending: string[], prefixArgument: number | null): TransientLine {
+  const b = transientLineBuilder()
+  b.append("-- ")
+  if (pending.length) {
+    b.append("pending: ")
+    b.append(pending.join(" "), TRANSIENT_KEY_FACE)
+    b.append(" ")
+  }
+  if (prefixArgument != null) {
+    if (pending.length) b.append(" ")
+    b.append("prefix: ")
+    b.append(String(prefixArgument), TRANSIENT_VALUE_FACE)
+    b.append(" ")
+  }
+  return b.line
+}
+
+function transientCommonLine(): TransientLine {
+  const b = transientLineBuilder()
+  const entries: Array<[string, string]> = [
+    ["C-x s", "set"],
+    ["C-x C-s", "save"],
+    ["C-x C-r", "reset"],
+    ["C-x p", "previous"],
+    ["C-x n", "next"],
+  ]
+  b.append("Common: ")
+  entries.forEach(([key, label], index) => {
+    if (index > 0) b.append("  ")
+    b.append(key, TRANSIENT_KEY_FACE)
+    b.append(` ${label}`)
+  })
+  return b.line
+}
+
+/**
+ * Emacs `transient--maybe-pad-keys`: a group only pads its keys to a common
+ * width when it (or its parent) sets `pad-keys`; the default is nil, so keys
+ * render at their natural width.
+ */
+function transientKeyWidth(state: TransientState, group: TransientGroup, inherited: boolean): number {
+  if (!(group.padKeys ?? inherited)) return 0
+  let width = 0
+  for (const infix of group.infixes ?? []) {
+    if (transientItemVisible(state, infix)) width = Math.max(width, infix.key.length)
+  }
+  for (const suffix of group.suffixes ?? []) {
+    if (transientItemVisible(state, suffix)) width = Math.max(width, suffix.key.length)
+  }
+  return width
+}
+
+function transientGroupLines(state: TransientState, group: TransientGroup, values: Map<string, TransientValue>, inheritedPadKeys = false): TransientLine[] {
+  const lines: TransientLine[] = []
+  const padKeys = group.padKeys ?? inheritedPadKeys
+  const keyWidth = transientKeyWidth(state, group, inheritedPadKeys)
+  for (const infix of group.infixes ?? []) {
+    if (!transientItemVisible(state, infix)) continue
+    lines.push(transientInfixLine(infix, values.get(infix.argument), transientItemInapt(infix), keyWidth))
+  }
+  for (const suffix of group.suffixes ?? []) {
+    if (!transientItemVisible(state, suffix)) continue
+    lines.push(transientSuffixLine(suffix, transientItemInapt(suffix), keyWidth))
+  }
+  const columns = (group.subgroups ?? [])
+    .filter(subgroup => transientGroupVisible(state, subgroup))
+    .map(subgroup => {
+      const body = transientGroupLines(state, subgroup, values, padKeys)
+      const title = transientText(subgroup.title)
+      return title ? [transientHeadingLine(title), ...body] : body
+    })
+  if (columns.length) lines.push(...transientColumnLines(columns))
+  return lines
+}
+
+/**
+ * Emacs renders an infix from its class `format` slot:
+ *   `transient-switch` / `transient-option` -> `" %k %d (%v)"`
+ *   `transient-variable`                    -> `" %k %d %v"`
+ * `%v` comes from `transient-format-value`, which shows the argument in
+ * `transient-argument` when active and `transient-inactive-argument` when not.
+ * Keys are not padded unless a group sets `pad-keys` (default nil).
+ */
+function transientInfixLine(infix: TransientInfix, value: TransientValue | undefined, inapt: boolean, keyWidth: number): TransientLine {
+  const b = transientLineBuilder()
+  b.append(" ")
+  b.append(infix.key.padEnd(keyWidth), TRANSIENT_KEY_FACE)
+  b.append(" ")
+  b.append(transientText(infix.label))
+  if (infix.formatValue) {
+    // Emacs classes may override `transient-format-value` outright; an empty
+    // result contributes nothing but the separating space, exactly as the
+    // `" %k %d %v"` format spec does.
+    const formatted = infix.formatValue(typeof value === "string" && value ? value : null)
+    b.append(" ")
+    if (formatted) b.append(formatted, TRANSIENT_VALUE_FACE)
+    if (inapt) markTransientLineInapt(b.line)
+    return b.line
+  }
+  b.append(" ")
+  if (infix.kind === "variable") appendTransientVariableValue(b, value)
+  else {
+    b.append("(")
+    appendTransientInfixValue(b, infix, value)
+    b.append(")")
+  }
+  if (inapt) markTransientLineInapt(b.line)
+  return b.line
+}
+
+/** Emacs `transient-suffix` renders as `" %k %d"`. */
+function transientSuffixLine(suffix: TransientSuffix, inapt: boolean, keyWidth: number): TransientLine {
+  const b = transientLineBuilder()
+  b.append(" ")
+  b.append(suffix.key.padEnd(keyWidth), TRANSIENT_KEY_FACE)
+  b.append(" ")
+  b.append(transientText(suffix.label))
+  if (inapt) markTransientLineInapt(b.line)
+  return b.line
+}
+
+/**
+ * Emacs `transient-format-value`: a switch shows just its argument, faced by
+ * whether it is active. An option with a value shows `argument` + `value`
+ * (the argument already carries its trailing `=` when it takes one), and falls
+ * back to the bare inactive argument when unset.
+ */
+function appendTransientInfixValue(builder: TransientLineBuilder, infix: TransientInfix, value: TransientValue | undefined): void {
+  if ((infix.kind ?? "toggle") === "value" || infix.choices?.length) {
+    if (typeof value === "string" && value) {
+      builder.append(infix.argument, TRANSIENT_ARGUMENT_FACE)
+      if (infix.style !== "equals" && !infix.argument.endsWith("=")) builder.append(" ", TRANSIENT_ARGUMENT_FACE)
+      builder.append(value, TRANSIENT_VALUE_FACE)
+      return
+    }
+    builder.append(infix.argument, TRANSIENT_INACTIVE_ARGUMENT_FACE)
+    return
+  }
+  builder.append(infix.argument, value === true ? TRANSIENT_ARGUMENT_FACE : TRANSIENT_INACTIVE_ARGUMENT_FACE)
+}
+
+/** Emacs `transient-lisp-variable` prints its value with `prin1` in `transient-value`. */
+function appendTransientVariableValue(builder: TransientLineBuilder, value: TransientValue | undefined): void {
+  const printed = typeof value === "string" && value ? `"${value}"` : "nil"
+  builder.append(printed, TRANSIENT_VALUE_FACE)
+}
+
+/**
+ * Emacs `transient--insert-group` for `transient-columns`: column stops are
+ * computed once from the widest cell in each column (`transient--column-stops`,
+ * seeded with a `+ 2` gap), then every cell is preceded by padding up to its
+ * stop (`transient--align-to`). Padding is only ever inserted *before* a cell,
+ * so rows carry no trailing whitespace and headings align with their column.
+ */
+function transientColumnLines(columns: TransientLine[][]): TransientLine[] {
+  if (!columns.length) return []
+  const height = Math.max(0, ...columns.map(column => column.length))
+  const stops: number[] = []
+  let stop = 0
+  for (const column of columns) {
+    stops.push(stop)
+    stop += Math.max(0, ...column.map(line => line.text.length)) + TRANSIENT_COLUMN_PADDING
+  }
+  const lines: TransientLine[] = []
+  for (let row = 0; row < height; row++) {
+    const b = transientLineBuilder()
+    for (let col = 0; col < columns.length; col++) {
+      const cell = columns[col]![row]
+      if (!cell || !cell.text) continue
+      const pad = stops[col]! - b.line.text.length
+      if (pad > 0) b.append(" ".repeat(pad))
+      b.appendLine(cell)
+    }
+    lines.push(b.line)
+  }
+  return lines
+}
+
+function transientDisplayFromLines(lines: TransientLine[]): TransientDisplay {
+  let text = ""
+  const spans: TextSpan[] = []
+  let offset = 0
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      text += "\n"
+      offset++
+    }
+    for (const span of line.spans) spans.push({ ...span, start: offset + span.start, end: offset + span.end })
+    text += line.text
+    offset += line.text.length
+  })
+  return { text, spans }
+}
+
+function transientLineBuilder(): TransientLineBuilder {
+  const line: TransientLine = { text: "", spans: [] }
+  return {
+    line,
+    append(text: string, face?: TextSpan["face"]) {
+      if (!text) return
+      const start = line.text.length
+      line.text += text
+      if (face) line.spans.push({ start, end: line.text.length, face })
+    },
+    appendLine(source: TransientLine) {
+      const start = line.text.length
+      line.text += source.text
+      for (const span of source.spans) {
+        line.spans.push({ ...span, start: start + span.start, end: start + span.end })
+      }
+    },
+  }
+}
+
+function markTransientLineInapt(line: TransientLine): void {
+  if (line.text.length) line.spans.push({ start: 0, end: line.text.length, face: TRANSIENT_INAPT_FACE })
+}
+
+function findRestrictedMatchForward(buffer: BufferModel, string: string, from: number, regexp: boolean): IsearchMatch | null {
+  const match = findMatchForward(buffer.text, string, Math.max(buffer.pointMin, from), regexp)
+  if (!match || match.end > buffer.pointMax) return null
+  return match
+}
+
+function findRestrictedMatchBackward(buffer: BufferModel, string: string, before: number, regexp: boolean): IsearchMatch | null {
+  const match = findMatchBackward(buffer.text, string, Math.min(buffer.pointMax, before), regexp)
+  if (!match || match.start < buffer.pointMin) return null
+  return match
 }

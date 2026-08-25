@@ -7,7 +7,7 @@ type FidoState = {
   selected: number
 }
 
-defcustom("icomplete-prospects-height", "number", 10, "Max vertical candidates shown by fido-vertical-mode.")
+defcustom("icomplete-prospects-height", "integer", 10, "Max vertical candidates shown by fido-vertical-mode.", "minibuffer")
 
 const WORD_CHAR = /[a-z0-9]/i
 

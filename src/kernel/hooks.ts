@@ -109,15 +109,50 @@ export function clearHooks(name?: string): void {
   tracked.clear()
 }
 
-export async function runHooks(name: string, ctx: HookContext): Promise<void> {
-  for (const fn of getHooks(name)) {
+function isPromiseLike(value: unknown): value is PromiseLike<void> {
+  return !!value && typeof (value as { then?: unknown }).then === "function"
+}
+
+function reportHookError(name: string, ctx: HookContext, err: unknown): void {
+  // Emacs run-hooks + condition-case semantics: a failing hook is reported
+  // and skipped so the remaining hooks (and the caller) still run.
+  const msg = err instanceof Error ? err.message : String(err)
+  ctx.editor.message(`Error in ${name}: ${msg}`)
+}
+
+async function runHooksAfterAsync(
+  pending: PromiseLike<void>,
+  name: string,
+  ctx: HookContext,
+  hooks: readonly HookFn[],
+  start: number,
+): Promise<void> {
+  try {
+    await pending
+  } catch (err) {
+    reportHookError(name, ctx, err)
+  }
+  for (let i = start; i < hooks.length; i++) {
     try {
-      await fn(ctx)
+      await hooks[i]!(ctx)
     } catch (err) {
-      // Emacs run-hooks + condition-case semantics: a failing hook is reported
-      // and skipped so the remaining hooks (and the caller) still run.
-      const msg = err instanceof Error ? err.message : String(err)
-      ctx.editor.message(`Error in ${name}: ${msg}`)
+      reportHookError(name, ctx, err)
     }
   }
+}
+
+export function runHooksMaybeAsync(name: string, ctx: HookContext): void | Promise<void> {
+  const hooks = getHooks(name)
+  for (let i = 0; i < hooks.length; i++) {
+    try {
+      const result = hooks[i]!(ctx)
+      if (isPromiseLike(result)) return runHooksAfterAsync(result, name, ctx, hooks, i + 1)
+    } catch (err) {
+      reportHookError(name, ctx, err)
+    }
+  }
+}
+
+export async function runHooks(name: string, ctx: HookContext): Promise<void> {
+  await runHooksMaybeAsync(name, ctx)
 }

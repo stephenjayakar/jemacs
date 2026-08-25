@@ -45,12 +45,13 @@ export class OpenTuiHost implements UiHost {
   private renderer!: CliRenderer
   private root!: BoxRenderable
   private title!: TextRenderable
+  private tabBar!: TextRenderable
   private windowsRoot!: BoxRenderable
   private minibufferCompletions!: TextRenderable
   private minibuffer!: TextRenderable
   private echo!: TextRenderable
   private splitPanes = new Map<string, BoxRenderable>()
-  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; modeline: TextRenderable }>()
+  private leafPanes = new Map<string, { pane: BoxRenderable; body: BodyRenderable; footer: TextRenderable; modeline: TextRenderable }>()
   private childFramePanes = new Map<string, { frame: BoxRenderable; body: TextRenderable }>()
   private inputHandlers: InputHandler[] = []
   private resizeHandlers: ResizeHandler[] = []
@@ -98,7 +99,13 @@ export class OpenTuiHost implements UiHost {
   present(model: DisplayModel): void {
     this.applyThemeSurfaces(model.theme)
     this.title.content = themedTextToStyledText(model.title)
-    this.renderWindows(model.windows, Math.max(2, contentAreaLines(model.viewport.rows) - model.minibufferCompletionLines), model.theme)
+    this.tabBar.content = themedTextToStyledText(model.tabBar ?? { chunks: [] })
+    this.tabBar.height = model.tabBar ? 1 : 0
+    this.renderWindows(
+      model.windows,
+      Math.max(2, contentAreaLines(model.viewport.rows) - model.minibufferCompletionLines - (model.tabBar ? 1 : 0)),
+      model.theme,
+    )
     this.renderChildFrames(model.childFrames, model.theme)
     this.minibufferCompletions.content = themedTextToStyledText(model.minibufferCompletions)
     this.minibufferCompletions.height = model.minibufferCompletionLines
@@ -155,6 +162,14 @@ export class OpenTuiHost implements UiHost {
       padding: 0,
     })
     this.title = new TextRenderable(this.renderer, { id: "jemacs-title", content: "" })
+    this.tabBar = new TextRenderable(this.renderer, { id: "jemacs-tab-bar", content: "", height: 0 })
+    // Emacs's tab bar is clickable on a mouse-capable terminal too.
+    this.tabBar.onMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) return
+      event.stopPropagation()
+      const col = Math.max(0, event.x - this.tabBar.x)
+      for (const handler of this.inputHandlers) void handler({ type: "tab-bar", col })
+    }
     this.windowsRoot = new BoxRenderable(this.renderer, {
       id: "jemacs-windows",
       flexDirection: "column",
@@ -168,6 +183,7 @@ export class OpenTuiHost implements UiHost {
     this.minibuffer = new TextRenderable(this.renderer, { id: "jemacs-minibuffer", content: "" })
     this.echo = new TextRenderable(this.renderer, { id: "jemacs-echo", content: "" })
     this.root.add(this.title)
+    this.root.add(this.tabBar)
     this.root.add(this.windowsRoot)
     this.root.add(this.minibufferCompletions)
     this.root.add(this.minibuffer)
@@ -179,6 +195,7 @@ export class OpenTuiHost implements UiHost {
     fillBox(this.root, themeFaceBackground(theme))
     fillBox(this.windowsRoot, themeFaceBackground(theme))
     this.applyTextBackground(this.title, theme, "title")
+    this.applyTextBackground(this.tabBar, theme, "tab-bar")
     this.applyTextBackground(this.minibufferCompletions, theme, "minibuffer")
     this.applyTextBackground(this.minibuffer, theme, "minibuffer")
     this.applyTextBackground(this.echo, theme, "minibuffer")
@@ -272,6 +289,8 @@ export class OpenTuiHost implements UiHost {
       this.applyPaneLayout(parts.pane, parentAxis, grow)
       this.reparent(parts.pane, parent)
       this.updateLeafBody(parts.body, leaf, theme)
+      parts.footer.content = leaf.footer ? themedTextToStyledText(leaf.footer) : ""
+      parts.footer.height = leaf.footer ? Math.max(1, themedTextPlain(leaf.footer).split("\n").length) : 0
       parts.modeline.content = themedTextToStyledText(leaf.modeline)
       return
     }
@@ -366,10 +385,12 @@ export class OpenTuiHost implements UiHost {
         flexBasis: 0,
         minHeight: 0,
       })
+    const footer = new TextRenderable(this.renderer, { id: `window-footer:${windowId}`, content: "", height: 0 })
     const modeline = new TextRenderable(this.renderer, { id: `window-modeline:${windowId}`, content: "" })
     pane.add(body)
+    pane.add(footer)
     pane.add(modeline)
-    return { pane, body, modeline }
+    return { pane, body, footer, modeline }
   }
 
   private createChildFrame(id: string) {
@@ -408,6 +429,10 @@ export class OpenTuiHost implements UiHost {
     }
     body.content = themedTextToStyledText(leaf.terminalSurface ? terminalSurfaceToThemedText(leaf.terminalSurface) : leaf.body)
   }
+}
+
+function themedTextPlain(text: WindowPaneModel["footer"]): string {
+  return text?.chunks.map(chunk => chunk.text).join("") ?? ""
 }
 
 function fillBox(box: BoxRenderable, backgroundColor: string | undefined): void {

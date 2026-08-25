@@ -122,6 +122,8 @@ test("dired copies and deletes files with Emacs-style prompts", async () => {
   installDefaultCommands(editor)
   const dir = await tempDiredDir()
   const dest = `${dir}-copy`
+  let echo = ""
+  editor.events.on("message", ({ text }) => { echo = text })
   try {
     const buffer = await editor.openDirectory(dir)
     buffer.point = buffer.text.indexOf("alpha.txt")
@@ -140,15 +142,15 @@ test("dired copies and deletes files with Emacs-style prompts", async () => {
     expect(diredFlaggedEntries(buffer).map(entry => entry.name)).toEqual(["beta.txt"])
 
     const deletePrompt = diredDoFlaggedDelete(editor, buffer)
-    editor.activeBuffer.setText("yes", true)
-    await editor.handleKey({ name: "return" })
+    expect(echo).toBe("Delete beta.txt (y or n) ")
+    await editor.handleKey({ name: "y", sequence: "y" })
     await deletePrompt
     await expect(stat(join(dir, "beta.txt"))).rejects.toThrow()
 
     buffer.point = buffer.text.indexOf("alpha.txt")
     const rmPrompt = diredDoDelete(editor, buffer, null)
-    editor.activeBuffer.setText("yes", true)
-    await editor.handleKey({ name: "return" })
+    expect(echo).toBe("Delete alpha.txt (y or n) ")
+    await editor.handleKey({ name: "y", sequence: "y" })
     await rmPrompt
     await expect(stat(join(dir, "alpha.txt"))).rejects.toThrow()
   } finally {

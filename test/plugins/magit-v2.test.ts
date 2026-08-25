@@ -6,8 +6,18 @@ import { makeEditor } from "./helper"
 import { keySeq } from "../harness"
 import { spawnProcess } from "../../src/platform/runtime"
 import { getMode } from "../../src/modes/mode"
-import { install, logShaAtPoint, entryAtPoint, magitDiffFontLock } from "../../plugins/magit"
+import {
+  install,
+  logShaAtPoint,
+  entryAtPoint,
+  magitDiffFontLock,
+  magitDiffRefineSpans,
+  magitSectionDisplayFilter,
+  partialHunkPatch,
+  visibilityCache,
+} from "../../plugins/magit"
 import { listWindowLeaves } from "../../src/kernel/window"
+import { setCustom } from "../../src/runtime/custom"
 
 let repo: string
 let remote: string
@@ -58,14 +68,24 @@ test("install registers v2 commands, modes and bindings", () => {
     "magit-reset", "magit-toggle-fold", "magit-commit-abort",
     "magit-diff-more-context", "magit-diff-less-context", "magit-diff-default-context",
     "magit-diff-refresh", "magit-diff-while-committing", "magit-patch-save",
+    "magit-section-forward", "magit-section-backward", "magit-section-cycle-global",
+    "magit-section-show-level-1", "magit-section-show-level-4-all",
   ]) {
     expect(editor.commands.get(cmd)).toBeDefined()
   }
+  expect(getMode("magit-section-mode")?.keymap?.get("tab")).toBe("magit-section-toggle")
+  expect(getMode("magit-section-mode")?.keymap?.get("n")).toBe("magit-section-forward")
+  expect(getMode("magit-section-mode")?.keymap?.get("M-n")).toBe("magit-section-forward-sibling")
+  expect(getMode("magit-section-mode")?.keymap?.get("S-tab")).toBe("magit-section-cycle-global")
+  expect(getMode("magit-section-mode")?.keymap?.get("1")).toBe("magit-section-show-level-1")
+  expect(getMode("magit-section-mode")?.keymap?.get("M-4")).toBe("magit-section-show-level-4-all")
   expect(getMode("magit-mode")?.keymap?.get("d")).toBe("magit-diff-popup")
   expect(getMode("magit-mode")?.keymap?.get("S-d")).toBe("magit-diff-refresh")
   const status = getMode("magit-status")
   expect(status?.keymap?.get("S-p p")).toBe("magit-push")
-  expect(status?.keymap?.get("l l")).toBe("magit-log")
+  expect(status?.keymap?.get("l l")).toBe("magit-log-current")
+  expect(status?.keymap?.get("l o")).toBe("magit-log-other")
+  expect(status?.keymap?.get("l a")).toBe("magit-log-all")
   expect(status?.keymap?.get("b b")).toBe("magit-branch-checkout")
   expect(status?.keymap?.get("b c")).toBe("magit-branch-create")
   expect(status?.keymap?.get("z z")).toBe("magit-stash")
@@ -242,8 +262,8 @@ test("prefix keys open transient popups before suffix dispatch", async () => {
 
   await editor.handleKey({ name: "c", sequence: "c" })
   expect(editor.transient?.definition.name).toBe("magit-commit")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("Commit")
-  expect(editor.minibufferCompletionDisplay?.text).toContain("c        commit")
+  expect(editor.transientDisplayText()).toContain("Commit")
+  expect(editor.transientDisplayText()).toContain(" c commit")
 
   await editor.handleKey({ name: "g", ctrl: true })
   expect(editor.transient).toBeNull()
@@ -390,16 +410,19 @@ test("tab folds the diff body for the entry at point and toggles back", async ()
   await editor.handleKey({ name: "tab" })
   buf = editor.currentBuffer
   expect(buf.text).toContain("modified   a.txt")
-  expect(buf.text).not.toContain("@@")
-  expect(buf.text).not.toContain("+changed")
+  expect(buf.text).toContain("@@")
+  expect(buf.text).toContain("+changed")
+  expect(magitSectionDisplayFilter(buf)?.text).not.toContain("@@")
+  expect(magitSectionDisplayFilter(buf)?.text).not.toContain("+changed")
   expect(entryAtPoint(buf)?.file).toBe("a.txt")
-  expect((buf.locals.get("magit-folded") as Set<string>).has("U:a.txt")).toBe(true)
+  expect([...visibilityCache(buf).values()]).toContain("hide")
 
   await editor.handleKey({ name: "tab" })
   buf = editor.currentBuffer
   expect(buf.text).toContain("@@")
   expect(buf.text).toContain("+changed")
-  expect((buf.locals.get("magit-folded") as Set<string>).size).toBe(0)
+  expect(magitSectionDisplayFilter(buf)).toBeNull()
+  expect([...visibilityCache(buf).values()]).toContain("show")
 })
 
 test("fold state survives g refresh", async () => {
@@ -409,11 +432,13 @@ test("fold state survives g refresh", async () => {
   let buf = editor.currentBuffer
   buf.point = pointAtLine(buf.text, "modified   a.txt")
   await editor.handleKey({ name: "tab" })
-  expect(editor.currentBuffer.text).not.toContain("@@")
+  expect(editor.currentBuffer.text).toContain("@@")
+  expect(magitSectionDisplayFilter(editor.currentBuffer)?.text).not.toContain("@@")
 
   await keySeq(editor, "g")
   expect(editor.currentBuffer.text).toContain("modified   a.txt")
-  expect(editor.currentBuffer.text).not.toContain("@@")
+  expect(editor.currentBuffer.text).toContain("@@")
+  expect(magitSectionDisplayFilter(editor.currentBuffer)?.text).not.toContain("@@")
 })
 
 test("C-c C-k aborts the commit message buffer without committing", async () => {
@@ -475,4 +500,183 @@ test("magit-diff-while-committing can be invoked from the commit diff buffer", a
   diffBuf = [...editor.buffers.values()].find(b => b.name === "*magit-diff: staged*")
   expect(diffBuf?.text).toContain("+from diff")
   expect(diffBuf?.text).not.toContain("+changed")
+})
+
+test("magit diff commands apply context whitespace stat rename range and path args", async () => {
+  await writeFile(join(repo, "a.txt"), "l1\nl2\nl3\nl4\nl5\n")
+  await writeFile(join(repo, "b.txt"), "one two\n")
+  await git(["add", "."])
+  await git(["commit", "-q", "-m", "expand diff fixtures"])
+  await writeFile(join(repo, "a.txt"), "l1\nl2\nL3\nl4\nl5\n")
+  await writeFile(join(repo, "b.txt"), "one   two\n")
+
+  const editor = ed()
+  await editor.run("magit-status", [repo])
+  await editor.run("magit-diff-unstaged", ["-U0", "--", "a.txt"])
+  expect(editor.currentBuffer.text).toContain("-l3")
+  expect(editor.currentBuffer.text).toContain("+L3")
+  expect(editor.currentBuffer.text).not.toContain("\n l2")
+  expect(editor.currentBuffer.text).not.toContain("b.txt")
+
+  await editor.run("magit-diff-unstaged", ["--ignore-all-space", "--", "b.txt"])
+  expect(editor.currentBuffer.text).toBe("(no changes)\n")
+
+  await editor.run("magit-diff-unstaged", ["--stat", "--", "a.txt"])
+  expect(editor.currentBuffer.text).toContain("a.txt |")
+  expect(editor.currentBuffer.text).not.toContain("diff --git")
+
+  await git(["checkout", "--", "a.txt", "b.txt"])
+  await writeFile(join(repo, "a.txt"), "l1\nl2\nl3\nrange\nl4\nl5\n")
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "range commit"])
+  await editor.run("magit-status", [repo])
+  await editor.run("magit-diff-range", ["HEAD~1..HEAD", "--", "a.txt"])
+  expect(editor.currentBuffer.text).toContain("+range")
+
+  await git(["mv", "a.txt", "renamed.txt"])
+  await editor.run("magit-status", [repo])
+  await editor.run("magit-diff-staged", ["--find-renames"])
+  expect(editor.currentBuffer.text).toContain("rename from a.txt")
+  expect(editor.currentBuffer.text).toContain("rename to renamed.txt")
+})
+
+test("magit-show-commit opens commits from recent unpushed and stash sections", async () => {
+  await git(["push", "-q", "-u", "origin", "main"])
+  await writeFile(join(repo, "a.txt"), "one\nlocal\n")
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "local unpushed"])
+  await writeFile(join(repo, "b.txt"), "two\nstashed\n")
+  await git(["stash", "push", "-q", "-m", "stash-msg"])
+
+  const editor = ed()
+  await editor.run("magit-status", [repo])
+  const status = editor.currentBuffer
+  expect(status.text).toContain("Unpushed to origin/main")
+  expect(status.text).toContain("local unpushed")
+  expect(status.text).toContain("stash-msg")
+
+  status.point = status.text.indexOf("local unpushed", status.text.indexOf("Unpushed to"))
+  await editor.run("magit-show-commit")
+  expect(editor.currentBuffer.mode).toBe("magit-revision-mode")
+  expect(editor.currentBuffer.text).toContain("local unpushed")
+
+  editor.switchToBuffer(status.id)
+  status.point = pointAtLine(status.text, "stash-msg")
+  await editor.run("magit-show-commit")
+  expect(editor.currentBuffer.mode).toBe("magit-revision-mode")
+  expect(editor.currentBuffer.text).toContain("stash-msg")
+
+  editor.switchToBuffer(status.id)
+  status.point = status.text.indexOf("initial", status.text.indexOf("Recent commits"))
+  await editor.handleKey({ name: "return" })
+  expect(editor.currentBuffer.mode).toBe("magit-revision-mode")
+  expect(editor.currentBuffer.text).toContain("initial")
+})
+
+test("magit log commands apply filters count decorate patch and file follow args", async () => {
+  await writeFile(join(repo, "a.txt"), "one\nalice fix\n")
+  await git(["add", "a.txt"])
+  await git(["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-q", "-m", "fix alice"])
+  await writeFile(join(repo, "a.txt"), "one\nalice fix\nbob fix\n")
+  await git(["add", "a.txt"])
+  await git(["-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "-m", "fix bob"])
+  await writeFile(join(repo, "a.txt"), "one\nalice fix\nbob fix\nalice docs\n")
+  await git(["add", "a.txt"])
+  await git(["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-q", "-m", "docs alice"])
+  await git(["tag", "v1"])
+
+  const editor = ed()
+  await editor.run("magit-status", [repo])
+  await editor.run("magit-log-current", ["--author=Alice", "--grep=fix", "-n1"])
+  expect(editor.currentBuffer.text).toContain("fix alice")
+  expect(editor.currentBuffer.text).not.toContain("fix bob")
+  expect(editor.currentBuffer.text).not.toContain("docs alice")
+
+  await editor.run("magit-log-all", ["--decorate", "-n1"])
+  expect(editor.currentBuffer.text).toContain("v1")
+
+  await editor.openFile(join(repo, "a.txt"))
+  await editor.run("magit-log-buffer-file", ["-p", "--follow", "-n1"])
+  expect(editor.currentBuffer.locals.get("magit-log-file")).toBe("a.txt")
+  expect(editor.currentBuffer.locals.get("magit-log-args")).toEqual(["-p", "--follow", "-n1"])
+  expect(editor.currentBuffer.text).toContain("diff --git")
+
+  await editor.run("magit-log")
+  expect(editor.currentBuffer.text).toContain("diff --git")
+  expect(editor.currentBuffer.text).toContain("docs alice")
+})
+
+test("active region inside a hunk stages only the selected changed line", async () => {
+  await writeFile(join(repo, "a.txt"), "one\ntwo\nthree\n")
+  await git(["add", "a.txt"])
+  await git(["commit", "-q", "-m", "line fixture"])
+  await writeFile(join(repo, "a.txt"), "ONE\nTWO\nthree\n")
+
+  const editor = ed()
+  await editor.run("magit-status", [repo])
+  const buf = editor.currentBuffer
+  const plusOne = pointAtLine(buf.text, "+ONE")
+  const line = buf.lineAt(plusOne)
+  const [, lineEnd] = buf.lineBounds(line)
+  buf.point = plusOne
+  buf.mark = lineEnd
+  buf.markActive = true
+
+  await editor.run("magit-stage")
+
+  expect((await git(["show", ":a.txt"]))).toBe("ONE\ntwo\nthree\n")
+  const staged = await git(["diff", "--cached"])
+  expect(staged).toContain("+ONE")
+  expect(staged).not.toContain("+TWO")
+  const unstaged = await git(["diff"])
+  expect(unstaged).toContain("+TWO")
+  expect(unstaged).not.toContain("+ONE")
+})
+
+test("partial hunk patch and refine span helpers compute line and word subsets", () => {
+  const patch = [
+    "diff --git a/a.txt b/a.txt",
+    "--- a/a.txt",
+    "+++ b/a.txt",
+    "@@ -1,3 +1,3 @@",
+    "-one",
+    "-two",
+    "+ONE",
+    "+TWO",
+    " three",
+    "",
+  ].join("\n")
+  const partial = partialHunkPatch(patch, [2])
+  expect(partial).toContain("@@ -1,3 +1,3 @@")
+  expect(partial).toContain("-one\n+ONE\n two")
+  expect(partial).not.toContain("+TWO")
+
+  const diff = [
+    "@@ -1 +1 @@",
+    "-alpha beta gamma",
+    "+alpha delta gamma",
+    "",
+  ].join("\n")
+  const spans = magitDiffRefineSpans(diff, { all: true })
+  expect(spans.some(span => span.face === "diffRefineRemoved" && diff.slice(span.start, span.end) === "beta")).toBe(true)
+  expect(spans.some(span => span.face === "diffRefineAdded" && diff.slice(span.start, span.end) === "delta")).toBe(true)
+})
+
+test("magit-diff-refine-hunk custom controls Magit font-lock refine spans", () => {
+  const editor = ed()
+  const text = [
+    "@@ -1 +1 @@",
+    "-alpha beta gamma",
+    "+alpha delta gamma",
+    "",
+  ].join("\n")
+  const buf = editor.scratch("*magit-refine*", text, "magit-diff-mode")
+  try {
+    setCustom("magit-diff-refine-hunk", "all")
+    const spans = editor.fontLock(buf)
+    expect(spans.some(span => span.face === "diffRefineRemoved" && text.slice(span.start, span.end) === "beta")).toBe(true)
+    expect(spans.some(span => span.face === "diffRefineAdded" && text.slice(span.start, span.end) === "delta")).toBe(true)
+  } finally {
+    setCustom("magit-diff-refine-hunk", null)
+  }
 })

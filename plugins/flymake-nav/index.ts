@@ -17,7 +17,7 @@ type FlymakeDiag = {
 }
 
 defcustom("flymake-wrap-around", "boolean", true,
-  "If non-nil, navigation past the last diagnostic wraps around the buffer.")
+  "If non-nil, navigation past the last diagnostic wraps around the buffer.", "tools")
 
 function echoLine(message: string): string {
   for (const line of message.split("\n")) {

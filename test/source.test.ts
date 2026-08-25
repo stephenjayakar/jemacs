@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { Editor } from "../src/kernel/editor"
-import { installDefaultConfig as installDefaultCommands } from "../src/config"
+import { bindGuiKeybindings, installDefaultConfig as installDefaultCommands } from "../src/config"
 import { installDefaultModes } from "../src/modes/default-modes"
 import { defcustom, getCustom, patchCustom, restoreCustom } from "../src/runtime/custom"
 import {
@@ -32,6 +32,14 @@ test("key bindings record source from default-bindings", () => {
   const binding = getKeyBinding("global-map", "C-x C-s")
   expect(binding?.command).toBe("save-buffer")
   expect(binding?.source?.file).toContain("default-bindings.ts")
+})
+
+test("GUI save binding matches the default save command", () => {
+  const editor = new Editor()
+  boot(editor)
+  bindGuiKeybindings(editor)
+  expect(editor.keymap.get("s-s")).toBe(editor.keymap.get("C-x C-s"))
+  expect(editor.keymap.get("s-s")).toBe("save-buffer")
 })
 
 test("describe-function includes source line and help topic", async () => {

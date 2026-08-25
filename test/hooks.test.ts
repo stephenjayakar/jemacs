@@ -18,6 +18,20 @@ test("addHook and runHook execute in registration order", async () => {
   clearHooks()
 })
 
+test("pre-command-hook runs before command body and post-command-hook", async () => {
+  clearHooks()
+  const editor = new Editor()
+  const order: string[] = []
+  addHook("pre-command-hook", () => { order.push("pre") })
+  addHook("post-command-hook", () => { order.push("post") })
+  editor.command("hook-order-test", () => { order.push("command") })
+
+  await editor.run("hook-order-test")
+
+  expect(order).toEqual(["pre", "command", "post"])
+  clearHooks()
+})
+
 test("enterMode runs mode-hook", async () => {
   clearHooks()
   installDefaultModes()

@@ -275,8 +275,7 @@ test("remote dired creates, renames, and deletes through tramp transport", async
 
   buffer.point = buffer.text.indexOf("hosts.new")
   const deletePrompt = diredDoDelete(editor, buffer, null)
-  editor.activeBuffer.setText("yes", true)
-  await editor.handleKey({ name: "return" })
+  await editor.handleKey({ name: "y", sequence: "y" })
   await deletePrompt
   expect(await transport.fileKind(parseTrampFileName("/ssh:box:/etc/hosts.new")!)).toBe("missing")
   expect(buffer.text).not.toContain("hosts.new")

@@ -11,7 +11,14 @@ import { jtermRawMap } from "./keymap-adapter"
 import { keyToPtyBytes } from "./key-encode"
 
 export { keyToPtyBytes } from "./key-encode"
-export { JTermSession, spawnSession, makeXTerm } from "./session"
+export {
+  JTermSession,
+  attachTransportSession,
+  spawnPtyTransport,
+  spawnSession,
+  makeXTerm,
+} from "./session"
+export type { JTermSessionOptions, JTermTransport, JTermTransportOptions } from "./session"
 export { jtermSpans } from "./session"
 export type { XTermInstance } from "./session"
 export { JTermRawMap, jtermRawMap } from "./keymap-adapter"
@@ -33,9 +40,9 @@ export function sessionFor(buffer: BufferModel): JTermSession | undefined {
   return sessions.get(buffer)
 }
 
-defcustom("jterm-scrollback", "number", 10_000, "Lines of scrollback the headless xterm keeps.")
-defcustom("jterm-bracketed-paste", "boolean", true, "Wrap paste payloads in ESC[200~…ESC[201~ so the child can opt in.")
-defcustom("jterm-bell-handler", "string", "message", "How to surface a BEL from the child: 'message', 'ignore', or a custom command name.")
+defcustom("jterm-scrollback", "integer", 10_000, "Lines of scrollback the headless xterm keeps.", "comint")
+defcustom("jterm-bracketed-paste", "boolean", true, "Wrap paste payloads in ESC[200~…ESC[201~ so the child can opt in.", "comint")
+defcustom("jterm-bell-handler", "string", "message", "How to surface a BEL from the child: 'message', 'ignore', or a custom command name.", "comint")
 
 /** Resolve the window body's row/col from buffer.locals. Defaults to 30x100
  *  for first-paint when the buffer hasn't been displayed yet. */
@@ -51,11 +58,15 @@ async function spawnTerminalBuffer(editor: Editor, opts: {
   cwd?: string
   env?: Record<string, string>
 }): Promise<BufferModel> {
+  // Capture the invoking buffer's directory before scratch() switches the
+  // editor to the new terminal buffer. Otherwise the fallback would always
+  // see the scratch buffer and use the editor process directory.
+  const cwd = opts.cwd ?? editor.currentBuffer.directory() ?? process.cwd()
   const buffer = editor.scratch(opts.name, "", JTERM_MODE)
-  if (opts.cwd) buffer.locals.set("default-directory", opts.cwd)
+  buffer.locals.set("default-directory", cwd)
   const { rows, cols } = bodyDims(buffer)
   const session = await spawnSession(editor, buffer, opts.argv, {
-    cwd: opts.cwd,
+    cwd,
     env: opts.env,
     rows,
     cols,
