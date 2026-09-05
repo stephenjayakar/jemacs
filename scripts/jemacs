@@ -75,6 +75,13 @@ gui_build_stale() {
 
 ensure_gui_build() {
   cd "${JEMACS_HOME}"
+  if [[ "$nobuild" -eq 1 ]]; then
+    if [[ ! -f dist/electron/bootstrap.mjs || ! -f dist/electron/renderer.js ]]; then
+      echo "jemacs: no existing GUI build; run jemacs --gui once without --nobuild." >&2
+      exit 1
+    fi
+    return
+  fi
   if [[ "${JEMACS_GUI_SKIP_REBUILD:-}" == "1" ]]; then
     [[ -f dist/electron/bootstrap.mjs && -f dist/electron/renderer.js ]] \
       || run_bun run scripts/build-electron.ts
@@ -87,9 +94,12 @@ ensure_gui_build() {
 }
 
 gui=0
+nobuild=0
 filtered=()
 for arg in "$@"; do
-  if [[ "$arg" == "--gui" ]]; then
+  if [[ "$arg" == "--nobuild" ]]; then
+    nobuild=1
+  elif [[ "$arg" == "--gui" ]]; then
     gui=1
   elif [[ "$arg" == "--smoke-gui" ]]; then
     gui=1
@@ -99,7 +109,9 @@ for arg in "$@"; do
   fi
 done
 
-ensure_dependencies
+if [[ "$nobuild" -eq 0 ]]; then
+  ensure_dependencies
+fi
 
 if [[ "$gui" -eq 1 ]]; then
   ensure_gui_build
@@ -113,9 +125,10 @@ if [[ "$gui" -eq 1 ]]; then
     exec npx electron dist/electron/bootstrap.mjs "${filtered[@]}"
   fi
 else
+  set +u
   if command -v bun >/dev/null 2>&1; then
-    exec bun run "${JEMACS_HOME}/src/main.ts" "$@"
+    exec bun run "${JEMACS_HOME}/src/main.ts" "${filtered[@]}"
   else
-    exec npx bun run "${JEMACS_HOME}/src/main.ts" "$@"
+    exec npx bun run "${JEMACS_HOME}/src/main.ts" "${filtered[@]}"
   fi
 fi

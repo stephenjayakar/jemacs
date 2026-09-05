@@ -53,6 +53,12 @@ bun run dev:gui
 
 Both hosts share the same kernel (`src/kernel/`), display model (`src/display/`), and bootstrap (`src/run.ts`).
 
+The global launcher accepts `jemacs --gui --nobuild` to reuse the existing GUI
+build without rebuilding or installing dependencies. If no GUI build exists,
+it exits with instructions to build once. `jemacs --nobuild` launches the terminal
+editor from source and skips dependency installation. Other arguments, such as
+filenames, are passed through as usual.
+
 ### Remote files over SSH
 
 Use Emacs TRAMP filenames with `C-x C-f` or as a command-line file. Jemacs
