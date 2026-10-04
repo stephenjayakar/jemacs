@@ -1006,15 +1006,12 @@ function collectMarkupHides(text: string, hideUrls: boolean, gfm = false, ruleWi
       pushMarkupHide(ops, lineStart, lineEnd, [], hr)
     }
 
-    // Emacs stops here. `markdown-mode` propertizes inline markup with
-    // `invisible: markdown-markup`, but `markdown-hide-markup` only composes
-    // block-level markers -- it never adds `markdown-markup` to
-    // `buffer-invisibility-spec` unless `markdown-toggle-markup-hiding` runs.
-    // Checked live: with `markdown-hide-markup` t, `(invisible-p
-    // 'markdown-markup)` is nil and line 7 still displays its `**`, `` ` ``
-    // and `[link](url)` in full. Hiding them here was the "wonkiness": text
-    // reflowed as the cursor moved between lines.
-    if (!hideUrls) continue
+    // `markdown-mode` propertizes inline markup (`_`, `**`, `` ` ``, link
+    // brackets) with `invisible: markdown-markup`, and both mode setup and
+    // `markdown-toggle-markup-hiding` add `markdown-markup` to
+    // `buffer-invisibility-spec` when `markdown-hide-markup` is t. So the
+    // delimiters go whenever markup hiding is on; URLs additionally need
+    // `markdown-hide-urls`.
     const protectedRanges = protectedInlineCodeRanges(line, lineStart)
     collectInlineMarkupHides(line, lineStart, hideUrls, protectedRanges, ops, gfm)
   }

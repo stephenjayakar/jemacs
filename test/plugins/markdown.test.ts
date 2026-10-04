@@ -140,24 +140,24 @@ test("gfm strikethrough font-lock marks delimiters and body", () => {
   expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 6 && span.end === 8)).toBe(true)
 })
 
-test("gfm strikethrough delimiters stay visible under markdown-hide-markup", () => {
+test("gfm strikethrough delimiters hide under markdown-hide-markup", () => {
   const buffer = new BufferModel({ name: "README.md", text: "~~gone~~\n", mode: "gfm" })
   buffer.locals.set("markdown-hide-markup", true)
 
-  // `markdown-hide-markup` composes block markers only; inline delimiters keep
-  // rendering because the variable never enters `buffer-invisibility-spec`.
-  expect(markdownDisplayFilter(buffer)?.text).toBe("~~gone~~\n")
+  // The `~~` carry `invisible: markdown-markup`, which `markdown-hide-markup`
+  // puts in `buffer-invisibility-spec`.
+  expect(markdownDisplayFilter(buffer)?.text).toBe("gone\n")
 })
 
-test("intraword underscores stay literal in both markdown and gfm", () => {
+test("intraword underscores stay literal in gfm but italicize in markdown", () => {
   const markdown = new BufferModel({ name: "doc.md", text: "foo_bar_baz\n", mode: "markdown" })
   markdown.locals.set("markdown-hide-markup", true)
   const gfm = new BufferModel({ name: "README.md", text: "foo_bar_baz\n", mode: "gfm" })
   gfm.locals.set("markdown-hide-markup", true)
 
-  // markdown-mode renders `foo_bar_baz` verbatim in both dialects; the old
-  // "foobarbaz" expectation came from jemacs hiding inline markup itself.
-  expect(markdownDisplayFilter(markdown)?.text).toBe("foo_bar_baz\n")
+  // `markdown-regex-italic` matches `_bar_` mid-word; only gfm-mode's
+  // `markdown--gfm-markup-underscore-p` rejects intraword underscores.
+  expect(markdownDisplayFilter(markdown)?.text).toBe("foobarbaz\n")
   expect(markdownDisplayFilter(gfm)?.text).toBe("foo_bar_baz\n")
 })
 
@@ -988,13 +988,11 @@ describe("markdownDisplayFilter", () => {
     expect(result?.text).not.toContain("deep")
   })
 
-  // Ground truth, markdown-mode 20251028.412 with `markdown-hide-markup` t:
-  // block markers compose (`# ` -> "", `* ` -> "\u25cf", `>` -> "\u258c", `---` -> a rule)
-  // but inline markup stays visible. Setting the variable never adds
-  // `markdown-markup` to `buffer-invisibility-spec`; only the interactive
-  // `markdown-toggle-markup-hiding` does. Checked in the live GUI: with it set,
-  // `(invisible-p 'markdown-markup)` is nil and the `**` still displays.
-  test("composes ATX header markers but keeps inline emphasis visible", () => {
+  // markdown-mode with `markdown-hide-markup` t: block markers compose
+  // (`# ` -> "", `* ` -> "\u25cf", `>` -> "\u258c", `---` -> a rule) and inline
+  // delimiters go invisible, since mode setup, `markdown-toggle-markup-hiding`
+  // and the view modes all add `markdown-markup` to `buffer-invisibility-spec`.
+  test("composes ATX header markers and hides inline emphasis delimiters", () => {
     const buffer = new BufferModel({
       name: "doc.md",
       text: "# Title\nSome **bold** text\n",
@@ -1002,7 +1000,7 @@ describe("markdownDisplayFilter", () => {
     })
     buffer.locals.set("markdown-hide-markup", true)
     const result = markdownDisplayFilter(buffer)
-    expect(result?.text).toBe("Title\nSome **bold** text\n")
+    expect(result?.text).toBe("Title\nSome bold text\n")
     expect(buffer.text).toBe("# Title\nSome **bold** text\n")
   })
 
@@ -1034,7 +1032,7 @@ describe("markdownDisplayFilter", () => {
     expect(second).toBe(first)
   })
 
-  test("keeps inline code backticks visible when markdown-hide-markup is on", () => {
+  test("hides inline code backticks when markdown-hide-markup is on", () => {
     const buffer = new BufferModel({
       name: "doc.md",
       text: "Use `hello` here\n",
@@ -1042,7 +1040,7 @@ describe("markdownDisplayFilter", () => {
     })
     buffer.locals.set("markdown-hide-markup", true)
     const result = markdownDisplayFilter(buffer)
-    expect(result?.text).toBe("Use `hello` here\n")
+    expect(result?.text).toBe("Use hello here\n")
   })
 
   test("keeps fenced code delimiter lines when markdown-hide-markup is on", () => {
@@ -1106,8 +1104,8 @@ describe("markdown mouse clicks", () => {
     buffer.locals.set("markdown-visual-fill-column-center-text", true)
     const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 24, cols: 40 } })
     const pane = findPaneInModel(model.windows, editor.selectedWindowId)!
-    // Inline `**` renders now, so display column "Some " lands on the first
-    // `*`, and the header line above still composes its `# ` away.
+    // The `**` is hidden, so display column "Some " lands on the `b` of
+    // "bold", and the header line above composes its `# ` away.
     const displayBoldCol = "Some ".length
     const point = pointFromWindowClick(
       buffer.text,
@@ -1117,7 +1115,7 @@ describe("markdown mouse clicks", () => {
       pane.bodyLineBudget,
     )
 
-    expect(point).toBe(buffer.text.indexOf("**bold"))
+    expect(point).toBe(buffer.text.indexOf("bold"))
   })
 })
 
@@ -1220,8 +1218,8 @@ describe("markdown-view-mode", () => {
     expect(buffer.mode).toBe("gfm-view-mode")
     expect(buffer.locals.get("word-wrap")).toBe(true)
     expect(buffer.locals.get("markdown-hide-markup")).toBe(true)
-    // Inline `~~` keeps rendering; only block markers compose away.
-    expect(markdownDisplayFilter(buffer)?.text).toBe("~~gone~~\n")
+    // gfm-view-mode adds `markdown-markup` to `buffer-invisibility-spec`.
+    expect(markdownDisplayFilter(buffer)?.text).toBe("gone\n")
   })
 })
 
