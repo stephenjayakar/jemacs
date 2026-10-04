@@ -41,6 +41,8 @@ export async function install(editor: Editor): Promise<void> {
   setCustom("markdown-trim-trailing-whitespace-on-enter", true)
   setCustom("markdown-fill-column", 100)
   setCustom("markdown-visual-fill-column-center-text", true)
+  // Keep the column's pixel width when zooming; bigger text wraps sooner.
+  setCustom("markdown-visual-fill-column-adjust-for-text-scale", false)
   setCustom("word-wrap", true)
 
   installGruvboxDarkHardTheme(editor)

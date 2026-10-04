@@ -28,6 +28,7 @@ export const PANE_CHROME_PX = 24
 const MARKDOWN_VISUAL_FILL = "markdown-visual-fill-column-mode"
 const MARKDOWN_FILL_COLUMN = "markdown-fill-column"
 const MARKDOWN_VISUAL_FILL_CENTER = "markdown-visual-fill-column-center-text"
+const MARKDOWN_VISUAL_FILL_ADJUST = "markdown-visual-fill-column-adjust-for-text-scale"
 
 export type PixelWrapLayout = {
   /** Width available to text in the pane body, in px. */
@@ -158,12 +159,16 @@ export function pixelWrapFor(options: {
     ?? getCustom<number>(MARKDOWN_FILL_COLUMN) ?? 100
   // `visual-fill-column` sizes the column from `window-font-width`: the average
   // glyph of the buffer's remapped `default` face, not the frame font.
-  const bodySpec = fontSpecFor(styleToChunk(resolveFace("default", theme, buffer)), defaults)
+  // With `visual-fill-column-adjust-for-text-scale` the column grows with text
+  // scale, so zooming keeps `fill-column` characters per row. Without it the
+  // column keeps its unscaled px width and zoomed text wraps sooner.
+  const adjust = (locals.get(MARKDOWN_VISUAL_FILL_ADJUST) as boolean | undefined)
+    ?? getCustom<boolean>(MARKDOWN_VISUAL_FILL_ADJUST) ?? true
+  const columnDefaults = adjust ? defaults : domFontDefaults(theme.faces.default, 1)
+  const bodySpec = fontSpecFor(styleToChunk(resolveFace("default", theme, buffer)), columnDefaults)
   const fillPx = Math.max(1, Math.floor(fillColumn)) * metrics.averageWidth(bodySpec)
-  // The column grows with text scale (`visual-fill-column-adjust-for-text-scale`),
-  // so zooming keeps `fill-column` characters per row. Once that is wider than
-  // the window, keep a side margin (Obsidian's `--file-margins`) instead of
-  // running text into the pane border.
+  // Once the column is wider than the window, keep a side margin (Obsidian's
+  // `--file-margins`) instead of running text into the pane border.
   const marginPx = Math.round(Math.min(COLUMN_MARGIN_PX, contentPx * 0.06))
   const columnPx = Math.floor(Math.max(COL_PX * 4, Math.min(fillPx, contentPx - marginPx * 2)))
   const center = (locals.get(MARKDOWN_VISUAL_FILL_CENTER) as boolean | undefined)

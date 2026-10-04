@@ -109,3 +109,17 @@ test("a zoomed text column grows with the text, then keeps a side margin", () =>
   expect(huge.leftPx).toBeGreaterThan(0)
   expect(huge.leftPx * 2 + huge.widthPx).toBeLessThanOrEqual(contentPx + 1)
 })
+
+test("without adjust-for-text-scale a zoomed text column keeps its px width", () => {
+  const { editor } = markdownEditor("body\n")
+  editor.activeBuffer.locals.set("markdown-visual-fill-column-adjust-for-text-scale", false)
+  const metrics = new EmMetrics()
+  const pane = (scale: number) => {
+    editor.activeBuffer.locals.set("text-scale-mode-amount", scale)
+    const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 40, cols: 240 }, hostCapabilities: guiCaps(metrics) })
+    return model.windows.kind === "leaf" ? model.windows.pane.textColumn! : null
+  }
+  const base = pane(0)!
+  expect(pane(2)!.widthPx).toBe(base.widthPx)
+  expect(pane(-2)!.widthPx).toBe(base.widthPx)
+})

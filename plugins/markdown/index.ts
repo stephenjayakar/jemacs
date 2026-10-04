@@ -63,6 +63,8 @@ defcustom("markdown-body-font-family", "string",
 defcustom("markdown-body-font-height", "integer", 170,
   "Markdown body font height, in tenths of a point (Emacs `:height`).", "text")
 defcustom("markdown-visual-fill-column-center-text", "boolean", true, "Center body text within the fill column.", "text")
+defcustom("markdown-visual-fill-column-adjust-for-text-scale", "boolean", true,
+  "Widen the fill column with text scale so it keeps `markdown-fill-column` characters. nil keeps its unscaled pixel width.", "text")
 // Obsidian's Minimal theme (`minimal-gruvbox-dark`, "colorful headings"): gruvbox
 // red, orange, yellow, green, blue, purple for h1..h6, and cream (`tx1`) body text.
 // Buffer-local remaps, so they apply in markdown buffers only and win over the theme.
@@ -1668,6 +1670,7 @@ function applyMarkdownFaceRemap(buffer: BufferModel): void {
   buffer.locals.set(MARKDOWN_FILL_COLUMN, getCustom<number>("markdown-fill-column") ?? 100)
   buffer.locals.set(MARKDOWN_VISUAL_FILL, true)
   buffer.locals.set("markdown-visual-fill-column-center-text", getCustom<boolean>("markdown-visual-fill-column-center-text") ?? true)
+  buffer.locals.set("markdown-visual-fill-column-adjust-for-text-scale", getCustom<boolean>("markdown-visual-fill-column-adjust-for-text-scale") ?? true)
   // Emacs markdown-mode turns on `visual-line-mode`, which sets `word-wrap`
   // buffer-locally regardless of the global default (nil). Reading the global
   // here meant every markdown buffer -- and every mode deriving from it --
