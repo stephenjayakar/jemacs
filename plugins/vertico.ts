@@ -1,7 +1,7 @@
 import type { Editor, CompletingReadFunction, MinibufferCompletionFrontend } from "../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { BufferModel } from "../src/kernel/buffer"
-import { fileCompletionCandidatesBounded, splitCompletionInput } from "../src/kernel/completion"
+import { expandUserPath, fileCompletionCandidatesBounded, splitCompletionInput } from "../src/kernel/completion"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 
 type VerticoState = {
@@ -169,7 +169,7 @@ async function verticoRefresh(editor: Editor): Promise<void> {
   if (editor.minibuffer !== request || !sameInput(inputState, currentInput(editor))) return
   const state = ensureState(editor)
   state.querying = pending
-  state.candidates = sortCandidates(filterCandidates(editor, candidates, input, fileCompletion))
+  state.candidates = sortCandidates(editor, filterCandidates(editor, candidates, input, fileCompletion), fileCompletion)
   state.displayCandidates = state.candidates.map(candidate => displayCandidate(candidate, input, fileCompletion))
   state.groups = state.candidates.map(candidate => candidateGroup(candidate, fileCompletion))
   state.exitInput = false
@@ -400,10 +400,62 @@ function filterCandidates(editor: Editor, candidates: string[], input: string, f
   return candidates.filter(candidate => candidate.toLowerCase().startsWith(needle))
 }
 
-function sortCandidates(candidates: string[]): string[] {
+const lengthAlpha = (a: string, b: string): number => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)
+const alpha = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+
+/**
+ * `vertico-sort-history-length-alpha` and friends (vertico-sort.el). Candidates
+ * in the prompt's history come first, most recent first; the rest sort by
+ * length, then `string<`.
+ */
+function sortCandidates(editor: Editor, candidates: string[], fileCompletion: boolean): string[] {
   const sorter = getCustom<unknown>("vertico-sort-override-function") ?? getCustom<unknown>("vertico-sort-function")
   if (sorter === null || sorter === false) return candidates
-  return [...candidates].sort((a, b) => a.length - b.length || a.localeCompare(b))
+  const byHistory = sorter === "vertico-sort-history-length-alpha" || sorter === "vertico-sort-history-alpha"
+  const rest = sorter === "vertico-sort-history-alpha" || sorter === "vertico-sort-alpha" ? alpha : lengthAlpha
+  const ranks = byHistory ? historyRanks(editor, candidates, fileCompletion) : null
+  if (!ranks?.size) return [...candidates].sort(rest)
+  const recent: Array<[number, string]> = []
+  const others: string[] = []
+  for (const candidate of candidates) {
+    const rank = ranks.get(candidate)
+    if (rank === undefined) others.push(candidate)
+    else recent.push([rank, candidate])
+  }
+  recent.sort((a, b) => a[0] - b[0])
+  return [...recent.map(([, candidate]) => candidate), ...others.sort(rest)]
+}
+
+/**
+ * `vertico-sort--history`: rank each history element by recency. A repeated
+ * element moves up by `vertico-sort-history-duplicate`, decaying with age, and
+ * nothing outranks the most recent element. File prompts complete one
+ * directory at a time, so a history path ranks the entry it passes through in
+ * the directory being completed.
+ */
+function historyRanks(editor: Editor, candidates: string[], fileCompletion: boolean): Map<string, number> | null {
+  const historyName = editor.minibuffer?.historyName
+  const stored = historyName ? editor.minibufferHistory.get(historyName) : undefined
+  if (!stored?.length) return null
+  const base = fileCompletion && candidates.length ? candidateGroup(candidates[0]!, true) : ""
+  const duplicate = 10
+  const decay = -1 / (duplicate * 10)
+  const ranks = new Map<string, number>()
+  // jemacs appends to history; Emacs history lists are most recent first.
+  for (let idx = 0; idx < stored.length; idx++) {
+    let elem = stored[stored.length - 1 - idx]!
+    if (fileCompletion) {
+      elem = expandUserPath(elem)
+      if (!elem.startsWith(base)) continue
+      const sep = elem.indexOf("/", base.length)
+      if (sep >= 0) elem = elem.slice(0, sep + 1)
+    }
+    const prior = ranks.get(elem)
+    ranks.set(elem, prior !== undefined
+      ? prior - Math.round(duplicate * Math.exp(decay * idx))
+      : idx === 0 ? Number.MIN_SAFE_INTEGER / 2 : idx)
+  }
+  return ranks
 }
 
 function displayCandidate(candidate: string, input = "", fileCompletion = false): string {

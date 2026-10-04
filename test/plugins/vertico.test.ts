@@ -455,3 +455,31 @@ describe("preselected prompt reaches the display model", () => {
     await result
   })
 })
+
+describe("vertico-sort-history-length-alpha", () => {
+  test("history entries come first, most recent first; the rest by length then alpha", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    editor.minibufferHistory.set("command", ["delete-region", "kill-line", "delete-region", "yank"])
+    const result = editor.prompt("M-x ", "", "command", { collection: ["zap", "kill-line", "abc", "yank", "delete-region", "bb"] })
+    await editor.refreshMinibufferCompletions()
+    expect(display(editor).split("\n").slice(1, 7)).toEqual(["yank", "delete-region", "kill-line", "bb", "abc", "zap"].map(c => expect.stringContaining(c)))
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("M-x offers the last command it ran first", async () => {
+    const editor = makeEditor()
+    install(editor)
+    editor.enableMinorMode("vertico-mode")
+    editor.command("zzz-my-command", () => {})
+    const first = editor.run("execute-extended-command")
+    await editor.refreshMinibufferCompletions()
+    editor.minibufferAccept("zzz-my-command")
+    await first
+    void editor.run("execute-extended-command")
+    await editor.refreshMinibufferCompletions()
+    expect(display(editor).split("\n")[1]).toContain("zzz-my-command")
+  })
+})
