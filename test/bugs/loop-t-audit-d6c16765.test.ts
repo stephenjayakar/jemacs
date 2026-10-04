@@ -37,7 +37,7 @@ test("save-hooks: N reloads via PluginContext do not compound to N² before-save
   const path = join(dir, "f.txt")
   await writeFile(path, "")
   const buf = await editor.openFile(path)
-  buf.setText("x  \n", false)
+  buf.setText("x  \n")
 
   await editor.run("save-buffer")
 

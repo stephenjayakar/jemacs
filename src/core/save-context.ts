@@ -1,5 +1,6 @@
-import type { SaveContext } from "../kernel/buffer"
+import type { BufferModel, SaveContext } from "../kernel/buffer"
 import type { BackupDirectoryAlist } from "../kernel/backup-path"
+import { fileExists } from "../platform/runtime"
 import { defcustom, getCustom } from "../runtime/custom"
 
 defcustom("backup-directory-alist", "sexp", [] as BackupDirectoryAlist,
@@ -12,4 +13,9 @@ export function saveContextOptions(): Pick<SaveContext, "makeBackupFiles" | "bac
     makeBackupFiles: getCustom<boolean>("make-backup-files") ?? true,
     backupDirectoryAlist: getCustom<BackupDirectoryAlist>("backup-directory-alist"),
   }
+}
+
+/** `basic-save-buffer`'s test: the buffer is modified, or its file disappeared since it was visited. */
+export async function bufferNeedsSave(buffer: BufferModel): Promise<boolean> {
+  return buffer.dirty || (!!buffer.path && !(await fileExists(buffer.path)))
 }

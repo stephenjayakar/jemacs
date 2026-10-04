@@ -9,7 +9,7 @@ import { readKey } from "./misc"
 import { FUNDAMENTAL_MODE, REVERT_BUFFER_FUNCTION_KEY } from "../src/kernel/buffer"
 import { readFileText } from "../src/platform/runtime"
 import { defcustom, getCustom } from "../src/runtime/custom"
-import { saveContextOptions } from "../src/core/save-context"
+import { bufferNeedsSave, saveContextOptions } from "../src/core/save-context"
 import {
   diredChangeMarks,
   diredCreateDirectory,
@@ -93,6 +93,10 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   })
 
   editor.command("save-buffer", async ({ buffer, editor }) => {
+    if (!(await bufferNeedsSave(buffer))) {
+      editor.message("(No changes need to be saved)")
+      return
+    }
     try {
       await buffer.save(saveCtx())
       editor.message(`Saved ${buffer.path}`)

@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "bun:test"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeEditor } from "./helper"
@@ -82,7 +82,7 @@ test("before-save-hook and after-save-hook fire around save-buffer", async () =>
   const path = join(dir, "file.txt")
   await writeFile(path, "")
   const buf = await editor.openFile(path)
-  buf.setText("hello", false)
+  buf.setText("hello")
 
   const events: string[] = []
   addHook("before-save-hook", () => { events.push("before") })
@@ -103,7 +103,7 @@ test("default before-save-hook strips trailing whitespace and writes clean text"
   const path = join(dir, "file.txt")
   await writeFile(path, "")
   const buf = await editor.openFile(path)
-  buf.setText("line one   \nline two\t\n", false)
+  buf.setText("line one   \nline two\t\n")
 
   await editor.run("save-buffer")
 
@@ -119,7 +119,7 @@ test("error in before-save-hook does not prevent save", async () => {
   const path = join(dir, "file.txt")
   await writeFile(path, "old")
   const buf = await editor.openFile(path)
-  buf.setText("new", false)
+  buf.setText("new")
 
   addHook("before-save-hook", () => { throw new Error("boom") })
 
@@ -141,7 +141,7 @@ test("save hook skips a buffer whose mode is exempt from trailing-whitespace del
   await writeFile(path, "")
   const buf = await editor.openFile(path)
   buf.mode = "commit-message-mode"
-  buf.setText("line one   \nline two\t\n", false)
+  buf.setText("line one   \nline two\t\n")
 
   await editor.run("save-buffer")
 
@@ -162,9 +162,50 @@ test("save hook still strips trailing whitespace in a non-exempt mode", async ()
   await writeFile(path, "")
   const buf = await editor.openFile(path)
   buf.mode = "text"
-  buf.setText("line one   \nline two\t\n", false)
+  buf.setText("line one   \nline two\t\n")
 
   await editor.run("save-buffer")
 
   expect(buf.text).toBe("line one\nline two\n")
+})
+
+test("save-buffer on an unmodified buffer writes nothing and runs no hooks", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-nosave-"))
+  const path = join(dir, "a.txt")
+  await writeFile(path, "trailing   \n")
+  const buffer = await editor.openFile(path)
+  let afterSave = 0
+  addHook("after-save-hook", () => { afterSave++ })
+  let message = ""
+  editor.events.on("message", ({ text }) => { message = text })
+
+  await editor.run("save-buffer")
+
+  expect(message).toBe("(No changes need to be saved)")
+  expect(afterSave).toBe(0)
+  expect(buffer.text).toBe("trailing   \n")
+  expect(await readFile(path, "utf8")).toBe("trailing   \n")
+
+  // Once modified, it saves and the hooks run.
+  buffer.point = buffer.text.length
+  buffer.insert("x")
+  await editor.run("save-buffer")
+  expect(afterSave).toBe(1)
+  expect(await readFile(path, "utf8")).toBe("trailing\nx")
+})
+
+test("save-buffer recreates a visited file that disappeared", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const dir = await mkdtemp(join(tmpdir(), "jemacs-nosave-"))
+  const path = join(dir, "gone.txt")
+  await writeFile(path, "kept\n")
+  await editor.openFile(path)
+  await rm(path)
+
+  await editor.run("save-buffer")
+
+  expect(await readFile(path, "utf8")).toBe("kept\n")
 })

@@ -3,6 +3,7 @@ import type { BufferModel } from "../../src/kernel/buffer"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { CommandAdvice } from "../../src/runtime/advice"
 import { defcustom, getCustom } from "../../src/runtime/custom"
+import { bufferNeedsSave } from "../../src/core/save-context"
 
 const deleteTrailingLines = defcustom(
   "delete-trailing-lines",
@@ -65,8 +66,14 @@ const exemptModes = defcustom<string[]>(
 )
 
 
+  // Like `basic-save-buffer`, the hooks run only when there is something to
+  // save: an unmodified buffer must not get its trailing whitespace trimmed.
+  const saving = new WeakSet<BufferModel>()
   const advice: CommandAdvice = {
     before: async ({ editor, buffer }) => {
+      saving.delete(buffer)
+      if (!(await bufferNeedsSave(buffer))) return
+      saving.add(buffer)
       try {
         await editor.runHook("before-save-hook", buffer)
       } catch (err) {
@@ -74,6 +81,7 @@ const exemptModes = defcustom<string[]>(
       }
     },
     after: async ({ editor, buffer }) => {
+      if (!saving.delete(buffer)) return
       await editor.runHook("after-save-hook", buffer)
     },
   }
