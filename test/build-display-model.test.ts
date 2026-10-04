@@ -176,6 +176,8 @@ test("a font-metric host gets a caret position and no block glyph in the body", 
   installDefaultConfig(editor)
   installMarkdown(editor)
   const buffer = editor.scratch("md-italic-cursor", "plain *italic* text\n", "markdown")
+  // Show raw markup so each buffer column is one display column.
+  buffer.locals.set("markdown-hide-markup", false)
   const line = "plain *italic* text"
 
   for (let point = 0; point < line.length; point++) {

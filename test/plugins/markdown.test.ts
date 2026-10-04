@@ -1,5 +1,5 @@
 import { applyTheme } from "../../src/display/theme"
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { BufferModel } from "../../src/kernel/buffer"
 import { buildDisplayModel } from "../../src/display/build-display-model"
 import { pointFromWindowClick } from "../../src/display/click-to-point"
@@ -25,9 +25,23 @@ import {
   parseFencedCodeBlocks,
   MARKDOWN_FOLDED_LOCAL,
 } from "../../plugins/markdown"
+import { FontMetricsTable } from "../../src/display/font-metrics"
 import { treeSitterFontLock } from "../../src/modes/tree-sitter"
 import { registerTreeSitterGrammars } from "../../plugins/tree-sitter-grammars"
 import type { SpawnHandle, SpawnOptions } from "../../src/platform/runtime"
+
+// The plugin defaults hide markup and URLs (WYSIWYG notes). The display tests
+// below compare against stock markdown-mode, where both are nil, so pin the
+// stock values here. Tests that need hiding set the buffer-local.
+const STOCK_HIDE_CUSTOMS = ["markdown-hide-markup", "markdown-hide-urls"] as const
+let savedHideCustoms: unknown[] = []
+beforeEach(() => {
+  savedHideCustoms = STOCK_HIDE_CUSTOMS.map(name => getCustom(name))
+  for (const name of STOCK_HIDE_CUSTOMS) setCustom(name, false)
+})
+afterEach(() => {
+  STOCK_HIDE_CUSTOMS.forEach((name, i) => setCustom(name, savedHideCustoms[i]))
+})
 
 registerTreeSitterGrammars()
 
@@ -331,6 +345,41 @@ describe("markdown list item parity", () => {
     expect(buffer.text).toBe("- alpha beta\n- ")
   })
 
+  test("RET at the start of a buffer does not hang", async () => {
+    const editor = makeEditor()
+    install(editor)
+    for (const input of ["", "plain", "\n\nx"]) {
+      const buffer = editor.scratch("doc.md", input, "markdown")
+      buffer.point = 0
+      await editor.run("markdown-enter-key")
+      expect(buffer.text.endsWith(input)).toBe(true)
+      expect(buffer.text[0]).toBe("\n")
+    }
+  })
+
+
+  test("RET after trailing whitespace keeps point on the new list item", async () => {
+    const beforeIndent = getCustom<boolean | string>("markdown-indent-on-enter")
+    const beforeTrim = getCustom<boolean>("markdown-trim-trailing-whitespace-on-enter")
+    setCustom("markdown-indent-on-enter", "indent-and-new-item")
+    setCustom("markdown-trim-trailing-whitespace-on-enter", true)
+    try {
+      const editor = makeEditor()
+      install(editor)
+      for (const [input, expected] of [["- foo ", "- foo\n- "], ["1. a ", "1. a\n2. "], ["plain ", "plain\n"]] as const) {
+        const buffer = editor.scratch("doc.md", input, "markdown")
+        buffer.point = buffer.text.length
+        await editor.run("markdown-enter-key")
+        expect(buffer.text).toBe(expected)
+        expect(buffer.point).toBe(expected.length)
+      }
+    } finally {
+      setCustom("markdown-indent-on-enter", beforeIndent ?? true)
+      setCustom("markdown-trim-trailing-whitespace-on-enter", beforeTrim ?? false)
+    }
+  })
+
+
   test("RET continues non-empty lists when markdown-indent-on-enter is indent-and-new-item", async () => {
     const before = getCustom<boolean | string>("markdown-indent-on-enter")
     setCustom("markdown-indent-on-enter", "indent-and-new-item")
@@ -500,11 +549,15 @@ test("markdown-mode onEnter applies proportional default face remap", () => {
   install(editor)
   const buffer = new BufferModel({ name: "doc.md", text: "# Title", mode: "text" })
   enterMode(buffer, "markdown")
-  // `(face-remap-add-relative 'default :family "Helvetica Neue" :height 200)`.
-  // `font-at` on body prose in the live Emacs reports Helvetica Neue at size 20;
-  // 200 is Emacs `:height`, i.e. tenths of a point.
-  expect(getBufferFaceRemap(buffer, "default")?.family).toContain("Helvetica Neue")
-  expect(getBufferFaceRemap(buffer, "default")?.height).toBe(200)
+  // Like `(face-remap-add-relative 'default :family ... :height 170)`: the
+  // system UI font at 17pt. `:height` is tenths of a point.
+  expect(getBufferFaceRemap(buffer, "default")?.family).toContain("system-ui")
+  expect(getBufferFaceRemap(buffer, "default")?.height).toBe(170)
+  // Obsidian Minimal gruvbox: cream body, colored headings, emphasis stays italic.
+  expect(getBufferFaceRemap(buffer, "default")?.fg).toBe("#fbf1c7")
+  expect(getBufferFaceRemap(buffer, "markdown-header-face-1")?.fg).toBe("#cc241d")
+  expect(getBufferFaceRemap(buffer, "markdown-header-face-6")?.fg).toBe("#b16286")
+  expect(getBufferFaceRemap(buffer, "markdown-emphasis")?.italic).toBe(true)
   // Emacs remaps only `default`. `markdown-code-face` and friends declare no
   // `:family`, so code inherits the proportional body font -- `font-at` inside
   // a fenced block reports Helvetica Neue, not Menlo.
@@ -976,6 +1029,20 @@ describe("markdown list and checkbox commands", () => {
 
     expect(buffer.text).toBe("1. one\n2. \n3. two\n4. three\n")
   })
+
+  test("TAB and S-TAB on an ordered item renumber both lists", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("list.md", "1. a\n2. b\n3. c\n4. d\n5. e\n", "markdown")
+    buffer.point = buffer.text.indexOf("d")
+
+    await editor.run("markdown-cycle")
+    expect(buffer.text).toBe("1. a\n2. b\n3. c\n    1. d\n4. e\n")
+    expect(buffer.text.slice(buffer.point, buffer.point + 1)).toBe("d")
+
+    await editor.run("markdown-shifttab")
+    expect(buffer.text).toBe("1. a\n2. b\n3. c\n4. d\n5. e\n")
+  })
 })
 
 describe("markdownDisplayFilter", () => {
@@ -1092,6 +1159,19 @@ describe("markdown mouse clicks", () => {
     editor.clickWindow(editor.selectedWindowId, firstCheck)
 
     expect(buffer.text).toBe("- [x] task\n- [x] done\n")
+  })
+
+  test("clicking a link opens its url", () => {
+    const editor = makeEditor()
+    const opened: string[] = []
+    install(editor, { openExternal: url => { opened.push(url) } })
+    const buffer = editor.scratch("doc.md", "see [here](https://example.com) now\n", "markdown")
+
+    editor.clickWindow(editor.selectedWindowId, buffer.text.indexOf("here") + 1)
+    expect(opened).toEqual(["https://example.com"])
+
+    editor.clickWindow(editor.selectedWindowId, buffer.text.indexOf("now"))
+    expect(opened).toEqual(["https://example.com"])
   })
 
   test("click hit-testing accounts for hidden markup and centered visual fill", () => {
@@ -1283,6 +1363,21 @@ describe("markdown-insert-link", () => {
     expect(prompts).toEqual(["URL or [reference]: "])
     expect(buffer.text).toBe("[read](https://example.com) more\n")
     expect(buffer.markActive).toBe(false)
+  })
+
+  test("s-k wraps the active region in a link", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "read more\n", "markdown")
+    buffer.point = 0
+    buffer.setMark()
+    buffer.point = 4
+    editor.prompt = async () => "https://example.com"
+
+    // parseKey in the harness has no super modifier, so feed the raw event.
+    await keySeq(editor, { name: "k", sequence: "k", super: true })
+
+    expect(buffer.text).toBe("[read](https://example.com) more\n")
   })
 })
 
@@ -1580,4 +1675,51 @@ describe("markdown inline images and live preview", () => {
     await editor.runHook("after-save-hook", buffer)
     expect(writes).toHaveLength(2)
   })
+})
+
+test("pixel markdown display keeps leading blank lines (C-o at start of buffer)", async () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("lead.md", "# Title\nbody\n", "markdown")
+  buffer.point = 0
+  const caps = { unit: "pixels" as const, mouse: true, clipboard: true, osc52: false, perFaceFonts: true, fontMetrics: new FontMetricsTable() }
+  buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 20, cols: 40 }, hostCapabilities: caps })
+  await keySeq(editor, "C-o")
+  await keySeq(editor, "C-o")
+  expect(buffer.text).toBe("\n\n# Title\nbody\n")
+  const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 20, cols: 40 }, hostCapabilities: caps })
+  const pane = findPaneInModel(model.windows, editor.selectedWindowId)!
+  expect(themedTextPlain(pane.body).split("\n").slice(0, 3)).toEqual(["", "", "# Title"])
+  expect(pane.cursor).toEqual({ row: 0, colOffset: 0 })
+  expect(markdownDisplayFilter(buffer)?.map(2)).toBe(2)
+})
+
+test("modified markdown buffers save to their files after markdown-auto-save-idle-seconds", async () => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const before = getCustom<number>("markdown-auto-save-idle-seconds")
+  setCustom("markdown-auto-save-idle-seconds", 0.2)
+  const editor = makeEditor()
+  const ctx = (await import("../../src/runtime/plugin-context")).createPluginContext(editor)
+  try {
+    install(editor, ctx)
+    const dir = mkdtempSync(join(tmpdir(), "md-idle-"))
+    const note = join(dir, "note.md")
+    const other = join(dir, "note.txt")
+    writeFileSync(note, "a\n")
+    writeFileSync(other, "a\n")
+    const md = await editor.openFile(note)
+    const txt = await editor.openFile(other)
+    md.insert("b")
+    txt.insert("b")
+    await new Promise(resolve => setTimeout(resolve, 900))
+    expect(readFileSync(note, "utf8")).toBe(md.text)
+    expect(md.dirty).toBe(false)
+    // Only markdown and gfm buffers save on idle.
+    expect(readFileSync(other, "utf8")).toBe("a\n")
+  } finally {
+    ctx.dispose()
+    setCustom("markdown-auto-save-idle-seconds", before ?? 2)
+  }
 })
