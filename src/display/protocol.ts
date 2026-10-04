@@ -137,6 +137,8 @@ export type TerminalData = {
 export type NormalizedInput =
   | { type: "key"; key: KeyEventLike }
   | { type: "paste"; text: string }
+  /** Clipboard media pasted in a GUI (an image), base64-encoded. */
+  | { type: "paste-media"; mime: string; data: string }
   /** `drag: true` means the button is still held and point should extend the
    *  region from the mark set on press. */
   | { type: "mouse"; windowId: string; row: number; col: number; button?: number; drag?: boolean }

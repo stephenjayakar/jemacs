@@ -236,6 +236,10 @@ export class ElectronHost implements UiHost {
       for (const handler of this.fontMetricsHandlers) handler()
     })
     ipcMain.handle("jemacs:read-clipboard", () => clipboard.readText())
+    ipcMain.handle("jemacs:read-clipboard-image", () => {
+      const image = clipboard.readImage()
+      return image.isEmpty() ? "" : image.toPNG().toString("base64")
+    })
     ipcMain.on("jemacs:hide-application", () => app.hide())
     ipcMain.on("jemacs:ready", event => {
       const win = BrowserWindow.fromWebContents(event.sender)

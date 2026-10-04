@@ -8,6 +8,7 @@ import { scrollWindowByLines } from "./display/scroll"
 import { modeSystem } from "./kernel/extension-points"
 import { tabBarHitTest } from "./display/tab-bar"
 import { RIGHT_MARGIN_CLICK, rightMarginClick } from "./display/right-margin"
+import { yankMedia } from "./runtime/yank-media"
 
 export type JemacsHostBinding = {
   present: () => void
@@ -77,6 +78,9 @@ export function bindJemacsHost(editor: Editor, host: UiHost): JemacsHostBinding 
           buf.insert(input.text)
           await editor.changed("paste")
         }
+      } else if (input.type === "paste-media") {
+        // The major mode's `yank-media` handler decides where the media goes.
+        if (await yankMedia(editor, input.mime, Uint8Array.from(atob(input.data), c => c.charCodeAt(0)))) await editor.changed("paste-media")
       } else if (input.type === "mouse") {
         const pane = findPaneInModel(lastModel.windows, input.windowId)
         const leaf = findWindowLeaf(editor.windowLayout, input.windowId)

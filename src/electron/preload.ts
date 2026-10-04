@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld("jemacs", {
   readClipboardText(): Promise<string> {
     return ipcRenderer.invoke("jemacs:read-clipboard")
   },
+  /** The clipboard image as base64 PNG, or "" when there is none. */
+  readClipboardImage(): Promise<string> {
+    return ipcRenderer.invoke("jemacs:read-clipboard-image")
+  },
   hideApplication(): void {
     ipcRenderer.send("jemacs:hide-application")
   },

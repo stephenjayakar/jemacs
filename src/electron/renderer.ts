@@ -21,6 +21,7 @@ declare global {
       sendInput(payload: unknown): void
       sendFontMetrics?(batch: unknown, reset: boolean): void
       readClipboardText(): string | Promise<string>
+      readClipboardImage?(): Promise<string>
       hideApplication?(): void
       ready(): void
     }
@@ -54,7 +55,13 @@ document.addEventListener("keydown", async event => {
   if (isDomPasteShortcut(event, domKeyPlatform(navigator.userAgent))) {
     event.preventDefault()
     const text = await window.jemacs.readClipboardText()
-    if (text) window.jemacs.sendInput({ type: "paste", text })
+    if (text) {
+      window.jemacs.sendInput({ type: "paste", text })
+      return
+    }
+    // No text: a screenshot or copied image goes to the mode's yank-media handler.
+    const data = await window.jemacs.readClipboardImage?.()
+    if (data) window.jemacs.sendInput({ type: "paste-media", mime: "image/png", data })
     return
   }
   if (window.jemacs.hideApplication && isDomHideShortcut(event, domKeyPlatform(navigator.userAgent))) {
@@ -68,10 +75,24 @@ document.addEventListener("keydown", async event => {
 
 document.addEventListener("paste", event => {
   const text = event.clipboardData?.getData("text")
-  if (!text) return
+  if (text) {
+    event.preventDefault()
+    window.jemacs.sendInput({ type: "paste", text })
+    return
+  }
+  const image = Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith("image/"))
+  if (!image) return
   event.preventDefault()
-  window.jemacs.sendInput({ type: "paste", text })
+  void image.arrayBuffer().then(bytes => {
+    window.jemacs.sendInput({ type: "paste-media", mime: image.type, data: base64(new Uint8Array(bytes)) })
+  })
 })
+
+function base64(bytes: Uint8Array): string {
+  let binary = ""
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
+}
 
 document.addEventListener("wheel", event => {
   if (event.defaultPrevented) return

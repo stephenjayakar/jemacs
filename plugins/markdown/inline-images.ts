@@ -10,6 +10,7 @@ import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
+import { obsidianAttachmentFolder, obsidianAttachmentSettings, obsidianVaultRoot } from "./paste-image"
 
 export type InlineImage = { src: string; width: number; height: number }
 
@@ -47,9 +48,10 @@ function safeDecode(target: string): string {
 }
 
 /**
- * Relative to the file first. A wiki embed (`![[x.png]]`) names a file
- * anywhere in the vault, so it also checks attachment folders in each
- * ancestor, up to the vault root (the folder holding `.obsidian`) or home.
+ * Relative to the file first. A wiki embed (`![[x.png]]`) or a bare-name
+ * link names a file anywhere in the vault, so it also checks attachment
+ * folders in each ancestor, up to the vault root (the folder holding
+ * `.obsidian`) or home, and then the vault's configured attachment folder.
  */
 function resolveImagePath(target: string, bufferPath: string | undefined, wiki: boolean): string | null {
   if (isAbsolute(target)) return existsSync(target) ? target : null
@@ -61,7 +63,7 @@ function resolveImagePath(target: string, bufferPath: string | undefined, wiki: 
   let found: string | null = null
   const direct = resolve(dirname(bufferPath), target)
   if (existsSync(direct)) found = direct
-  else if (wiki) {
+  else if (wiki || !target.includes("/")) {
     const home = homedir()
     let dir = dirname(bufferPath)
     for (let depth = 0; depth < 8 && !found; depth++) {
@@ -72,6 +74,12 @@ function resolveImagePath(target: string, bufferPath: string | undefined, wiki: 
       const parent = dirname(dir)
       if (existsSync(join(dir, ".obsidian")) || dir === home || parent === dir) break
       dir = parent
+    }
+    const vault = found ? null : obsidianVaultRoot(bufferPath)
+    if (vault) {
+      // `newLinkFormat: "absolute"` embeds are relative to the vault root.
+      const folder = obsidianAttachmentFolder(obsidianAttachmentSettings(vault), bufferPath)
+      found = [join(folder, target), join(vault, target)].find(candidate => existsSync(candidate)) ?? null
     }
   }
   resolveCache.set(key, { path: found, checkedAt: now })

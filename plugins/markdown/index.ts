@@ -16,6 +16,8 @@ import { registerTreeSitterGrammars } from "../tree-sitter-grammars"
 import { PIXEL_DISPLAY_LOCAL } from "../../src/display/pixel-wrap"
 import { saveContextOptions } from "../../src/core/save-context"
 import { findInlineImage, type InlineImage } from "./inline-images"
+import { markdownYankImage } from "./paste-image"
+import { yankMediaHandler } from "../../src/runtime/yank-media"
 
 const TAB_WIDTH = 4
 const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+/
@@ -2637,6 +2639,9 @@ export function install(editor: Editor, depsOrCtx: MarkdownDeps | PluginContext 
     ctx.onDispose(() => { gfmBackquoteAdviceId = undefined })
   }
   installMarkdownIdleAutoSave(editor, ctx)
+  // A GUI image paste saves the image (by the Obsidian vault's attachment
+  // rule, when there is one) and inserts its embed.
+  ctx.onDispose(yankMediaHandler("markdown", /^image\//, markdownYankImage))
 
   // Headers are bold as well as scaled: at 1.0-1.2x, scale alone does not read
   // as a heading in a proportional font.
