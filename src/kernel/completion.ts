@@ -241,8 +241,7 @@ export async function fileCompletionCandidatesBounded(
   const started = Date.now()
   const { listing, pending, settled } = await acquireListing(dirPath, budget)
   if (!listing) return { candidates: [], pending, settled }
-  const pfx = prefix.toLowerCase()
-  const matches = listing.names.filter(name => name.toLowerCase().startsWith(pfx))
+  const matches = completionStyleMatches(listing.names, prefix, completionStylesFor("file"))
   const remaining = Number.isFinite(budget) ? Math.max(0, budget - (Date.now() - started)) : budget
   const marked = await markDirectories(dirPath, matches, listing, remaining)
   return {
@@ -250,6 +249,43 @@ export async function fileCompletionCandidatesBounded(
     pending: pending || marked.pending,
     settled: settled ?? marked.settled,
   }
+}
+
+/**
+ * `completion-styles` for CATEGORY, after `completion-category-overrides`.
+ * An override entry is `[category, ["styles", ...names], ...]`, Emacs's
+ * `(file (styles substring basic))`.
+ */
+export function completionStylesFor(category?: string): string[] {
+  const overrides = getCustom<unknown>("completion-category-overrides")
+  if (category && Array.isArray(overrides)) {
+    for (const entry of overrides) {
+      if (!Array.isArray(entry) || entry[0] !== category) continue
+      const styles = entry.slice(1).find(prop => Array.isArray(prop) && prop[0] === "styles")
+      if (styles) return styles.slice(1).map(String)
+    }
+  }
+  const styles = getCustom<unknown>("completion-styles")
+  return Array.isArray(styles) ? styles.map(String) : ["basic"]
+}
+
+/**
+ * `completion-all-completions`: try STYLES in order and return the matches of
+ * the first one that finds any. `basic`, `emacs22` and `partial-completion`
+ * match a prefix; `substring` matches anywhere. Case is ignored, as
+ * `read-file-name-completion-ignore-case` does on macOS.
+ */
+export function completionStyleMatches(candidates: readonly string[], input: string, styles: readonly string[]): string[] {
+  const needle = input.toLowerCase()
+  for (const style of styles) {
+    let test: ((candidate: string) => boolean) | null = null
+    if (style === "basic" || style === "emacs22" || style === "partial-completion") test = c => c.toLowerCase().startsWith(needle)
+    else if (style === "substring") test = c => c.toLowerCase().includes(needle)
+    if (!test) continue
+    const matches = candidates.filter(test)
+    if (matches.length) return matches
+  }
+  return []
 }
 
 /** Candidates for `input`. Waits for the filesystem; use `fileCompletionCandidatesBounded` on a key path. */

@@ -57,7 +57,7 @@ import { modeHookName, runHooks, runHooksMaybeAsync } from "./hooks"
 import type { LspManager } from "../lsp/manager"
 import { fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
-import { defcustom, getCustom } from "../runtime/custom"
+import { defcustom, defvar, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
 import { canonicalMapName, registerKeyBinding } from "../runtime/key-registry"
 import type { SourceLocation } from "../runtime/source"
@@ -371,6 +371,8 @@ export class Editor {
       "Milliseconds a directory listing stays cached for find-file completion.",
       "minibuffer",
     )
+    defvar("completion-styles", ["basic", "partial-completion", "emacs22"], "Completion styles to try in order; the first that matches wins.", "minibuffer")
+    defvar("completion-category-overrides", [], "Per-category styles, e.g. [[\"file\", [\"styles\", \"substring\", \"basic\"]]].", "minibuffer")
     this.command("transient-resume", ({ editor }) => editor.resumeTransient(), "Resume the last suspended transient popup.")
     this.command("transient-quit-one", ({ editor }) => editor.transientQuitOne(), "Quit the active transient popup.")
     this.command("transient-quit-all", ({ editor }) => editor.transientQuitAll(), "Quit the active transient popup and its stack.")

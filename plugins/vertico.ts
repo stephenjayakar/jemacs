@@ -1,7 +1,7 @@
 import type { Editor, CompletingReadFunction, MinibufferCompletionFrontend } from "../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
 import { BufferModel } from "../src/kernel/buffer"
-import { expandUserPath, fileCompletionCandidatesBounded, splitCompletionInput } from "../src/kernel/completion"
+import { completionStyleMatches, completionStylesFor, expandUserPath, fileCompletionCandidatesBounded, splitCompletionInput } from "../src/kernel/completion"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 
 type VerticoState = {
@@ -395,9 +395,9 @@ function filterCandidates(editor: Editor, candidates: string[], input: string, f
   // Honour the active completion-style (fido/orderless set editor.completer); the
   // kernel's own path is short-circuited by our frontend.refresh so we must consult it here.
   if (editor.completer) return editor.completer(input, candidates)
-  const needle = input.trim().toLowerCase()
+  const needle = input.trim()
   if (!needle) return candidates
-  return candidates.filter(candidate => candidate.toLowerCase().startsWith(needle))
+  return completionStyleMatches(candidates, needle, completionStylesFor())
 }
 
 const lengthAlpha = (a: string, b: string): number => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)

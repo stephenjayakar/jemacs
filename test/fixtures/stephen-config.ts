@@ -39,6 +39,8 @@ export async function install(editor: Editor): Promise<void> {
   setCustom("markdown-fontify-code-blocks-natively", true)
   setCustom("markdown-indent-on-enter", "indent-and-new-item")
   setCustom("markdown-trim-trailing-whitespace-on-enter", true)
+  // find-file matches anywhere in a name: `spire` finds `kanto spire`.
+  setCustom("completion-category-overrides", [["file", ["styles", "substring", "basic"]]])
   setCustom("markdown-fill-column", 100)
   setCustom("markdown-visual-fill-column-center-text", true)
   // Keep the column's pixel width when zooming; bigger text wraps sooner.
