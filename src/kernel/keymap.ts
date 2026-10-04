@@ -76,7 +76,20 @@ export class KeymapStack {
   feed(key: KeyEventLike): KeyLookupResult {
     this.pending.push(keyToken(key))
     const sequence = this.pending.join(" ")
-    const result = this.lookup(sequence)
+    let result = this.lookup(sequence)
+
+    // Emacs shift-translation: an unbound shifted key (`S-<backspace>`,
+    // `C-S-n`) falls back to its unshifted binding.
+    if (result.status === "unmatched") {
+      const unshifted = unshiftToken(this.pending[this.pending.length - 1]!)
+      if (unshifted) {
+        const retry = this.lookup([...this.pending.slice(0, -1), unshifted].join(" "))
+        if (retry.status !== "unmatched") {
+          this.pending[this.pending.length - 1] = unshifted
+          result = retry
+        }
+      }
+    }
 
     if (result.status === "matched") {
       this.pending = []
@@ -140,6 +153,20 @@ export class KeymapStack {
   pendingSequence(): string {
     return this.pending.join(" ")
   }
+}
+
+/**
+ * Drop the shift modifier from a normalized token, or null when there is none.
+ * Plain shifted printables (`S-a`) are left alone: they self-insert as typed.
+ */
+function unshiftToken(token: string): string | null {
+  if (token.endsWith("-")) return null
+  const parts = token.split("-")
+  const key = parts.pop()!
+  if (!parts.includes("S")) return null
+  const mods = parts.filter(p => p !== "S")
+  if (!mods.length && key.length === 1) return null
+  return [...mods, key].join("-")
 }
 
 export function normalizeSequence(sequence: string): string {
