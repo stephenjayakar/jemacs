@@ -1718,7 +1718,9 @@ function markdownMouseClick(editor: Editor, buffer: BufferModel, point: number, 
   const link = linkAtPoint(buffer.text, point, markdownIsGfmMode(buffer))
   if (!link || point >= link.end) return false
   if (link.kind === "wiki") {
-    void markdownFollowWikiLink(editor, buffer, link, deps)
+    // Not run through the command loop, so report a failed visit here.
+    markdownFollowWikiLink(editor, buffer, link, deps)
+      .catch(error => editor.message(error instanceof Error ? error.message : String(error)))
     return true
   }
   if (link.kind === "reference") {

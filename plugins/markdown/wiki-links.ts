@@ -10,7 +10,7 @@
  * `markdown-wiki-link-search-subdirectories` also searched for below it.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path"
 import { obsidianVaultRoot } from "./paste-image"
 
@@ -65,8 +65,9 @@ function candidateNames(target: string): string[] {
   return target.toLowerCase().endsWith(".md") ? [target] : [target, `${target}.md`]
 }
 
+/** PATH when it is a file: a folder named like the note must not shadow `Name.md`. */
 function existingFile(path: string): string | null {
-  return existsSync(path) ? path : null
+  try { return statSync(path).isFile() ? path : null } catch { return null }
 }
 
 const SKIP_DIRS = new Set(["node_modules"])
@@ -175,9 +176,16 @@ export function wikiAnchorOffset(text: string, anchor: string): number | null {
   }
   const heading = slugHeading(anchor.split("#").filter(Boolean).at(-1) ?? anchor)
   let offset = 0
+  let fence: string | null = null
   for (const line of text.split("\n")) {
-    const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line)
-    if (match && slugHeading(match[1] ?? "") === heading) return offset
+    // A `# comment` inside a fenced block is code, not a heading.
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) {
+      fence = fence ? null : marker
+    } else if (!fence) {
+      const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line)
+      if (match && slugHeading(match[1] ?? "") === heading) return offset
+    }
     offset += line.length + 1
   }
   return null

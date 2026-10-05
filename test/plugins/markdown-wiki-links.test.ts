@@ -57,6 +57,17 @@ test("outside a vault links are relative to the file, searching subdirectories o
   expect(resolveWikiLink("b", join(plain, "a.md"), { vault: null, searchSubdirectories: true })).toEqual({ path: join(plain, "deep", "b.md"), exists: true })
 })
 
+test("a folder named like a note does not shadow the note", () => {
+  const plain = files(join(root, "shadow"), { "a.md": "", "Notes.md": "", "Notes/inner.md": "" })
+  expect(resolveWikiLink("Notes", join(plain, "a.md"), { vault: null })).toEqual({ path: join(plain, "Notes.md"), exists: true })
+  expect(resolveWikiLink("Places", join(vault, "x.md")).exists).toBe(false)
+})
+
+test("wikiAnchorOffset skips # lines inside fenced code", () => {
+  const text = "```bash\n# Setup\n```\n## Setup\n"
+  expect(wikiAnchorOffset(text, "Setup")).toBe(text.indexOf("## Setup"))
+})
+
 test("wikiAnchorOffset finds headings case-insensitively and block ids", () => {
   const text = "# Wusong\n\n## Drinks\nmai tai ^tai\n"
   expect(wikiAnchorOffset(text, "drinks")).toBe(text.indexOf("## Drinks"))
