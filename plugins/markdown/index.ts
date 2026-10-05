@@ -17,6 +17,7 @@ import { PIXEL_DISPLAY_LOCAL } from "../../src/display/pixel-wrap"
 import { saveContextOptions } from "../../src/core/save-context"
 import { findInlineImage, type InlineImage } from "./inline-images"
 import { markdownYankImage } from "./paste-image"
+import { resolveWikiLink, wikiAnchorOffset, wikiLinkOpensExternally, wikiLinks } from "./wiki-links"
 import { yankMediaHandler } from "../../src/runtime/yank-media"
 
 const TAB_WIDTH = 4
@@ -94,6 +95,7 @@ defcustom("markdown-code-lang-modes", "sexp", [
 defcustom("markdown-uri-types", "sexp", DEFAULT_MARKDOWN_URI_TYPES, "Link types for syntax highlighting of URIs.", "text")
 defcustom(MARKDOWN_GFM_LANGUAGE_HISTORY, "sexp", [] as string[], "Languages used in GFM fenced code block prompts.")
 defcustom("markdown-gfm-use-electric-backquote", "boolean", true, "When non-nil, typing ``` at BOL in GFM prompts for a fenced code language.", "text")
+defcustom("markdown-enable-wiki-links", "boolean", true, "When non-nil, fontify and follow [[wiki links]]. GNU markdown-mode defaults this to nil; jemacs notes are Obsidian vaults.", "text")
 defcustom("markdown-wiki-link-search-subdirectories", "boolean", false, "When non-nil, search for wiki link targets in subdirectories.", "text")
 defcustom("markdown-display-inline-images", "boolean", true, "Replace image links with inline placeholders in the display layer.", "text")
 defcustom("markdown-display-remote-images", "boolean", true, "Allow remote image URLs in inline image display.", "text")
@@ -1711,10 +1713,14 @@ function markdownToggleCheckboxAtPoint(buffer: BufferModel, point: number): bool
 // mouse-1 on a link follows it, as markdown-mode does with its default
 // `markdown-mouse-follow-link`. The end bound is exclusive so a click just past
 // the closing `)` only moves point.
-function markdownMouseClick(buffer: BufferModel, point: number, deps: MarkdownDeps): boolean {
+function markdownMouseClick(editor: Editor, buffer: BufferModel, point: number, deps: MarkdownDeps): boolean {
   if (markdownToggleCheckboxAtPoint(buffer, point)) return true
   const link = linkAtPoint(buffer.text, point, markdownIsGfmMode(buffer))
   if (!link || point >= link.end) return false
+  if (link.kind === "wiki") {
+    void markdownFollowWikiLink(editor, buffer, link, deps)
+    return true
+  }
   if (link.kind === "reference") {
     if (link.definitionStart == null) return false
     buffer.point = link.definitionStart
@@ -2487,9 +2493,13 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message("Nothing to kill at point")
   }, "Kill markup prefix at beginning of line.")
 
-  editor.command("markdown-follow-thing-at-point", ({ buffer, editor }) => {
+  editor.command("markdown-follow-thing-at-point", async ({ buffer, editor, prefixArgument }) => {
     const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
     if (!link) { editor.message("No link at point"); return }
+    if (link.kind === "wiki") {
+      await markdownFollowWikiLink(editor, buffer, link, deps, prefixArgument != null)
+      return
+    }
     if (link.kind === "reference") {
       if (link.definitionStart == null) { editor.message("No reference definition"); return }
       buffer.point = link.definitionStart
@@ -2502,7 +2512,13 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message(`Followed ${url}`)
   }, "Follow link at point.")
 
-  editor.command("markdown-do", ({ buffer, editor }) => {
+  editor.command("markdown-follow-wiki-link-at-point", async ({ buffer, editor, prefixArgument }) => {
+    const link = linkAtPoint(buffer.text, buffer.point)
+    if (link?.kind !== "wiki") { editor.message("Point is not at a Wiki Link"); return }
+    await markdownFollowWikiLink(editor, buffer, link, deps, prefixArgument != null)
+  }, "Find Wiki Link at point. With prefix argument, open the file in other window.")
+
+  editor.command("markdown-do", async ({ buffer, editor }) => {
     const checkbox = markdownToggleCheckbox(buffer, buffer.point)
     if (checkbox.changed) {
       editor.message(checkbox.message)
@@ -2515,6 +2531,10 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     }
     const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
     if (link) {
+      if (link.kind === "wiki") {
+        await markdownFollowWikiLink(editor, buffer, link, deps)
+        return
+      }
       if (link.kind === "reference") {
         if (link.definitionStart == null) { editor.message("No reference definition"); return }
         buffer.point = link.definitionStart
@@ -2679,7 +2699,7 @@ export function install(editor: Editor, depsOrCtx: MarkdownDeps | PluginContext 
     indentLine: markdownIndentLine,
     fontLock: markdownFontLock,
     displayFilter: markdownDisplayFilter,
-    mouseClick: (buffer, point) => markdownMouseClick(buffer, point, deps),
+    mouseClick: (buffer, point) => markdownMouseClick(editor, buffer, point, deps),
     onEnter: applyMarkdownFaceRemap,
   })
 
@@ -3649,10 +3669,13 @@ function headingLevelAt(text: string, point: number): number {
 type MarkdownLink = {
   start: number
   end: number
-  kind: "inline" | "auto" | "reference"
+  kind: "inline" | "auto" | "reference" | "wiki"
   url: string | null
   label?: string
   definitionStart?: number
+  /** Wiki links: the page part and the `#anchor` without its `#`. */
+  target?: string
+  anchor?: string
 }
 
 type ReferenceDefinition = {
@@ -3766,6 +3789,11 @@ function markdownLinks(text: string, includeBare = false): MarkdownLink[] {
       url: def?.url ?? null,
       definitionStart: def?.start,
     })
+  }
+  if (getCustom<boolean>("markdown-enable-wiki-links") ?? true) {
+    for (const wiki of wikiLinks(text)) {
+      links.push({ start: wiki.start, end: wiki.end, kind: "wiki", url: null, target: wiki.target, anchor: wiki.anchor })
+    }
   }
   if (includeBare) {
     const covered = links.map(link => [link.start, link.end] as [number, number])
@@ -3888,6 +3916,39 @@ function findCurrentParagraphEnd(text: string, point: number): number {
 }
 
 const SAFE_URL_SCHEME = /^(https?|mailto):/i
+
+/**
+ * `markdown-follow-wiki-link`: visit the page LINK names (or the new note it
+ * would create), then its `#anchor`. Attachments Obsidian views itself (PDFs,
+ * images, audio) go to the OS opener instead.
+ */
+async function markdownFollowWikiLink(editor: Editor, buffer: BufferModel, link: MarkdownLink, deps: MarkdownDeps, otherWindow = false): Promise<void> {
+  const target = link.target ?? ""
+  if (!buffer.path) {
+    if (target) { editor.message("Buffer has no file to resolve wiki links from"); return }
+  }
+  const local = buffer.locals.get("markdown-wiki-link-search-subdirectories")
+  const searchSubdirectories = typeof local === "boolean" ? local : getCustom<boolean>("markdown-wiki-link-search-subdirectories") ?? false
+  const resolved = buffer.path ? resolveWikiLink(target, buffer.path, { searchSubdirectories }) : null
+  let dest = buffer
+  if (resolved && resolved.path !== buffer.path) {
+    if (resolved.exists && wikiLinkOpensExternally(resolved.path)) {
+      markdownOpenExternal(pathToFileURL(resolved.path).href, deps, true)
+      editor.message(`Opened ${resolved.path}`)
+      return
+    }
+    if (otherWindow) editor.ensureOtherWindowSelected()
+    dest = await editor.openFile(resolved.path)
+    if (!resolved.exists) editor.message(`New note: ${resolved.path}`)
+  }
+  if (link.anchor) {
+    const offset = wikiAnchorOffset(dest.text, link.anchor)
+    if (offset == null) editor.message(`No heading ${link.anchor}`)
+    else dest.point = offset
+  }
+  // A mouse click redraws before the visit finishes; redraw at the anchor.
+  await editor.changed("markdown-follow-wiki-link")
+}
 
 function markdownOpenExternal(target: string, deps: MarkdownDeps = {}, allowFile = false): void {
   // The url comes from markdown link text — refuse anything that isn't a
