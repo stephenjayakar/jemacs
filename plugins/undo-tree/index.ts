@@ -487,33 +487,42 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     editor.displayBufferInOtherWindow(visualizer.id, { select: true })
   }, "Visualize the current buffer's undo tree.")
 
-  ctx.command("undo-tree-visualize-undo", ({ editor, buffer }) => {
+  // A numeric prefix is a repeat count, and a negative one runs the opposite
+  // command, as `undo-tree-undo-1` / `undo-tree-redo-1` do.
+  const visualizeUndoRedo = (editor: Editor, buffer: BufferModel, count: number) => {
     const parent = parentFromVisualizer(editor, buffer)
     if (!parent) return
-    if (!didMoveUndo(parent, () => parent.undo())) editor.message("No further undo/redo information")
+    for (let i = 0; i < Math.abs(count); i++) {
+      if (!didMoveUndo(parent, () => count > 0 ? parent.undo() : parent.redo())) {
+        editor.message("No further undo/redo information")
+        break
+      }
+    }
     rerenderCurrentVisualizer(editor, buffer)
-  }, "Undo in the visualizer parent buffer.")
+  }
 
-  ctx.command("undo-tree-visualize-redo", ({ editor, buffer }) => {
-    const parent = parentFromVisualizer(editor, buffer)
-    if (!parent) return
-    if (!didMoveUndo(parent, () => parent.redo())) editor.message("No further undo/redo information")
-    rerenderCurrentVisualizer(editor, buffer)
-  }, "Redo in the visualizer parent buffer.")
+  ctx.command("undo-tree-visualize-undo", ({ editor, buffer, prefixArgument }) => {
+    visualizeUndoRedo(editor, buffer, prefixArgument ?? 1)
+  }, "Undo in the visualizer parent buffer. A numeric ARG serves as a repeat count.")
 
-  ctx.command("undo-tree-visualize-switch-branch-left", ({ editor, buffer }) => {
-    const parent = parentFromVisualizer(editor, buffer)
-    if (!parent) return
-    switchBranch(parent, -1)
-    rerenderCurrentVisualizer(editor, buffer)
-  }, "Select the previous redo branch in the visualizer.")
+  ctx.command("undo-tree-visualize-redo", ({ editor, buffer, prefixArgument }) => {
+    visualizeUndoRedo(editor, buffer, -(prefixArgument ?? 1))
+  }, "Redo in the visualizer parent buffer. A numeric ARG serves as a repeat count.")
 
-  ctx.command("undo-tree-visualize-switch-branch-right", ({ editor, buffer }) => {
+  const visualizeSwitchBranch = (editor: Editor, buffer: BufferModel, count: number) => {
     const parent = parentFromVisualizer(editor, buffer)
     if (!parent) return
-    switchBranch(parent, 1)
+    switchBranch(parent, count)
     rerenderCurrentVisualizer(editor, buffer)
-  }, "Select the next redo branch in the visualizer.")
+  }
+
+  ctx.command("undo-tree-visualize-switch-branch-left", ({ editor, buffer, prefixArgument }) => {
+    visualizeSwitchBranch(editor, buffer, -(prefixArgument ?? 1))
+  }, "Select the previous redo branch in the visualizer. A numeric ARG serves as a repeat count.")
+
+  ctx.command("undo-tree-visualize-switch-branch-right", ({ editor, buffer, prefixArgument }) => {
+    visualizeSwitchBranch(editor, buffer, prefixArgument ?? 1)
+  }, "Select the next redo branch in the visualizer. A numeric ARG serves as a repeat count.")
 
   ctx.command("undo-tree-visualizer-quit", ({ editor, buffer }) => {
     quitVisualizer(editor, buffer)
