@@ -921,6 +921,26 @@ export class Editor {
     return buffer
   }
 
+  /** Point every buffer visiting FROM (or a file under it, for a directory move)
+   *  at TO, like Emacs `dired-rename-file` updating `buffer-file-name`. */
+  renameVisitedFiles(from: string, to: string): void {
+    let renamed = false
+    for (const buffer of this.buffers.values()) {
+      const path = buffer.path
+      if (!path) continue
+      if (path === from) {
+        buffer.path = to
+        if (buffer.kind === "file") buffer.name = basename(to)
+        renamed = true
+      }
+      else if (path.startsWith(from + sep)) {
+        buffer.path = to + path.slice(from.length)
+        renamed = true
+      }
+    }
+    if (renamed) this.uniquifyBufferNames()
+  }
+
   /** Uniquified name for header/mode-line and C-x b — `buffer.name` plus a `<dir>` suffix when basenames collide. */
   bufferDisplayName(bufferOrId: BufferModel | string): string {
     const buffer = typeof bufferOrId === "string" ? this.buffers.get(bufferOrId) : bufferOrId

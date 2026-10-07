@@ -27,6 +27,7 @@ export type DiredFileOps = {
   rename(from: string, to: string): Promise<void>
   mkdir(path: string): Promise<void>
   touch(path: string, mtime: Date): Promise<void>
+  isDirectory?(path: string): Promise<boolean>
 }
 
 export const diredEntryLines = new WeakMap<BufferModel, DiredEntry[]>()
@@ -426,21 +427,15 @@ export async function diredDoCopy(editor: Editor, buffer: BufferModel, prefixArg
     editor.message("No files to copy")
     return
   }
-  const target = await editor.completingRead("Copy to: ", {
-    completion: "file",
-    history: "file",
-    initialValue: buffer.path ?? cwd(),
-  })
+  const target = await diredReadCreateTarget(editor, buffer, entries, prefixArgument, "Copy")
   if (!target) return
   const ops = diredFileOps(buffer)
-  const destDir = diredResolve(target)
-  await ops.mkdir(destDir)
   const failed: { entry: DiredEntry; err: Error }[] = []
   let ok = 0
   try {
     for (const entry of entries) {
       try {
-        await ops.copyFile(entry.path, join(destDir, basename(entry.path)), entry.isDirectory)
+        await ops.copyFile(entry.path, diredTargetPath(target, entry), entry.isDirectory)
         ok++
       } catch (err) {
         failed.push({ entry, err: err as Error })
@@ -448,7 +443,7 @@ export async function diredDoCopy(editor: Editor, buffer: BufferModel, prefixArg
     }
   } finally {
     await refreshDiredBuffer(buffer)
-    editor.message(`Copied ${ok} file(s) to ${destDir}${formatFailures(failed)}`)
+    editor.message(`Copied ${ok} file(s) to ${target.path}${formatFailures(failed)}`)
   }
 }
 
@@ -458,31 +453,18 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
     editor.message("No file to rename")
     return
   }
-  if (entries.length === 1) {
-    const entry = entries[0]!
-    const target = await editor.prompt("Rename to: ", entry.name, "dired-rename")
-    if (!target || target === entry.name) return
-    const dest = join(dirname(entry.path), target)
-    await diredFileOps(buffer).rename(entry.path, dest)
-    await refreshDiredBuffer(buffer)
-    editor.message(`Renamed to ${basename(dest)}`)
-    return
-  }
-  const target = await editor.completingRead("Move marked files to: ", {
-    completion: "file",
-    history: "file",
-    initialValue: buffer.path ?? cwd(),
-  })
+  const target = await diredReadCreateTarget(editor, buffer, entries, prefixArgument, "Rename")
   if (!target) return
   const ops = diredFileOps(buffer)
-  const destDir = diredResolve(target)
-  await ops.mkdir(destDir)
   const failed: { entry: DiredEntry; err: Error }[] = []
   let ok = 0
   try {
     for (const entry of entries) {
+      const dest = diredTargetPath(target, entry)
+      if (dest === entry.path) continue
       try {
-        await ops.rename(entry.path, join(destDir, basename(entry.path)))
+        await ops.rename(entry.path, dest)
+        editor.renameVisitedFiles(entry.path, dest)
         ok++
       } catch (err) {
         failed.push({ entry, err: err as Error })
@@ -490,8 +472,49 @@ export async function diredDoRename(editor: Editor, buffer: BufferModel, prefixA
     }
   } finally {
     await refreshDiredBuffer(buffer)
-    editor.message(`Moved ${ok} file(s) to ${destDir}${formatFailures(failed)}`)
+    editor.message(!target.intoDirectory && ok === 1
+      ? `Renamed to ${target.path}${formatFailures(failed)}`
+      : `Moved ${ok} file(s) to ${target.path}${formatFailures(failed)}`)
   }
+}
+
+type DiredCreateTarget = { path: string; intoDirectory: boolean }
+
+/** dired-aux `dired-do-create-files`: read a destination starting from the
+ *  Dired directory. A single file may get a new name (anywhere) or be dropped
+ *  into an existing directory; several files always go into a directory. A
+ *  trailing slash or a multi-file target creates the directory if missing. */
+async function diredReadCreateTarget(
+  editor: Editor,
+  buffer: BufferModel,
+  entries: DiredEntry[],
+  prefixArgument: number | null,
+  verb: "Copy" | "Rename",
+): Promise<DiredCreateTarget | null> {
+  const dir = buffer.path ?? cwd()
+  const input = await editor.completingRead(`${verb} ${diredMarkPrompt(entries, "*", prefixArgument)} to: `, {
+    completion: "file",
+    history: "file",
+    initialValue: dir.endsWith("/") ? dir : `${dir}/`,
+  })
+  if (!input?.trim()) return null
+  const path = diredResolve(dir, expandUserPath(input.trim()))
+  const ops = diredFileOps(buffer)
+  if (entries.length > 1 || input.trim().endsWith("/")) {
+    await ops.mkdir(path)
+    return { path, intoDirectory: true }
+  }
+  return { path, intoDirectory: await diredIsDirectory(ops, path) }
+}
+
+function diredTargetPath(target: DiredCreateTarget, entry: DiredEntry): string {
+  return target.intoDirectory ? join(target.path, basename(entry.path)) : target.path
+}
+
+async function diredIsDirectory(ops: DiredFileOps, path: string): Promise<boolean> {
+  if (ops.isDirectory) return ops.isDirectory(path)
+  const info = await stat(path)
+  return info != null && isDirectory(info)
 }
 
 export async function diredDoChmod(editor: Editor, buffer: BufferModel, prefixArgument: number | null, modeArg?: string): Promise<void> {
