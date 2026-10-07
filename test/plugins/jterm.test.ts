@@ -2,6 +2,7 @@ import { expect, test, describe, beforeEach } from "bun:test"
 import { BufferModel } from "../../src/kernel/buffer"
 import { TERMINAL_SURFACE_LOCAL } from "../../src/display/terminal-surface"
 import { getMode } from "../../src/modes/mode"
+import { listWindowLeaves } from "../../src/kernel/window"
 import { setCustom } from "../../src/runtime/custom"
 import { currentKill } from "../../src/runtime/kill-ring"
 import {
@@ -205,6 +206,27 @@ describe("jterm: char-mode / copy-mode", () => {
     await editor.handleKey({ name: "tab", ctrl: true, shift: true, sequence: "\x1b[9;6u", raw: "\x1b[9;6u" })
     await Promise.resolve()
     expect(pty.sent).toBe("")
+  })
+
+  test("C-x and M-x fall through to the editor in char-mode (vterm-keymap-exceptions)", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("*jterm*", "", "jterm-mode")
+    const pty = fakePty()
+    sessions.set(buffer, new JTermSession(editor, buffer, pty, makeXTerm(4, 20), 4, 20, "jterm"))
+
+    await editor.run("jterm-char-mode")
+    expect(jtermRawMap.get("C-x")).toBeUndefined()
+    expect(jtermRawMap.get("C-x 0")).toBeUndefined()
+    expect(jtermRawMap.get("M-x")).toBeUndefined()
+    expect(jtermRawMap.get("C-a")).toBe("jterm-send-raw")
+
+    await editor.run("split-window-below")
+    await editor.handleKey({ name: "x", ctrl: true, sequence: "\x18" })
+    await editor.handleKey({ name: "0", sequence: "0" })
+    await Promise.resolve()
+    expect(pty.sent).toBe("")
+    expect(listWindowLeaves(editor.windowLayout)).toHaveLength(1)
   })
 
   test("char-mode bindings stop when another buffer becomes current", async () => {
