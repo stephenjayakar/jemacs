@@ -10,6 +10,7 @@ import {
   diredDoCompressTo,
   diredDoCopy,
   diredDoDelete,
+  diredDoRename,
   diredFindRegexpCommand,
   diredDoFlaggedDelete,
   diredDoShellCommand,
@@ -130,9 +131,9 @@ test("dired copies and deletes files with Emacs-style prompts", async () => {
     diredMarkEntry(buffer, diredEntryAtPoint(buffer), "marked")
 
     const copyPrompt = diredDoCopy(editor, buffer, null)
-    expect(editor.minibuffer?.prompt).toContain("Copy to:")
-    editor.activeBuffer.setText(dest, true)
-    editor.activeBuffer.point = dest.length
+    expect(editor.minibuffer?.prompt).toBe("Copy alpha.txt to: ")
+    editor.activeBuffer.setText(`${dest}/`, true)
+    editor.activeBuffer.point = dest.length + 1
     await editor.handleKey({ name: "return" })
     await copyPrompt
     expect(await readFile(join(dest, "alpha.txt"), "utf8")).toBe("alpha")
@@ -156,6 +157,64 @@ test("dired copies and deletes files with Emacs-style prompts", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
     await rm(dest, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-rename moves a single file into another directory or to a new path", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  const other = `${dir}-other`
+  await mkdir(other, { recursive: true })
+  try {
+    const visiting = await editor.openFile(join(dir, "alpha.txt"))
+    const buffer = await editor.openDirectory(dir)
+
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    const move = diredDoRename(editor, buffer, null)
+    expect(editor.minibuffer?.prompt).toBe("Rename alpha.txt to: ")
+    expect(editor.activeBuffer.text).toBe(`${dir}/`)
+    editor.activeBuffer.setText(other, true)
+    editor.activeBuffer.point = other.length
+    await editor.handleKey({ name: "return" })
+    await move
+    expect(await readFile(join(other, "alpha.txt"), "utf8")).toBe("alpha")
+    expect(buffer.text).not.toContain("alpha.txt")
+    expect(visiting.path).toBe(join(other, "alpha.txt"))
+
+    buffer.point = buffer.text.indexOf("beta.txt")
+    const renamed = join(other, "gamma.txt")
+    const rename = diredDoRename(editor, buffer, null)
+    editor.activeBuffer.setText(renamed, true)
+    editor.activeBuffer.point = renamed.length
+    await editor.handleKey({ name: "return" })
+    await rename
+    expect(await readFile(renamed, "utf8")).toBe("beta")
+    await expect(stat(join(dir, "beta.txt"))).rejects.toThrow()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+    await rm(other, { recursive: true, force: true })
+  }
+})
+
+test("dired-do-copy copies a single file to a new name", async () => {
+  installDefaultModes()
+  const editor = new Editor()
+  installDefaultCommands(editor)
+  const dir = await tempDiredDir()
+  try {
+    const buffer = await editor.openDirectory(dir)
+    buffer.point = buffer.text.indexOf("alpha.txt")
+    const copy = diredDoCopy(editor, buffer, null)
+    editor.activeBuffer.setText(`${dir}/alpha-copy.txt`, true)
+    editor.activeBuffer.point = editor.activeBuffer.text.length
+    await editor.handleKey({ name: "return" })
+    await copy
+    expect(await readFile(join(dir, "alpha-copy.txt"), "utf8")).toBe("alpha")
+    expect(buffer.text).toContain("alpha-copy.txt")
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })
 

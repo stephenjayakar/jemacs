@@ -307,6 +307,9 @@ function trampDiredFileOps(transport: RemoteTransport): DiredFileOps {
     return file
   }
   return {
+    async isDirectory(path: string): Promise<boolean> {
+      return await transport.fileKind(parse(path)) === "directory"
+    },
     async listDirectory(path: string): Promise<DiredEntry[]> {
       const file = parse(path)
       const parent = posixDirname(file.localname)
