@@ -79,12 +79,10 @@ export class Evaluator {
 
   async loadModule(path: string): Promise<Record<string, unknown>> {
     const full = resolve(path)
-    // Bun caches ESM by resolved disk path, ignoring the URL query string,
-    // so the ?t= trick that works on Node is a no-op here. Evict explicitly.
-    const loader = (globalThis as { Loader?: { registry: Map<string, unknown> } }).Loader
-    loader?.registry.delete(full)
-    const url = `${pathToFileURL(full).href}?t=${Date.now()}_${importSeq++}`
-    return await import(url)
+    // Bun caches a file:// URL by its disk path and ignores the query, but a
+    // plain path with a fresh query re-evaluates the module. Node needs the URL.
+    const bust = `?t=${Date.now()}_${importSeq++}`
+    return await import(typeof Bun !== "undefined" ? `${full}${bust}` : `${pathToFileURL(full).href}${bust}`)
   }
 
   async loadPlugin(path: string): Promise<unknown> {
