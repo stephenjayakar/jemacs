@@ -124,10 +124,10 @@ test("magit-status opens a read-only *magit: <repo>* buffer in magit-status mode
   expect(buf.text).toContain("+changed")
 })
 
-test("magit-status shows diffs under diff.mnemonicPrefix and diff.noPrefix", async () => {
+test("magit-status shows diffs under diff.mnemonicPrefix, noPrefix and srcPrefix", async () => {
   // Magit pins these through `magit-git-global-arguments`; unpinned, the
   // status diffs came out as `i/a.txt w/a.txt` and the parser dropped them.
-  for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noPrefix", "true"], ["color.ui", "always"]]) {
+  for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noPrefix", "true"], ["diff.srcPrefix", "SRC/"], ["color.ui", "always"]]) {
     await git(["config", key!, value!])
   }
   const editor = ed()

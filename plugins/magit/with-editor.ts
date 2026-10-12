@@ -151,7 +151,7 @@ export async function abortWithEditorBuffer(buffer: BufferModel): Promise<boolea
 }
 
 /** Git's `--verbose` scissors line; everything from it down is dropped by `git commit`. */
-const GIT_COMMIT_SCISSORS = /^\S -+ >8 -+$/m
+const GIT_COMMIT_SCISSORS = /^\S+ -{24} >8 -{24}\r?$/m
 
 export function gitCommitMessageBody(text: string): string {
   const scissors = GIT_COMMIT_SCISSORS.exec(text)

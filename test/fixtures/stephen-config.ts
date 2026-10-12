@@ -4,7 +4,7 @@ import type { Editor } from "../../src/kernel/editor"
 import type { CommandContext } from "../../src/kernel/command"
 import { listCustomVariables, resetCustom, setCustom } from "../../src/runtime/custom"
 import { getCustomizedFaceOverrides, resetFace, setFaceAttribute } from "../../src/runtime/faces"
-import { enableBuiltinTheme } from "../../src/themes"
+import { disableBuiltinTheme, enableBuiltinTheme } from "../../src/themes"
 import { install as installGruvboxDarkHardTheme } from "../../plugins/gruvbox-dark-hard"
 import { modusVivendiTheme, install as installModusVivendiTheme } from "../../plugins/modus-vivendi"
 import { install as installVertico } from "../../plugins/vertico"
@@ -32,13 +32,14 @@ function installPersonalCommands(editor: Editor): void {
 }
 
 /**
- * Undo the fixture's global option and face customizations. Bun runs every
+ * Undo the fixture's global option, face and theme customizations. Bun runs every
  * test file in one process, so a file that installs this fixture must call
  * this in `afterAll`, or later files inherit Stephen's settings.
  */
 export function resetStephenConfig(): void {
   for (const { name } of getCustomizedFaceOverrides()) resetFace(name)
   for (const variable of listCustomVariables()) if (variable.customized) resetCustom(variable.name)
+  disableBuiltinTheme(modusVivendiTheme.name)
 }
 
 /** Test fixture mirroring Stephen's personal config (see jemacs-stephen-config). */

@@ -28,6 +28,8 @@ export const MAGIT_GIT_GLOBAL_ARGUMENTS = [
   "-c", "color.diff=false",
   "-c", "diff.noPrefix=false",
   "-c", "diff.mnemonicPrefix=false",
+  "-c", "diff.srcPrefix=a/",
+  "-c", "diff.dstPrefix=b/",
 ]
 const PROCESS_ENTRIES_LOCAL = "magit-process-entries"
 
