@@ -42,6 +42,13 @@ export function sessionFor(buffer: BufferModel): JTermSession | undefined {
 
 defcustom("jterm-scrollback", "integer", 10_000, "Lines of scrollback the headless xterm keeps.", "comint")
 defcustom("jterm-bracketed-paste", "boolean", true, "Wrap paste payloads in ESC[200~…ESC[201~ so the child can opt in.", "comint")
+defcustom(
+  "jterm-keymap-exceptions",
+  { kind: "repeat", item: "string" },
+  ["C-x", "M-x"],
+  "Keys that char-mode passes to the editor instead of the terminal (vterm-keymap-exceptions).",
+  "comint",
+)
 defcustom("jterm-bell-handler", "string", "message", "How to surface a BEL from the child: 'message', 'ignore', or a custom command name.", "comint")
 
 /** Resolve the window body's row/col from buffer.locals. Defaults to 30x100
