@@ -32,6 +32,13 @@ describe("dynamic collections", () => {
   /** Let the debounce timer fire and the query it starts finish painting. */
   const settle = (ms = DEBOUNCE * 6) => new Promise(resolve => setTimeout(resolve, ms))
 
+  /** Settle, then wait until the count line drops its pending `...` marker: on a
+   *  busy machine the query can still be running after a fixed settle. */
+  async function answered(editor: ReturnType<typeof makeEditor>): Promise<void> {
+    await settle()
+    for (const deadline = Date.now() + 5000; display(editor).includes("...") && Date.now() < deadline;) await settle(10)
+  }
+
   function openDynamic(source: (input: string, signal: AbortSignal) => Promise<string[]>) {
     const editor = makeEditor()
     install(editor)
@@ -45,7 +52,7 @@ describe("dynamic collections", () => {
     // Deliberately not sorted: a remote source ranks its own results and vertico must not resort.
     const { editor, result } = openDynamic(async input => [`${input}-zzz`, `${input}-a`, `${input}-mm`])
     await editor.handleKey({ name: "q", sequence: "q" })
-    await settle()
+    await answered(editor)
     const lines = display(editor).split("\n")
     expect(lines[0]).toContain("1/3")
     expect(lines.slice(1)).toEqual(["> q-zzz", "  q-a", "  q-mm"])
@@ -58,7 +65,7 @@ describe("dynamic collections", () => {
     // appears in verbatim.
     const { editor, result } = openDynamic(async () => ["java/com/example/Widget.java"])
     await editor.handleKey({ name: "w", sequence: "w" })
-    await settle()
+    await answered(editor)
     expect(display(editor)).toContain("> java/com/example/Widget.java")
     editor.minibufferCancel()
     await result
@@ -97,7 +104,7 @@ describe("dynamic collections", () => {
     await editor.handleKey({ name: "b", sequence: "b" })
     await settle()
     release[0]?.()
-    await settle()
+    await answered(editor)
 
     expect(started).toEqual(["a", "ab"])
     expect(display(editor)).toContain("> fresh")
@@ -128,7 +135,7 @@ describe("dynamic collections", () => {
     await editor.handleKey({ name: "x", sequence: "x" })
     // Still inside the debounce window: the display says a query is pending, not "no matches".
     expect(display(editor)).toContain("...")
-    await settle()
+    await answered(editor)
     expect(display(editor)).toContain("1/1")
     expect(display(editor)).not.toContain("...")
     editor.minibufferCancel()
@@ -143,7 +150,7 @@ describe("dynamic collections", () => {
     })
     // Three fast keystrokes: the first two are still debouncing when the next one lands.
     for (const key of ["a", "b", "c"]) await editor.handleKey({ name: key, sequence: key })
-    await settle()
+    await answered(editor)
     expect(queries).toEqual(["abc"])
     editor.minibufferCancel()
     await result
@@ -152,7 +159,7 @@ describe("dynamic collections", () => {
   test("vertico-exit returns the highlighted dynamic candidate", async () => {
     const { editor, result } = openDynamic(async input => [`${input}-one`, `${input}-two`])
     await editor.handleKey({ name: "z", sequence: "z" })
-    await settle()
+    await answered(editor)
     await editor.run("vertico-next")
     await editor.run("vertico-exit")
     await expect(result).resolves.toBe("z-two")
