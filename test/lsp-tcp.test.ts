@@ -2,6 +2,13 @@ import { expect, test } from "bun:test"
 import { createServer } from "node:net"
 import { tcpConnection } from "../src/lsp/tcp"
 
+/** Poll COND until it holds or 5s pass; the assertions after it report a miss. */
+async function until(cond: () => boolean): Promise<void> {
+  for (const deadline = Date.now() + 5000; !cond() && Date.now() < deadline;) {
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
 test("tcpConnection establishes TCP connection and forwards data", async () => {
   // Create a dummy TCP server that echos back
   const server = createServer(socket => {
@@ -42,8 +49,8 @@ test("tcpConnection establishes TCP connection and forwards data", async () => {
   // Send a message
   handle.send("hello lsp")
 
-  // Wait a bit for the TCP roundtrip
-  await new Promise(r => setTimeout(r, 50))
+  // Wait for the TCP roundtrip; a fixed 50ms sleep flaked on a loaded machine.
+  await until(() => receivedData === "hello lsp")
 
   expect(receivedData).toBe("hello lsp")
   expect(closed).toBe(false)
@@ -51,8 +58,7 @@ test("tcpConnection establishes TCP connection and forwards data", async () => {
   // Kill the connection
   handle.proc.kill()
 
-  // Wait a bit for close event
-  await new Promise(r => setTimeout(r, 50))
+  await until(() => closed)
   expect(closed).toBe(true)
 
   // Close server

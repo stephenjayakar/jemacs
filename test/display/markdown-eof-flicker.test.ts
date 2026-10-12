@@ -124,7 +124,7 @@ describe("markdown viewport converges near end of file", () => {
       }
     }
     expect(unstable).toEqual([])
-  })
+  }, 60_000) // 144 renders: ~1s on CI, but well past the 12s default on a busy machine
 
   test("settles at every point in the last screenful", () => {
     const editor = makeEditor()

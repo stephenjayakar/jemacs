@@ -1,7 +1,11 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { script } from "../harness"
 import { tilingLayout, tileMove } from "../../plugins/tiling"
 import { listWindowLeaves } from "../../src/kernel/window"
+import { resetCustom } from "../../src/runtime/custom"
+
+// `tiling-layout` is a global option; cycling it must not leak into later tests.
+afterEach(() => { resetCustom("tiling-layout") })
 
 describe("tiling", () => {
   test("kernel has no tiling state", async () => {

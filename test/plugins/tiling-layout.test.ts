@@ -1,9 +1,13 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { script } from "../harness"
 import { applyTilingLayout, cycleTilingLayout, tilingLayout, tilingLayouts } from "../../plugins/tiling"
 import { BufferModel } from "../../src/kernel/buffer"
 import { Editor } from "../../src/kernel/editor"
 import { listWindowLeaves, type WindowNode } from "../../src/kernel/window"
+import { resetCustom } from "../../src/runtime/custom"
+
+// `tiling-layout` is a global option; cycling it must not leak into later tests.
+afterEach(() => { resetCustom("tiling-layout") })
 
 /** Give the frame `n` windows, each showing a distinct buffer, selection back on the first. */
 async function frameWith(n: number): Promise<Editor> {
@@ -200,7 +204,7 @@ describe("tiling layout application", () => {
         expectBalanced(e.windowLayout)
       }
     }
-  })
+  }, 60_000) // one full editor per layout and count: ~1s on CI, far slower on a busy machine
 
   test("re-tiling keeps the selected window's point", async () => {
     const e = await frameWith(3)

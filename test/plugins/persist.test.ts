@@ -269,13 +269,19 @@ test("idle autosave flushes both savehist and recentf", async () => {
     await recentfSaveList()
     n++
   })
-  await sleep(30)
-  expect(n).toBeGreaterThanOrEqual(1)
-  const hist = JSON.parse(await readFile(join(dir, "history.json"), "utf8")) as Record<string, string[]>
-  expect(hist.file).toEqual(["/z"])
-  const recent = JSON.parse(await readFile(join(dir, "recentf.json"), "utf8")) as string[]
-  expect(recent).toEqual(["/z"])
-  cancelTimer(t)
+  try {
+    // Wait for the first flush instead of a fixed sleep: on a loaded machine
+    // the 10ms timer plus two file writes can take far longer than 30ms.
+    for (const deadline = Date.now() + 5000; n === 0 && Date.now() < deadline;) await sleep(10)
+    expect(n).toBeGreaterThanOrEqual(1)
+    const hist = JSON.parse(await readFile(join(dir, "history.json"), "utf8")) as Record<string, string[]>
+    expect(hist.file).toEqual(["/z"])
+    const recent = JSON.parse(await readFile(join(dir, "recentf.json"), "utf8")) as string[]
+    expect(recent).toEqual(["/z"])
+  } finally {
+    // A timer left running rewrites history.json under the next test.
+    cancelTimer(t)
+  }
 })
 
 test("install loads persisted state from disk", async () => {
