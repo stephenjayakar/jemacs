@@ -2,8 +2,8 @@ import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import type { Editor } from "../../src/kernel/editor"
 import type { CommandContext } from "../../src/kernel/command"
-import { setCustom } from "../../src/runtime/custom"
-import { setFaceAttribute } from "../../src/runtime/faces"
+import { listCustomVariables, resetCustom, setCustom } from "../../src/runtime/custom"
+import { getCustomizedFaceOverrides, resetFace, setFaceAttribute } from "../../src/runtime/faces"
 import { enableBuiltinTheme } from "../../src/themes"
 import { install as installGruvboxDarkHardTheme } from "../../plugins/gruvbox-dark-hard"
 import { modusVivendiTheme, install as installModusVivendiTheme } from "../../plugins/modus-vivendi"
@@ -29,6 +29,16 @@ function installPersonalCommands(editor: Editor): void {
   editor.command("my/bind-key", bindKey, "Interactively bind a key.")
   editor.command("my/bind", bindKey, "Alias for `my/bind-key`.")
   editor.command("i-bind-key", bindKey, "Alias for `my/bind-key`.")
+}
+
+/**
+ * Undo the fixture's global option and face customizations. Bun runs every
+ * test file in one process, so a file that installs this fixture must call
+ * this in `afterAll`, or later files inherit Stephen's settings.
+ */
+export function resetStephenConfig(): void {
+  for (const { name } of getCustomizedFaceOverrides()) resetFace(name)
+  for (const variable of listCustomVariables()) if (variable.customized) resetCustom(variable.name)
 }
 
 /** Test fixture mirroring Stephen's personal config (see jemacs-stephen-config). */

@@ -1,14 +1,16 @@
-import { expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { Editor } from "../src/kernel/editor"
 import { Keymap } from "../src/kernel/keymap"
 import { installDefaultConfig } from "../src/config"
-import { install as installStephenConfig } from "./fixtures/stephen-config"
+import { install as installStephenConfig, resetStephenConfig } from "./fixtures/stephen-config"
 import { installDefaultModes } from "../src/modes/default-modes"
 import { defineMinorMode } from "../src/modes/minor-mode"
 import { setCustom } from "../src/runtime/custom"
 import { formatWithLineNumbers, mapVisibleOffset } from "../src/ui/line-numbers"
 import { visibleStyledText, visibleStyledTextFromStart } from "../src/ui/opentui"
 import { defaultTheme } from "../src/themes"
+
+afterAll(resetStephenConfig)
 
 test("minor mode keymaps take precedence over major and global maps", () => {
   installDefaultModes()

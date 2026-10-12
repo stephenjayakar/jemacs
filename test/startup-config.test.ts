@@ -1,10 +1,13 @@
-import { expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig, installUserConfig } from "../src/config"
 import { loadStartupConfig, parseStartupArgs } from "../src/config/startup"
+import { resetStephenConfig } from "./fixtures/stephen-config"
+
+afterAll(resetStephenConfig)
 
 test("parseStartupArgs collects config flags and file args", () => {
   const args = parseStartupArgs(["bun", "src/main.ts", "--config", "./local.ts", "--gui", "--config=./other.ts", "README.md"])
