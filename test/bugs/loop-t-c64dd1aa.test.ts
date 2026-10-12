@@ -1,7 +1,7 @@
 import { expect, test, spyOn } from "bun:test"
 import Parser from "tree-sitter"
 import { BufferModel } from "../../src/kernel/buffer"
-import { treeSitterFontLock } from "../../src/modes/tree-sitter"
+import { resolveCaptureOverlaps, treeSitterFontLock } from "../../src/modes/tree-sitter"
 import { registerTreeSitterGrammars } from "../../plugins/tree-sitter-grammars"
 
 registerTreeSitterGrammars()
@@ -51,19 +51,43 @@ test("tree-sitter: unchanged buffer skips reparse entirely", () => {
 // every candidate scanned every chosen span. Now resolved by a per-priority-tier
 // merge, O(n log n). 3k one-line statements → ~10⁴ captures; the old path was ~10⁸
 // comparisons and took seconds.
-test("tree-sitter: highlight dedup is sub-quadratic on thousands of captures", () => {
+test("tree-sitter: thousands of captures all surface", () => {
   const src = Array.from({ length: 5000 }, (_, i) => `const v${i} = ${i}`).join("\n") + "\n"
   const buf = new BufferModel({ name: "big.ts", text: src, mode: "typescript" })
-  treeSitterFontLock("typescript", buf) // warm: grammar load + first parse
-  const t0 = performance.now()
   const spans = treeSitterFontLock("typescript", buf)
-  const ms = performance.now() - t0
   // 5000 `const` keywords + 5000 numbers must all surface.
   expect(spans.filter(s => s.face === "keyword").length).toBeGreaterThanOrEqual(5000)
   expect(spans.filter(s => s.face === "number").length).toBe(5000)
-  // Old path (full reparse + O(captures²) dedup) took ~480ms here; new path
-  // (cached tree + tier-merge dedup) is ~60ms.
-  expect(ms).toBeLessThan(250)
+})
+
+// Time the dedup alone, by growth rate rather than a wall-clock budget. The
+// native `query.captures()` is itself super-linear and swings with JIT warm-up
+// and CPU load, so timing all of treeSitterFontLock was flaky. Quadrupling the
+// captures costs ~4.5x on the merge path and ~16x on the quadratic one.
+test("tree-sitter: highlight dedup is sub-quadratic on thousands of captures", () => {
+  // Per statement, like `const vN = N`: a keyword, a number, and a
+  // lower-priority variable capture overlapping the whole statement.
+  const captures = (statements: number) => Array.from({ length: statements }, (_, i) => {
+    const at = i * 16
+    return [
+      { start: at, end: at + 5, face: "keyword" as const, priority: 3 },
+      { start: at + 11, end: at + 15, face: "number" as const, priority: 3 },
+      { start: at, end: at + 15, face: "variable" as const, priority: 1 },
+    ]
+  }).flat()
+  const bestMs = (statements: number) => {
+    let best = Infinity
+    for (let run = 0; run < 5; run++) {
+      const input = captures(statements)
+      const t0 = performance.now()
+      const spans = resolveCaptureOverlaps(input)
+      best = Math.min(best, performance.now() - t0)
+      expect(spans.length).toBe(statements * 2)
+    }
+    return best
+  }
+  bestMs(10_000) // JIT warm-up
+  expect(bestMs(40_000) / bestMs(10_000)).toBeLessThan(8)
 })
 
 // Regression guard: a mid-buffer multi-line replace still yields correct spans
