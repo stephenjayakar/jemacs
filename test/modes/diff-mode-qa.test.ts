@@ -14,7 +14,10 @@ import type { BufferModel } from "../../src/kernel/buffer"
 let repo = ""
 
 async function git(args: string[]): Promise<string> {
-  const proc = spawnProcess({ cmd: ["git", ...args], cwd: repo, stdout: "pipe", stderr: "pipe" })
+  // Pin a/ b/ prefixes: the assertions below must not depend on the
+  // developer's `diff.mnemonicPrefix` / `diff.noPrefix`.
+  const pinned = ["-c", "diff.noPrefix=false", "-c", "diff.mnemonicPrefix=false"]
+  const proc = spawnProcess({ cmd: ["git", ...pinned, ...args], cwd: repo, stdout: "pipe", stderr: "pipe" })
   const out = proc.stdout ? await new Response(proc.stdout).text() : ""
   const err = proc.stderr ? await new Response(proc.stderr).text() : ""
   const code = await proc.exited

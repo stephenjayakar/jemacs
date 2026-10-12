@@ -15,6 +15,20 @@ export type MagitProcessEntry = {
 }
 
 const PROCESS_BUFFER_NAME = "*magit-process*"
+
+/**
+ * `magit-git-global-arguments`: pin the output format so a user's git config
+ * (`diff.mnemonicPrefix`, `diff.noPrefix`, `color.ui`, ...) cannot change what
+ * the parsers see. Like Magit, the process buffer shows the command without them.
+ */
+export const MAGIT_GIT_GLOBAL_ARGUMENTS = [
+  "-c", "core.preloadindex=true",
+  "-c", "log.showSignature=false",
+  "-c", "color.ui=false",
+  "-c", "color.diff=false",
+  "-c", "diff.noPrefix=false",
+  "-c", "diff.mnemonicPrefix=false",
+]
 const PROCESS_ENTRIES_LOCAL = "magit-process-entries"
 
 export async function runGitLogged(
@@ -27,7 +41,7 @@ export async function runGitLogged(
   } = {},
 ): Promise<MagitGitResult> {
   const proc = spawnProcess({
-    cmd: ["git", ...args],
+    cmd: ["git", ...MAGIT_GIT_GLOBAL_ARGUMENTS, ...args],
     cwd,
     env: options.env,
     stdin: options.stdin != null ? "pipe" : "ignore",
