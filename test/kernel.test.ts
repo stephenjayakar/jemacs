@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
 import { BufferModel, FUNDAMENTAL_MODE } from "../src/kernel/buffer"
@@ -8,12 +8,14 @@ import { Editor, LARGE_FILE_LITERAL_LOCAL } from "../src/kernel/editor"
 import { buildDisplayModel } from "../src/display/build-display-model"
 import { getTextScaleAmount, textScaleFactor } from "../src/core/text-scale"
 import { installDefaultConfig as installDefaultCommands } from "../src/config"
-import { install as installStephenConfig } from "./fixtures/stephen-config"
+import { install as installStephenConfig, resetStephenConfig } from "./fixtures/stephen-config"
 import { defaultTheme } from "../src/themes"
 import { getCustom, resetCustom, setCustom } from "../src/runtime/custom"
 import { pageScrollLines, visibleStyledText, visibleText } from "../src/ui/opentui"
 import { diredEntryAtPoint } from "../src/modes/dired"
 import { registerTreeSitterGrammars } from "../plugins/tree-sitter-grammars"
+
+afterAll(resetStephenConfig)
 
 // Tree-sitter grammars are an opt-in plugin; register them for the font-lock
 // assertions in this file (idempotent, synchronous).

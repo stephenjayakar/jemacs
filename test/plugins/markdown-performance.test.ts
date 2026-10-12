@@ -6,37 +6,41 @@ import { makeEditor } from "./helper"
 registerTreeSitterGrammars()
 
 test("markdown viewport font-lock stays independent of large document size", () => {
-  const editor = makeEditor()
-  install(editor)
   const paragraph = [
     "## Heading",
     "Text with **strong**, *emphasis*, [a link](https://example.com), and `code`.",
     "",
   ].join("\n")
-  const buffer = editor.scratch("large.md", paragraph.repeat(10_000), "markdown")
-
-  // Prime the document parse and structural caches, as opening the buffer does.
-  editor.fontLock(buffer, {
-    startLine: 0,
-    endLine: 200,
-    start: 0,
-    end: buffer.lineStarts[200]!,
-  })
-
-  const startLine = 10_000
-  const endLine = startLine + 200
-  const start = buffer.lineStarts[startLine]!
-  const end = buffer.lineStarts[endLine]!
-  const before = performance.now()
-  const spans = editor.fontLock(buffer, { startLine, endLine, start, end })
-  const elapsed = performance.now() - before
-
-  expect(spans.length).toBeGreaterThan(0)
-  expect(spans.every(span => span.end >= start && span.start <= end)).toBe(true)
+  /** Best of 5 timings of a 200-line viewport in the middle of the document. */
+  const viewportMs = (paragraphs: number) => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch(`large-${paragraphs}.md`, paragraph.repeat(paragraphs), "markdown")
+    // Prime the document parse and structural caches, as opening the buffer does.
+    editor.fontLock(buffer, { startLine: 0, endLine: 200, start: 0, end: buffer.lineStarts[200]! })
+    let best = Infinity
+    for (let run = 0; run < 5; run++) {
+      // A fresh window each run, so no range-level cache answers it.
+      const startLine = Math.floor(paragraphs * 1.5) + run * 30
+      const endLine = startLine + 200
+      const start = buffer.lineStarts[startLine]!
+      const end = buffer.lineStarts[endLine]!
+      const before = performance.now()
+      const spans = editor.fontLock(buffer, { startLine, endLine, start, end })
+      best = Math.min(best, performance.now() - before)
+      expect(spans.length).toBeGreaterThan(0)
+      expect(spans.every(span => span.end >= start && span.start <= end)).toBe(true)
+    }
+    return best
+  }
   // This took well over a second when range highlighting still walked and
-  // rescanned the whole ~900 KB document. Leave generous headroom for CI.
-  expect(elapsed).toBeLessThan(500)
-})
+  // rescanned the whole ~900 KB document, so it grew with the document. Compare
+  // against a 10x smaller one instead of a wall-clock budget, which failed on a
+  // busy machine.
+  const small = viewportMs(1_000)
+  const large = viewportMs(10_000)
+  expect(large / small).toBeLessThan(4)
+}, 60_000) // priming a ~900 KB document is slow on a busy machine
 
 test("range font-lock preserves absolute link and strikethrough offsets", () => {
   const editor = makeEditor()

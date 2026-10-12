@@ -224,6 +224,13 @@ function highlightWithQuery(spec: TreeSitterLanguageSpec, root: SyntaxNode, Pars
     })
   }
 
+  return resolveCaptureOverlaps(candidates)
+}
+
+/** Keep the highest-priority capture wherever captures overlap, then the
+ *  earliest and shortest. Sorts CANDIDATES in place. O(n log n): one merge per
+ *  priority tier instead of scanning every chosen span per candidate. */
+export function resolveCaptureOverlaps(candidates: Array<TextSpan & { priority: number }>): TextSpan[] {
   candidates.sort((a, b) =>
     b.priority - a.priority
     || a.start - b.start

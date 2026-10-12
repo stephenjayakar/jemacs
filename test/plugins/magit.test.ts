@@ -124,6 +124,33 @@ test("magit-status opens a read-only *magit: <repo>* buffer in magit-status mode
   expect(buf.text).toContain("+changed")
 })
 
+test("magit-status shows diffs under diff.mnemonicPrefix, noPrefix and srcPrefix", async () => {
+  // Magit pins these through `magit-git-global-arguments`; unpinned, the
+  // status diffs came out as `i/a.txt w/a.txt` and the parser dropped them.
+  for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noPrefix", "true"], ["diff.srcPrefix", "SRC/"], ["color.ui", "always"]]) {
+    await git(["config", key!, value!])
+  }
+  const editor = ed()
+  await writeFile(join(repo, "a.txt"), "one\nchanged\n")
+  await editor.run("magit-status", [repo])
+  expect(editor.currentBuffer.text).toContain("@@")
+  expect(editor.currentBuffer.text).toContain("+changed")
+})
+
+test("C-c C-c with only commit.verbose's diff below the scissors aborts", async () => {
+  await git(["config", "commit.verbose", "true"])
+  const editor = ed()
+  await writeFile(join(repo, "a.txt"), "one\nchanged\n")
+  await git(["add", "a.txt"])
+  await editor.run("magit-status", [repo])
+  await editor.run("magit-commit")
+  let last = ""
+  editor.events.on("message", ({ text }) => { last = text })
+  await editor.run("magit-commit-finish")
+  expect(last).toContain("empty message")
+  expect((await git(["log", "--pretty=%s"])).trim()).toBe("initial")
+})
+
 test("magit-log-buffer-file opens log scoped to the current file", async () => {
   const editor = ed()
   await writeFile(join(repo, "a.txt"), "one\nsecond\n")

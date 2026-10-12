@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { Editor } from "../src/kernel/editor"
 import { installDefaultConfig, loadCustomFile, saveCustomFile } from "../src/config"
-import { install as installStephenConfig } from "./fixtures/stephen-config"
+import { install as installStephenConfig, resetStephenConfig } from "./fixtures/stephen-config"
 import { getMode } from "../src/modes/mode"
 import { defcustom, defgroup, getCustom, getCustomVariable, listCustomVariables, resetCustom, saveCustom, setCustom } from "../src/runtime/custom"
 import { disableBuiltinTheme, isBuiltinThemeEnabled, listEnabledBuiltinThemes, listSavedBuiltinThemes, saveEnabledBuiltinThemes } from "../src/themes"
@@ -14,6 +14,9 @@ import { addAdvice } from "../src/runtime/advice"
 import { addToLoadPath, clearLoadPath, getLoadPath } from "../src/runtime/load-path"
 import { Evaluator } from "../src/runtime/evaluator"
 import { isTransientMarkModeEnabled, setTransientMarkModeEnabled } from "../src/kernel/transient-mark"
+
+afterAll(resetStephenConfig)
+
 /** Type TEXT into the open minibuffer and submit, then let the command run
  *  far enough to open its next prompt (or finish). */
 async function answerMinibuffer(editor: Editor, text: string): Promise<void> {
@@ -699,8 +702,7 @@ async function themeChooserEditor(options: { customized?: boolean } = {}): Promi
   saveEnabledBuiltinThemes([])
   // installStephenConfig customizes the `default' face and several options;
   // clear them unless the test wants the "user has settings" Note branch.
-  for (const { name } of getCustomizedFaceOverrides()) resetFace(name)
-  for (const variable of listCustomVariables()) if (variable.customized) resetCustom(variable.name)
+  resetStephenConfig()
   setCustom("custom-theme-allow-multiple-selections", false)
   if (options.customized) setFaceAttribute("default", "family", "Fira Code, monospace")
   return editor

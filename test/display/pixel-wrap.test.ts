@@ -94,6 +94,7 @@ test("C-n in a GUI markdown buffer walks the pixel rows of a wrapped heading", a
 
 test("a zoomed text column grows with the text, then keeps a side margin", () => {
   const { editor } = markdownEditor("body\n")
+  editor.activeBuffer.locals.set("markdown-visual-fill-column-adjust-for-text-scale", true)
   const metrics = new EmMetrics()
   const pane = (scale: number) => {
     editor.activeBuffer.locals.set("text-scale-mode-amount", scale)
