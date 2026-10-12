@@ -30,10 +30,14 @@ const JAVA_KEYWORDS = new Set([
   "var", "yield", "record", "sealed", "permits", "non-sealed",
 ])
 
+// Leaf type nodes only: `generic_type` and `scoped_type_identifier` would also
+// paint their `<`, `>` and `.` punctuation.
 const JAVA_TYPE_NODES = new Set([
-  "integral_type", "boolean_type", "void_type", "floating_point_type", "type_identifier", "scoped_type_identifier",
-  "generic_type",
+  "integral_type", "boolean_type", "void_type", "floating_point_type", "type_identifier",
 ])
+
+// java-ts-mode's `constant` feature: an all-caps identifier is a constant.
+const JAVA_CONSTANT_NAME = /^[A-Z_][A-Z0-9_]+$/
 
 const JAVA_NUMBER_NODES = new Set([
   "decimal_integer_literal", "hex_integer_literal", "octal_integer_literal", "binary_integer_literal",
@@ -96,17 +100,33 @@ function highlightJava(root: SyntaxNode): TextSpan[] {
     } else if (node.type === "true" || node.type === "false" || node.type === "null_literal") {
       pushSpan(spans, node, "constant")
     } else if (JAVA_TYPE_NODES.has(node.type)) {
-      pushSpan(spans, node, "keyword")
+      // java-ts-mode: primitive and named types both use font-lock-type-face.
+      pushSpan(spans, node, "type")
     } else if (!node.isNamed && JAVA_KEYWORDS.has(node.type)) {
       pushSpan(spans, node, "keyword")
-    } else if (node.type === "class_declaration" || node.type === "interface_declaration" || node.type === "enum_declaration") {
+    } else if (node.type === "annotation" || node.type === "marker_annotation") {
+      // Paint `@Name` only, not the argument list of `@RunWith(X.class)`.
+      const name = node.childForFieldName("name")
+      spans.push({ start: node.startIndex, end: name?.endIndex ?? node.endIndex, face: "preprocessor" })
+      if (node.type === "annotation") {
+        const args = node.childForFieldName("arguments")
+        if (args) walk(args)
+      }
+      return
+    } else if (node.type === "class_declaration" || node.type === "interface_declaration" || node.type === "enum_declaration" || node.type === "record_declaration") {
       const name = node.childForFieldName("name")
       if (name) pushSpan(spans, name, "type")
     } else if (node.type === "method_declaration" || node.type === "constructor_declaration") {
       const name = node.childForFieldName("name")
       if (name) pushSpan(spans, name, "function")
-    } else if (node.type === "type_identifier") {
-      pushSpan(spans, node, "type")
+    } else if (node.type === "method_invocation") {
+      const name = node.childForFieldName("name")
+      if (name) pushSpan(spans, name, "function")
+    } else if (node.type === "variable_declarator") {
+      const name = node.childForFieldName("name")
+      if (name && !JAVA_CONSTANT_NAME.test(name.text)) pushSpan(spans, name, "variable")
+    } else if (node.type === "identifier" && JAVA_CONSTANT_NAME.test(node.text)) {
+      pushSpan(spans, node, "constant")
     }
     for (const child of node.children) walk(child)
   }
@@ -200,6 +220,10 @@ function highlightMarkdown(root: SyntaxNode, text: string, ParserCtor: ParserCto
         return
       }
       case "setext_heading": {
+        // Match the markdown plugin: a `-` underline needs 3+ dashes, so a
+        // bare `- ` list item under a line does not make that line a heading.
+        const underline = node.children.find(child => child.type.startsWith("setext_h"))
+        if (underline?.type === "setext_h2_underline" && underline.text.trim().length < 3) break
         for (const child of node.children) {
           if (child.type === "paragraph") pushSpan(spans, child, "type")
           else if (child.type.startsWith("setext_h")) pushSpan(spans, child, "markdown-markup" as FaceName)

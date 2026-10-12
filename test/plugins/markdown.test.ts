@@ -651,14 +651,35 @@ describe("markdown-cycle", () => {
     expect(buffer.point).toBe(buffer.text.indexOf("two"))
   })
 
-  test("TAB on a list item carries its nested children", async () => {
+  test("TAB on a list item indents only that line", async () => {
     const editor = makeEditor()
     install(editor)
-    const buffer = editor.scratch("doc.md", "- one\n- two\n    - child\n", "markdown")
+    const buffer = editor.scratch("doc.md", "* Java\n  *\n  *\n", "markdown")
+    buffer.point = buffer.text.indexOf("Java") + 4
+
+    await keySeq(editor, "TAB")
+    expect(buffer.text).toBe("    * Java\n  *\n  *\n")
+  })
+
+  test("RET in the middle of a list item moves the rest to a new item", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "* Java `CreateStudy`\n", "markdown")
+    buffer.point = buffer.text.indexOf("`")
+
+    await keySeq(editor, "RET")
+    expect(buffer.text).toBe("* Java\n* `CreateStudy`\n")
+    expect(buffer.point).toBe(buffer.text.indexOf("`"))
+  })
+
+  test("TAB on the last list item leaves the lines below it alone", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "- one\n- two\n  more two\nafter\n\n  indented para\n# Head\n", "markdown")
     buffer.point = buffer.text.indexOf("- two")
 
     await keySeq(editor, "TAB")
-    expect(buffer.text).toBe("- one\n    - two\n        - child\n")
+    expect(buffer.text).toBe("- one\n    - two\n      more two\nafter\n\n  indented para\n# Head\n")
   })
 
   test("TAB on heading folds subtree instead of indenting", async () => {
@@ -692,6 +713,12 @@ describe("markdownParseHeadings", () => {
       [2, "Title"],
       [2, "Two"],
     ])
+  })
+
+  test("a list item under a line is not a setext underline", () => {
+    expect(markdownParseHeadings("- [ ] Figure out\n-\n")).toEqual([])
+    expect(markdownParseHeadings("Para\n- \n")).toEqual([])
+    expect(markdownParseHeadings("Para\n--\n")).toEqual([])
   })
 })
 
@@ -1003,6 +1030,37 @@ describe("markdown list and checkbox commands", () => {
     buffer.point = buffer.text.indexOf("done")
     await editor.run("markdown-toggle-gfm-checkbox")
     expect(buffer.text).toBe("- [x] task\n- [ ] done\n")
+  })
+
+  test("s-l cycles a line through bullet, [ ], [/], [x] like Obsidian task-cycle", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "task\n", "markdown")
+    expect(editor.keymaps.lookup("s-l")).toMatchObject({ status: "matched", command: "markdown-cycle-task" })
+    buffer.point = buffer.text.indexOf("sk")
+    const seen: string[] = []
+    for (let i = 0; i < 5; i++) {
+      await editor.run("markdown-cycle-task")
+      seen.push(buffer.text)
+      expect(buffer.text.slice(buffer.point, buffer.point + 2)).toBe("sk")
+    }
+    expect(seen).toEqual(["* task\n", "- [ ] task\n", "- [/] task\n", "- [x] task\n", "* task\n"])
+    await editor.run("markdown-cycle-task-backward")
+    expect(buffer.text).toBe("- [x] task\n")
+  })
+
+  test("markdown-cycle-task cycles every line of the region and fills a blank line", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "  - [/] a\n- b\n", "markdown")
+    buffer.mark = 0
+    buffer.point = buffer.text.indexOf("b")
+    await editor.run("markdown-cycle-task")
+    expect(buffer.text).toBe("  - [x] a\n- [ ] b\n")
+    const blank = editor.scratch("blank.md", "", "markdown")
+    await editor.run("markdown-cycle-task")
+    expect(blank.text).toBe("- [ ] ")
+    expect(blank.point).toBe(6)
   })
 
   test("markdown-cleanup-list-numbers renumbers ordered lists by nesting level", async () => {
@@ -1692,6 +1750,26 @@ test("pixel markdown display keeps leading blank lines (C-o at start of buffer)"
   expect(themedTextPlain(pane.body).split("\n").slice(0, 3)).toEqual(["", "", "# Title"])
   expect(pane.cursor).toEqual({ row: 0, colOffset: 0 })
   expect(markdownDisplayFilter(buffer)?.map(2)).toBe(2)
+})
+
+test("markdown C-a twice goes to column 0 on indented bullet and checkbox lines", async () => {
+  const cases: Array<[string, number]> = [
+    ["  - [ ] nested task", 8],
+    ["- [x] done", 6],
+    ["    - deep bullet", 6],
+    ["  1. ordered", 5],
+    ["  plain", 2],
+  ]
+  for (const [line, contentStart] of cases) {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("ca.md", `${line}\n`, "markdown")
+    buffer.point = line.length
+    await keySeq(editor, "C-a")
+    expect(buffer.point).toBe(contentStart)
+    await keySeq(editor, "C-a")
+    expect(buffer.point).toBe(0)
+  }
 })
 
 test("modified markdown buffers save to their files after markdown-auto-save-idle-seconds", async () => {

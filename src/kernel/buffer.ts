@@ -450,26 +450,38 @@ export class BufferModel {
   get seq(): number { return this.undoCur.seq }
 
   undoTreeSnapshot(): { root: UndoTreeNodeView; current: UndoTreeNodeView } {
-    let current!: UndoTreeNodeView
-    const visit = (node: UndoNode): UndoTreeNodeView => {
-      const view: UndoTreeNodeView = {
-        id: node.seq,
-        at: node.at,
-        saved: node === this.savedNode,
-        current: node === this.undoCur,
-        activeChild: node.activeChild ?? node.children.length - 1,
-        children: node.children.map(visit),
+    // Iterative: one undo node per edit makes the tree a chain thousands deep,
+    // and a recursive walk overflows the JS stack.
+    const view = (node: UndoNode): UndoTreeNodeView => ({
+      id: node.seq,
+      at: node.at,
+      saved: node === this.savedNode,
+      current: node === this.undoCur,
+      activeChild: node.activeChild ?? node.children.length - 1,
+      children: [],
+    })
+    const root = view(this.undoRoot)
+    let current = root
+    const stack: [UndoNode, UndoTreeNodeView][] = [[this.undoRoot, root]]
+    while (stack.length) {
+      const [node, nodeView] = stack.pop()!
+      if (node === this.undoCur) current = nodeView
+      for (const child of node.children) {
+        const childView = view(child)
+        nodeView.children.push(childView)
+        stack.push([child, childView])
       }
-      if (node === this.undoCur) current = view
-      return view
     }
-    const root = visit(this.undoRoot)
     return { root, current }
   }
 
   undoTreeSerialize(): SerializedUndoTree {
     const nodes: SerializedUndoTree["nodes"] = []
-    const visit = (node: UndoNode): void => {
+    // Pre-order, iterative (see undoTreeSnapshot): children are pushed in reverse
+    // so they pop in their original order.
+    const stack = [this.undoRoot]
+    while (stack.length) {
+      const node = stack.pop()!
       nodes.push({
         id: node.seq,
         parentId: node.parent?.seq ?? null,
@@ -477,9 +489,8 @@ export class BufferModel {
         at: node.at,
         ...(node.activeChild === undefined ? {} : { activeChild: node.activeChild }),
       })
-      for (const child of node.children) visit(child)
+      for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]!)
     }
-    visit(this.undoRoot)
     return {
       version: 1,
       textHash: textHash(this._text),

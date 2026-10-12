@@ -281,7 +281,7 @@ function lastBreak(line: ArrayLike<string>, start: number, hardEnd: number): num
 }
 
 /** Characters of a line's adaptive-wrap prefix, as `adaptiveWrapPrefixLen` counts them. */
-const LIST_PREFIX_RE = /^(\s*)(?:(?:[-*+\u25cf\u25ce\u25cb\u25c6\u25c7\u25ba\u2022\u25e6\u25aa\u2981\u26ac]|\d+[.)])\s+(?:[\u2610\u2611\u25a2\u2705]\s+)?|[\u2610\u2611\u25a2\u2705]\s+)/
+const LIST_PREFIX_RE = /^(\s*)(?:(?:[-*+\u25cf\u25ce\u25cb\u25c6\u25c7\u25ba\u2022\u25e6\u25aa\u2981\u26ac]|\d+[.)])\s+(?:[\u2610\u2611\u25a2\u2b1a\u2705]\s+)?|[\u2610\u2611\u25a2\u2b1a\u2705]\s+)/
 const QUOTE_PREFIX_RE = /^(\s*[>\u258c]+\s*)/
 export function adaptivePrefixLen(content: string): number {
   const list = LIST_PREFIX_RE.exec(content)

@@ -80,6 +80,8 @@ Package chords (`git-link`, `lsp-*`, `gptel`, …) remain **stub**.
 | `u` | `dired-unmark` |
 | `S-u` | `dired-unmark-all-marks` |
 | `S-c` / `S-r` | `dired-do-copy` / `dired-do-rename` |
+| `h` | `describe-mode` (help screen with all dired keys) |
+| `?` | `dired-summary` (one-line echo-area hint) |
 
 ## Still missing or partial
 

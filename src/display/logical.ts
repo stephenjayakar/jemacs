@@ -419,13 +419,15 @@ function modelineFor(
   const region = selected && buffer.markActive && buffer.mark != null
     ? `  (${Math.abs(point - buffer.mark)} chars)`
     : ""
-  const text = ` ${buffer.mode}${lighters}  ${editor.bufferDisplayName(buffer)}${dirty}${leaf.dedicated ? " [D]" : ""}  line ${line}, col ${col}${region}`
+  // Emacs order: buffer name, then position, then `(mode lighters)`. A long
+  // lighter list then clips at the right edge instead of hiding the name.
+  const text = ` ${editor.bufferDisplayName(buffer)}${dirty}${leaf.dedicated ? " [D]" : ""}  line ${line}, col ${col}${region}  ${buffer.mode}${lighters}`
   return themedModeline(text, selected, editor.theme)
 }
 
 function terminalModelineText(editor: Editor, buffer: BufferModel, dirty: string, dedicated: boolean): string {
   const lighters = editor.minorModeLighters(buffer) + textScaleLighter(buffer) + safeMiscInfo(buffer)
-  return ` ${buffer.mode}${lighters}  ${editor.bufferDisplayName(buffer)}${dirty}${dedicated ? " [D]" : ""}  terminal`
+  return ` ${editor.bufferDisplayName(buffer)}${dirty}${dedicated ? " [D]" : ""}  terminal  ${buffer.mode}${lighters}`
 }
 
 function themedModeline(text: string, selected: boolean, theme: Theme): ThemedText {

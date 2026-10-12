@@ -294,6 +294,24 @@ test("recenter-top-bottom without prefix keeps cycling center top bottom", async
   expect(findWindowLeaf(editor.windowLayout, editor.selectedWindowId)!.startLine).toBe(39 - page + 1)
 })
 
+test("recenter-top-bottom centers point by screen rows when lines wrap", async () => {
+  // Markdown turns on visual-line-mode, so long paragraphs fill several screen
+  // rows. Centering by logical line count put point near the bottom row.
+  const { displayRows } = await import("./harness/display")
+  const editor = installEditor()
+  const para = "word ".repeat(12).trim()
+  const lines = Array.from({ length: 80 }, (_, i) => `L${i} ${i % 3 === 0 ? para : "short"}`).join("\n")
+  const buffer = editor.scratch("wrap.txt", lines, "text")
+  buffer.point = buffer.text.indexOf("L60 ")
+  const viewport = { rows: 30, cols: 40 }
+  displayRows(editor, viewport)
+  await editor.run("recenter-top-bottom")
+  const rows = displayRows(editor, viewport)
+  const cursorRow = rows.findIndex(row => row.includes("60 word"))
+  const page = rows.length
+  expect(Math.abs(cursorRow + 2 - page / 2)).toBeLessThanOrEqual(3)
+})
+
 test("dedicated windows are skipped when displaying another buffer", async () => {
   const editor = installEditor()
   editor.scratch("*Help*", "help text", "text")

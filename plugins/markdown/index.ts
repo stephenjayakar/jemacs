@@ -27,7 +27,9 @@ const ATX_HEADER_RE = /^(#{1,6})\s/
 const BLOCKQUOTE_RE = /^(\s*)>+\s?/
 const FENCED_CODE_RE = /^(`{3,}|~{3,})/
 const FENCE_LINE_RE = /^(\s*)(`{3,}|~{3,})(\S*)(\s*)$/
-const SETEXT_UNDERLINE_RE = /^(\s*)(=+|-+)\s*$/
+// A `-` underline needs 3+ dashes. CommonMark allows one, but then a list
+// item typed under a line (`foo\n- `) turns that line into a heading.
+const SETEXT_UNDERLINE_RE = /^(\s*)(=+|-{3,})\s*$/
 const MARKDOWN_GFM_LANGUAGE_HISTORY = "markdown-gfm-language-history"
 
 const DEFAULT_MARKDOWN_URI_TYPES = [
@@ -131,6 +133,10 @@ const GUI_LIST_ITEM_BULLETS = ["\u2981", "\u26ac", "\u25aa"] as const
  *  open and a done task line up. `☐` / `☑` draw at two different sizes there. */
 const GUI_CHECKBOX_OPEN = "\u25a2"
 const GUI_CHECKBOX_DONE = "\u2705"
+/** `- [/]` is Obsidian's in-progress task. `⬚` comes from the same fallback
+ *  font as `▢` (Hiragino), so it draws at the same size. `◩` falls back to
+ *  Menlo and draws about 30% smaller. */
+const GUI_CHECKBOX_PARTIAL = "\u2b1a"
 /** First entry of `markdown-blockquote-display-char` ("\u258c" "\u2503" ">"). */
 const BLOCKQUOTE_DISPLAY_CHAR = "\u258c"
 const URL_COMPOSE_CHAR = "↪"
@@ -231,7 +237,10 @@ function markdownInlineImages(buffer: BufferModel, lines: readonly string[], kin
   let misses = 0
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
-    if (kinds[i] || !line.includes("![")) continue
+    // Only code and front matter are literal; a list item or quote can embed
+    // an image (`- [ ] note ![[shot.png]]`), as Obsidian draws it.
+    const kind = kinds[i]
+    if ((kind && (kind === "frontmatter" || kind.startsWith("code"))) || !line.includes("![")) continue
     const found = findInlineImage(line, buffer.path)
     if (found) images.set(i, found.image)
     else if (/!\[/.test(line)) misses++
@@ -997,9 +1006,9 @@ function collectMarkupHides(text: string, hideUrls: boolean, gfm = false, ruleWi
       // do: the bullet goes and `[ ]` becomes one box glyph. The two stay
       // separate hides, so a click on the box maps into the `[ ]` source span
       // and `markdown-toggle-gfm-checkbox` still finds it.
-      const box = pixel ? /^\[([ xX])\](?=\s|$)/.exec(line.slice(list[0]!.length)) : null
+      const box = pixel ? /^\[([ xX/])\](?=\s|$)/.exec(line.slice(list[0]!.length)) : null
       pushMarkupHide(ops, markerStart, markerEnd, [], box && !/^\d/.test(list[2]!) ? "" : bullet)
-      if (box) pushMarkupHide(ops, markerEnd, markerEnd + 3, [], box[1] === " " ? GUI_CHECKBOX_OPEN : GUI_CHECKBOX_DONE)
+      if (box) pushMarkupHide(ops, markerEnd, markerEnd + 3, [], box[1] === " " ? GUI_CHECKBOX_OPEN : box[1] === "/" ? GUI_CHECKBOX_PARTIAL : GUI_CHECKBOX_DONE)
     }
 
     // The backreference must repeat the rule character (group 2), not the
@@ -1172,7 +1181,8 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
       bufToDisp: rendered?.bufToDisp,
       dispToBuf: rendered?.dispToBuf,
     }
-    lineKinds?.push(images?.has(i) ? "image" : sourceKinds![i])
+    // A list item keeps its list kind (inset, guides); the image hangs under it.
+    lineKinds?.push(images?.has(i) && !sourceKinds![i] ? "image" : sourceKinds![i])
     if (images?.has(i)) (lineImages ??= [])[lineKinds!.length - 1] = images.get(i)!
     displayLines.push(entry)
     lineDisplayMaps[i] = entry
@@ -1351,17 +1361,23 @@ function markdownListItemAtLine(buffer: BufferModel): MarkdownListItem | null {
 }
 
 /**
- * TAB / S-TAB on a bullet: indent or outdent the item (with its children),
- * keeping point where it was on the line. Emacs' `markdown-cycle` folds here
- * instead, which reads as the bullet "collapsing".
+ * TAB / S-TAB on a bullet: indent or outdent that item and its continuation
+ * text, keeping point where it was on the line. Bullets below stay put, as
+ * Emacs' indent-line touches only the current line. Emacs' `markdown-cycle` folds here instead,
+ * which reads as the bullet "collapsing".
  */
 function markdownShiftListItem(buffer: BufferModel, delta: -1 | 1): boolean {
   const item = markdownListItemAtLine(buffer)
   if (!item) return false
   if (delta < 0 && item.indent === 0) return true
   const column = buffer.point - buffer.lineBounds(item.line)[0]
-  const range = lineRangeTextBounds(buffer, item.line, item.endLine)
   const shift = delta > 0 ? TAB_WIDTH : -Math.min(TAB_WIDTH, item.indent)
+  // The item's own continuation text moves with it; the next bullet, nested
+  // or not, ends the range.
+  const lines = buffer.text.split("\n")
+  let last = item.line
+  while (last < item.endLine && !/^\s*([-*+]|\d+[.)])(\s|$)/.test(lines[last + 1]!)) last++
+  const range = lineRangeTextBounds(buffer, item.line, last)
   indentRegion(buffer, range.start, Math.max(range.start, range.end - 1), shift)
   buffer.point = buffer.lineBounds(item.line)[0] + Math.max(0, column + shift)
   renumberAfterListShift(buffer, item.line, item.indent, item.indent + shift)
@@ -1739,7 +1755,7 @@ function markdownToggleCheckbox(buffer: BufferModel, point: number, requireCheck
   const nextNewline = buffer.text.indexOf("\n", lineStart)
   const lineEnd = nextNewline === -1 ? buffer.text.length : nextNewline
   const line = buffer.text.slice(lineStart, lineEnd)
-  const match = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/.exec(line)
+  const match = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX/])(\])/.exec(line)
   if (!match) return { changed: false, message: "No checkbox at point" }
   const markerStart = lineStart + match[1]!.length - 1
   const markerEnd = markerStart + 3
@@ -1747,10 +1763,69 @@ function markdownToggleCheckbox(buffer: BufferModel, point: number, requireCheck
     return { changed: false, message: "No checkbox at point" }
   }
   const checkPoint = lineStart + match[1]!.length
-  const next = match[2] === " " ? "x" : " "
+  // An in-progress `[/]` completes on toggle, as a click does in Obsidian.
+  const next = match[2]!.toLowerCase() === "x" ? " " : "x"
   buffer.replaceRange(checkPoint, checkPoint + 1, next)
   buffer.point = checkPoint
   return { changed: true, message: next === "x" ? "Checked checkbox" : "Unchecked checkbox" }
+}
+
+/** Task states in cycle order after the plain bullet, as Obsidian's task-cycle plugin. */
+const TASK_CYCLE_MARKS = [" ", "/", "x"] as const
+
+/** The next prefix of one line in the cycle bullet -> `[ ]` -> `[/]` -> `[x]` -> bullet.
+ *  Plain text becomes a bullet first; a blank line becomes `- [ ] `. */
+function cycleTaskLine(line: string, dir: 1 | -1): { text: string; oldPrefix: number; newPrefix: number } {
+  const task = /^(\s*)(?:[-*+]|\d+[.)])\s+\[(.)\](?:\s|$)/.exec(line)
+  const bullet = task ? null : /^(\s*)(?:[-*+]|\d+[.)])(?:\s+|$)/.exec(line)
+  const text = task || bullet ? null : /^(\s*)\S/.exec(line)
+  if (!task && !bullet && !text) return { text: `${line}- [ ] `, oldPrefix: line.length, newPrefix: line.length + 6 }
+  const match = (task ?? bullet ?? text)!
+  const indent = match[1]!
+  const oldPrefix = text ? indent.length : match[0].length
+  const body = line.slice(oldPrefix)
+  let state = -1
+  if (task) {
+    const idx = TASK_CYCLE_MARKS.indexOf(task[2]!.toLowerCase() as typeof TASK_CYCLE_MARKS[number])
+    state = idx < 0 ? 1 : idx + 1
+  } else if (bullet) {
+    state = 0
+  }
+  const next = state === -1 ? 0 : (state + dir + 4) % 4
+  const prefix = next === 0 ? `${indent}* ` : `${indent}- [${TASK_CYCLE_MARKS[next - 1]}] `
+  return { text: prefix + body, oldPrefix, newPrefix: prefix.length }
+}
+
+function markdownCycleTask(buffer: BufferModel, dir: 1 | -1): void {
+  const region = activeRegion(buffer)
+  const firstLine = buffer.lineAt(region?.start ?? buffer.point)
+  const lastLine = region ? buffer.lineAt(Math.max(region.start, region.end - 1)) : firstLine
+  const lines = buffer.text.split("\n")
+  const start = lines.slice(0, firstLine).reduce((n, l) => n + l.length + 1, 0)
+  const oldBlock = lines.slice(firstLine, lastLine + 1)
+  const cycled = oldBlock.map(l => cycleTaskLine(l, dir))
+  // Keep point and mark on the same body character: shift each by its line's prefix change.
+  const remap = (pos: number): number => {
+    let lineStart = start
+    let delta = 0
+    for (let i = 0; i < oldBlock.length; i++) {
+      const lineEnd = lineStart + oldBlock[i]!.length
+      const { oldPrefix, newPrefix } = cycled[i]!
+      if (pos <= lineEnd) {
+        const col = pos - lineStart
+        return lineStart + delta + (col < oldPrefix ? newPrefix : col - oldPrefix + newPrefix)
+      }
+      delta += cycled[i]!.text.length - oldBlock[i]!.length
+      lineStart = lineEnd + 1
+    }
+    return pos + delta
+  }
+  const point = remap(buffer.point)
+  const mark = region && buffer.mark != null ? remap(buffer.mark) : null
+  const oldText = oldBlock.join("\n")
+  buffer.replaceRange(start, start + oldText.length, cycled.map(c => c.text).join("\n"))
+  if (mark != null) buffer.mark = mark
+  buffer.point = point
 }
 
 function bindMarkdownModeMap(keymap: Keymap): void {
@@ -1766,6 +1841,10 @@ function bindMarkdownModeMap(keymap: Keymap): void {
   keymap.bind("C-c C-l", "markdown-insert-link")
   // Cmd-K is the link shortcut in most macOS editors (Typora, Obsidian, GitHub).
   keymap.bind("s-k", "markdown-insert-link")
+  // Cmd-L / Cmd-Shift-L cycle task state, as the Obsidian task-cycle plugin does.
+  keymap.bind("s-l", "markdown-cycle-task")
+  keymap.bind("s-L", "markdown-cycle-task-backward")
+  keymap.bind("s-S-l", "markdown-cycle-task-backward")
   keymap.bind("C-c C-k", "markdown-kill-thing-at-point")
   keymap.bind("C-c C-d", "markdown-do")
   keymap.bind("C-c C-c e", "markdown-export")
@@ -1939,7 +2018,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       return
     }
     if (indentOnEnter === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
-      insertMarkdownListItem(buffer)
+      insertMarkdownListItem(buffer, null, true)
       trimPreviousLine()
       editor.message("Inserted list item")
       return
@@ -2378,6 +2457,14 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     editor.message(result.message)
   }, "Toggle the GFM task list checkbox at point.")
 
+  editor.command("markdown-cycle-task", ({ buffer }) => {
+    markdownCycleTask(buffer, 1)
+  }, "Cycle the task state of the line or region: bullet, [ ], [/], [x].")
+
+  editor.command("markdown-cycle-task-backward", ({ buffer }) => {
+    markdownCycleTask(buffer, -1)
+  }, "Cycle the task state of the line or region backward.")
+
   editor.command("markdown-cleanup-list-numbers", ({ buffer, editor }) => {
     const result = markdownCleanupListNumbers(buffer)
     editor.message(result.message)
@@ -2567,7 +2654,10 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     const line = buffer.lineBoundsAt()
     const text = line.text
     const contentStart = text.match(/^\s*/)?.[0].length ?? 0
-    const marker = text.slice(contentStart).match(/^(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/)?.[0].length ?? 0
+    // A task item's text starts after its `[ ]` box, not after the bullet. The
+    // GUI hides the indent and the bullet, so a stop before the box drew at the
+    // same place as column 0, and the second C-a looked like it did nothing.
+    const marker = text.slice(contentStart).match(/^(?:#{1,6}\s+|>\s*|(?:[-*+]|\d+[.)])\s+(?:\[[ xX/]\](?:\s+|$))?)/)?.[0].length ?? 0
     const target = line.start + contentStart + marker
     buffer.point = buffer.point <= target ? line.start : target
   }, "Move to meaningful beginning of line in Markdown context.")
@@ -2636,9 +2726,15 @@ function installMarkdownIdleAutoSave(editor: Editor, ctx: PluginContext): void {
       if (!buffer.dirty || !buffer.path) continue
       if (buffer.mode !== "markdown" && buffer.mode !== "gfm") continue
       // Silent on failure: an idle save must never interrupt typing. C-x C-s still reports.
-      void buffer.save(saveContextOptions()).catch(() => {})
+      // Redraw after the save so the mode line drops the `*`, as Emacs does.
+      void buffer.save(saveContextOptions())
+        .then(() => editor.changed("markdown-auto-save"))
+        .catch(() => {})
     }
-  }, 500)
+  // Poll fast so the save fires close to the idle threshold, like an Emacs
+  // `run-with-idle-timer`. A 500ms poll let a 1s setting wait up to 1.5s and
+  // miss short pauses between keys.
+  }, 100)
   ;(timer as { unref?: () => void }).unref?.()
   ctx.onDispose(() => clearInterval(timer))
 }
@@ -2795,7 +2891,7 @@ function appendBlockSeparator(text: string): string {
 }
 
 function markdownListPrefix(lineText: string): { indent: string; marker: string; orderedLine: number | null } | null {
-  const checkbox = /^(\s*)([-*+]|\d+[.)])(\s+)\[[ xX]\]\s*/.exec(lineText)
+  const checkbox = /^(\s*)([-*+]|\d+[.)])(\s+)\[[ xX/]\]\s*/.exec(lineText)
   if (checkbox) {
     return { indent: checkbox[1] ?? "", marker: `${checkbox[2]}${checkbox[3]}[ ] `, orderedLine: null }
   }
@@ -2819,22 +2915,36 @@ function markdownAdjustedIndent(indent: string, prefixArgument: number | null | 
 }
 
 function markdownEmptyListItem(lineText: string): boolean {
-  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/)
+  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX/]\]\s*)?(.*)$/)
   return !!match && (match[3] ?? "").trim() === ""
 }
 
 function markdownNonEmptyListItem(lineText: string): boolean {
-  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/)
+  const match = lineText.match(/^(\s*)([-*+]|\d+[.)])\s+(?:\[[ xX/]\]\s*)?(.*)$/)
   return !!match && (match[3] ?? "").trim() !== ""
 }
 
-function insertMarkdownListItem(buffer: BufferModel, prefixArgument?: number | null): void {
+function insertMarkdownListItem(buffer: BufferModel, prefixArgument?: number | null, splitAtPoint = false): void {
   const line = buffer.lineBoundsAt()
   const current = markdownListPrefix(line.text)
   const fallbackIndent = line.text.match(/^\s*/)?.[0] ?? ""
   const indent = markdownAdjustedIndent(current?.indent ?? fallbackIndent, prefixArgument)
   const marker = current?.marker ?? "- "
-  const insertPoint = line.text.trim() ? line.end : buffer.point
+  // RET with point inside the item text splits the item there, as `newline`
+  // at point does: the text after point moves to the new item. M-RET, and RET
+  // at the start of the text, still add an empty item after the line.
+  const markerEnd = line.start + (line.text.match(LIST_RE)?.[0].length ?? 0)
+  const split = splitAtPoint && line.text.trim() !== "" && buffer.point > markerEnd && buffer.point < line.end
+  let insertPoint = line.text.trim() && !split ? line.end : buffer.point
+  if (split) {
+    // Drop the spaces around the split, as `newline` + list markup would.
+    let headStart = insertPoint
+    let tailEnd = insertPoint
+    while (headStart > markerEnd && /[ \t]/.test(buffer.text[headStart - 1]!)) headStart--
+    while (tailEnd < line.end && /[ \t]/.test(buffer.text[tailEnd]!)) tailEnd++
+    buffer.replaceRange(headStart, tailEnd, "")
+    insertPoint = headStart
+  }
   const insertion = line.text.trim() ? `\n${indent}${marker}` : `${indent}${marker}`
   buffer.replaceRange(insertPoint, insertPoint, insertion)
   buffer.point = insertPoint + insertion.length
@@ -2846,7 +2956,7 @@ function insertMarkdownListItem(buffer: BufferModel, prefixArgument?: number | n
 
 function insertMarkdownCheckbox(buffer: BufferModel): MarkdownEditResult {
   const line = buffer.lineBoundsAt()
-  const checkboxList = /^(\s*)(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s+/.exec(line.text)
+  const checkboxList = /^(\s*)(?:[-*+]|\d+[.)])\s+\[[ xX/]\]\s+/.exec(line.text)
   if (checkboxList) {
     buffer.insert(`\n${checkboxList[1]}- [ ] `)
     return { changed: true, message: "Inserted checkbox" }
@@ -3548,14 +3658,18 @@ function parseMarkdownListItems(text: string): MarkdownListItem[] {
     const match = lines[i]!.match(LIST_RE)
     if (match) starts.push({ line: i, endLine: i, indent: match[1]!.length })
   }
-  for (let i = 0; i < starts.length; i++) {
-    const item = starts[i]!
-    let end = lines.length - 1
-    for (let j = i + 1; j < starts.length; j++) {
-      if (starts[j]!.indent <= item.indent) {
-        end = starts[j]!.line - 1
-        break
-      }
+  // An item owns only the lines indented deeper than its marker (its children
+  // and continuation text), up to the first non-blank line at or left of its
+  // indent. Ending at the next sibling bullet instead made the last item of a
+  // list own everything to EOF, so TAB on it indented the paragraphs below.
+  const indentOf = (line: string) => line.match(/^\s*/)![0].length
+  for (const item of starts) {
+    let end = item.line
+    for (let j = item.line + 1; j < lines.length; j++) {
+      const line = lines[j]!
+      if (!line.trim()) continue
+      if (indentOf(line) <= item.indent) break
+      end = j
     }
     item.endLine = end
   }

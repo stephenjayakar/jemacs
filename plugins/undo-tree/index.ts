@@ -19,6 +19,10 @@ type VisualizerState = {
   openedAtNodeId: number
   showTimestamps: boolean
   showDiff: boolean
+  // GNU `quit-restore`: the window the visualizer took, and the buffer it showed
+  // before (null when display-buffer split a new window for it).
+  windowId?: string
+  previousBufferId?: string | null
 }
 
 type RenderedNode = {
@@ -52,7 +56,7 @@ defface("undo-tree-visualizer-current-face", { fg: "#ff5f5f", bold: true }, "Fac
 defface("undo-tree-visualizer-active-branch-face", { bold: true }, "Face for the active undo-tree branch.")
 
 function currentNodeId(buffer: BufferModel): number {
-  return buffer.undoTreeSnapshot().current.id
+  return buffer.seq
 }
 
 function didMoveUndo(buffer: BufferModel, fn: () => void): boolean {
@@ -66,11 +70,16 @@ function visualizerState(buffer: BufferModel): VisualizerState | null {
   return (buffer.locals.get(VISUALIZER_STATE) as VisualizerState | undefined) ?? null
 }
 
+// Every tree walk here is iterative: one undo node per edit makes the tree a
+// chain thousands deep, and recursion overflows the JS stack.
 function findParent(root: UndoTreeNodeView, id: number): UndoTreeNodeView | null {
-  for (const child of root.children) {
-    if (child.id === id) return root
-    const found = findParent(child, id)
-    if (found) return found
+  const stack = [root]
+  while (stack.length) {
+    const node = stack.pop()!
+    for (const child of node.children) {
+      if (child.id === id) return node
+      stack.push(child)
+    }
   }
   return null
 }
@@ -105,44 +114,59 @@ function drawText(grid: string[][], y: number, x: number, text: string): void {
   for (let i = 0; i < text.length; i++) setChar(grid, y, x + i, text[i]!)
 }
 
-function measure(node: UndoTreeNodeView, showTimestamps: boolean): number {
-  const labelWidth = nodeLabel(node, showTimestamps).length
-  if (!node.children.length) return labelWidth
-  return Math.max(labelWidth, node.children.reduce((sum, child) => sum + measure(child, showTimestamps) + 2, -2))
+/** Nodes in post-order (children before parent, children left to right). */
+function postOrder(root: UndoTreeNodeView): UndoTreeNodeView[] {
+  const out: UndoTreeNodeView[] = []
+  const stack = [root]
+  while (stack.length) {
+    const node = stack.pop()!
+    out.push(node)
+    for (const child of node.children) stack.push(child)
+  }
+  return out.reverse()
 }
 
-function layoutTree(
-  node: UndoTreeNodeView,
-  left: number,
-  depth: number,
-  showTimestamps: boolean,
-  activeIds: Set<number>,
-  out: RenderedNode[],
-): number {
-  const width = measure(node, showTimestamps)
-  let center = left + Math.floor(width / 2)
-  if (node.children.length) {
-    let childLeft = left
-    const childCenters: number[] = []
-    for (const child of node.children) {
-      const childCenter = layoutTree(child, childLeft, depth + 1, showTimestamps, activeIds, out)
-      childCenters.push(childCenter)
-      childLeft += measure(child, showTimestamps) + 2
-    }
-    center = Math.floor((childCenters[0]! + childCenters[childCenters.length - 1]!) / 2)
+function layoutTree(root: UndoTreeNodeView, showTimestamps: boolean, activeIds: Set<number>): RenderedNode[] {
+  const order = postOrder(root)
+  const width = new Map<UndoTreeNodeView, number>()
+  for (const node of order) {
+    const labelWidth = nodeLabel(node, showTimestamps).length
+    const childWidth = node.children.reduce((sum, child) => sum + width.get(child)! + 2, -2)
+    width.set(node, node.children.length ? Math.max(labelWidth, childWidth) : labelWidth)
   }
-  out.push({ node, x: center, y: depth * 2, label: nodeLabel(node, showTimestamps), active: activeIds.has(node.id) })
-  return center
+  // Pre-order pass: a node's children sit side by side from its left edge.
+  const left = new Map<UndoTreeNodeView, number>([[root, 0]])
+  const depth = new Map<UndoTreeNodeView, number>([[root, 0]])
+  for (let i = order.length - 1; i >= 0; i--) {
+    const node = order[i]!
+    let childLeft = left.get(node)!
+    for (const child of node.children) {
+      left.set(child, childLeft)
+      depth.set(child, depth.get(node)! + 1)
+      childLeft += width.get(child)! + 2
+    }
+  }
+  // Post-order pass: a parent centers over its first and last child.
+  const center = new Map<UndoTreeNodeView, number>()
+  const out: RenderedNode[] = []
+  for (const node of order) {
+    const x = node.children.length
+      ? Math.floor((center.get(node.children[0]!)! + center.get(node.children.at(-1)!)!) / 2)
+      : left.get(node)! + Math.floor(width.get(node)! / 2)
+    center.set(node, x)
+    out.push({ node, x, y: depth.get(node)! * 2, label: nodeLabel(node, showTimestamps), active: activeIds.has(node.id) })
+  }
+  return out
 }
 
 function renderTree(root: UndoTreeNodeView, showTimestamps: boolean): RenderedTree {
-  const nodes: RenderedNode[] = []
-  layoutTree(root, 0, 0, showTimestamps, activePathIds(root), nodes)
+  const nodes = layoutTree(root, showTimestamps, activePathIds(root))
+  const byId = new Map(nodes.map(n => [n.node.id, n]))
   const grid: string[][] = []
   for (const item of nodes) drawText(grid, item.y, item.x - Math.floor(item.label.length / 2), item.label)
   for (const item of nodes) {
     if (!item.node.children.length) continue
-    const childItems = item.node.children.map(child => nodes.find(n => n.node.id === child.id)!).filter(Boolean)
+    const childItems = item.node.children.map(child => byId.get(child.id)!).filter(Boolean)
     const y = item.y + 1
     for (const child of childItems) {
       const from = item.x
@@ -224,7 +248,7 @@ function renderVisualizer(editor: Editor, visualizer: BufferModel): boolean {
   visualizer.locals.set(VISUALIZER_SPANS, rendered.spans)
   visualizer.locals.set(VISUALIZER_NODE_RANGES, rendered.nodeRanges)
   replaceReadOnly(visualizer, rendered.text)
-  const treeWidth = Math.max(1, ...rendered.text.split("\n").map(line => line.length))
+  const treeWidth = rendered.text.split("\n").reduce((max, line) => Math.max(max, line.length), 1)
   // The display layer's visual-fill locals work for any buffer. GNU
   // undo-tree uses the full visualizer window but centers the drawn tree.
   visualizer.locals.set("markdown-visual-fill-column-mode", true)
@@ -306,7 +330,17 @@ function setParentToVisualizerPoint(editor: Editor, visualizer: BufferModel, poi
 function quitVisualizer(editor: Editor, buffer: BufferModel): void {
   const state = visualizerState(buffer)
   const parentId = state?.parentBufferId
-  if (editor.currentBuffer.id === buffer.id && listWindowLeaves(editor.windowLayout).length > 1) {
+  const leaves = listWindowLeaves(editor.windowLayout)
+  const window = leaves.find(leaf => leaf.id === state?.windowId && leaf.bufferId === buffer.id)
+    ?? (editor.currentBuffer.id === buffer.id ? editor.selectedWindowLeaf() : undefined)
+  const previousId = window?.id === state?.windowId ? state?.previousBufferId : null
+  if (window && previousId && previousId !== buffer.id && editor.buffers.has(previousId)) {
+    // The visualizer reused this window: show its old buffer again, like GNU quit-restore.
+    editor.selectWindow(window.id)
+    editor.setSelectedWindowDedicated(false)
+    editor.switchToBuffer(previousId)
+  } else if (window && leaves.length > 1) {
+    editor.selectWindow(window.id)
     editor.deleteWindow()
   }
   editor.killBuffer(buffer.id)
@@ -476,15 +510,28 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   ctx.command("undo-tree-visualize", ({ editor, buffer }) => {
     const name = visualizerName(buffer)
     const visualizer = utilityBuffer(editor, name, "", "undo-tree-visualizer-mode")
-    visualizer.locals.set(VISUALIZER_STATE, {
+    const old = visualizerState(visualizer)
+    const before = new Map(listWindowLeaves(editor.windowLayout).map(leaf => [leaf.id, leaf.bufferId]))
+    const state: VisualizerState = {
       parentBufferId: buffer.id,
       openedAtNodeId: buffer.undoTreeSnapshot().current.id,
       showTimestamps: getCustom<boolean>("undo-tree-visualizer-timestamps") ?? false,
       showDiff: false,
-    } satisfies VisualizerState)
+    }
+    visualizer.locals.set(VISUALIZER_STATE, state)
     visualizer.readOnly = true
     renderVisualizer(editor, visualizer)
     editor.displayBufferInOtherWindow(visualizer.id, { select: true })
+    const windowId = editor.selectedWindowId
+    const previousBufferId = before.get(windowId)
+    // Re-running C-x u while the visualizer is up must not lose the original buffer.
+    if (previousBufferId === visualizer.id && old?.windowId === windowId) {
+      state.windowId = old.windowId
+      state.previousBufferId = old.previousBufferId
+    } else {
+      state.windowId = windowId
+      state.previousBufferId = previousBufferId ?? null
+    }
   }, "Visualize the current buffer's undo tree.")
 
   // A numeric prefix is a repeat count, and a negative one runs the opposite

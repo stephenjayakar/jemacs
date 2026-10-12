@@ -252,9 +252,19 @@ function layoutLeafPane(
     // Keep point on-screen — same correction the shim wrote back to the editor.
     startLine = syncViewportStartLine(startLine, cursorLine, maxLines, visualRows)
   }
-  const displayLines = visualRows
+  const fullLines = visualRows
     ? visibleLineCountForBudget(startLine, maxLines, lineCount, visualRows)
     : maxLines
+  // Emacs draws a partly visible last line, clipped at the window bottom. Without
+  // it a narrow text column whose next paragraph wraps taller than the space left
+  // shows nothing below the heading. Scroll math still counts only full lines.
+  let partialLine = false
+  if (visualRows && startLine + fullLines < lineCount) {
+    let used = 0
+    for (let i = startLine; i < startLine + fullLines; i++) used += visualRows[i] ?? 1
+    partialLine = used < maxLines - 1e-6
+  }
+  const displayLines = fullLines + (partialLine ? 1 : 0)
   const syncSpans = bufferHighlightSpans(pane.point, mark, pane.spans)
   const clickState = windowClickState(dText, startLine, displayLines, showGutter, cursorLine + 1)
   if (pane.displayUnmap) clickState.displayToBuffer = pane.displayUnmap
@@ -264,7 +274,8 @@ function layoutLeafPane(
   // Hosts with real font metrics draw their own caret, so the █ is only a
   // placeholder we extract below -- it must not eat the character under point.
   const hostDrawsCaret = hostCapabilities?.perFaceFonts === true
-  const keepWrappedTop = startLine === 0
+  // The partial line's extra rows are cut from the bottom, not the top.
+  const keepWrappedTop = startLine === 0 || partialLine
   const { wrapCols, gutterPrefixLen: gutter, wordWrap, adaptiveWrap } = paneWrapLayoutFor(
     dText,
     pane.locals,

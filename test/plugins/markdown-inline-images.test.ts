@@ -61,7 +61,7 @@ test("GUI text column draws an image under its line and task items as bare check
   resetFace("default")
   const editor = makeEditor()
   install(editor)
-  const buffer = editor.scratch("note.md", "intro\n\n![[Pasted image 1.png]]\n\n- [ ] todo\n- plain\n", "markdown")
+  const buffer = editor.scratch("note.md", "intro\n\n![[Pasted image 1.png]]\n\n- [ ] todo\n- [/] doing\n- plain\n", "markdown")
   ;(buffer as unknown as { _path: string })._path = notePath
   buffer.locals.set("markdown-hide-markup", true)
   const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 80, cols: 120 }, hostCapabilities: gui() })
@@ -73,5 +73,20 @@ test("GUI text column draws an image under its line and task items as bare check
   expect(image.widthPx / image.heightPx).toBeCloseTo(2, 1)
   expect(image.widthPx).toBeLessThanOrEqual(pane!.textColumn!.widthPx)
   expect(rows).toContain("\u25a2 todo")
+  expect(rows).toContain("\u2b1a doing")
   expect(rows).toContain("\u2981 plain")
+})
+
+test("an image embedded in a list item draws under the item", () => {
+  resetFace("default")
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("note.md", "- [ ] John might like the doc. ![[Pasted image 1.png]]. <https://example.com>.\n", "markdown")
+  ;(buffer as unknown as { _path: string })._path = notePath
+  buffer.locals.set("markdown-hide-markup", true)
+  const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 80, cols: 120 }, hostCapabilities: gui() })
+  const pane = model.windows.kind === "leaf" ? model.windows.pane : null
+  const row = pane!.rowDecorations!.find(d => d?.image)
+  expect(row?.kind).toBe("list-0")
+  expect(row!.image!.src).toContain("Pasted%20image%201.png")
 })

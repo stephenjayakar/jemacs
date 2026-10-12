@@ -445,12 +445,18 @@ export class Editor {
     this.windowLayout = setWindowLeafPoint(this.windowLayout, leaf.id, this.currentBuffer.point)
   }
 
+  /** Screen-row cost per display line for the selected window, recorded by the last
+   *  redisplay. Commands that place point on a given screen row (recenter) read this,
+   *  because a wrapped or tall line occupies more than one row. */
+  selectedWindowRows?: { windowId: string; bufferId: string; lineBudget: number; rows?: readonly number[] }
+
   /** Keep the cursor on screen without recentering the whole window on focus changes. */
   syncSelectedWindowViewport(lineBudget: number, lineWeights?: readonly number[]): void {
     const leaf = this.selectedWindowLeaf()
     if (!leaf) return
     const buffer = this.buffers.get(leaf.bufferId)
     if (!buffer) return
+    this.selectedWindowRows = { windowId: leaf.id, bufferId: leaf.bufferId, lineBudget, rows: lineWeights }
     const cursorLine = this.lineAtPoint(buffer.point)
     const start = displaySystem.syncViewportStartLine(leaf.startLine, cursorLine, lineBudget, lineWeights)
     if (start !== leaf.startLine) {

@@ -135,16 +135,21 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 .terminal-row span { display: inline-block; width: var(--jemacs-terminal-col-px, 9px); height: var(--jemacs-terminal-row-px, 18px); line-height: var(--jemacs-terminal-row-px, 18px); overflow: hidden; }
 .terminal-cursor { color: #1e1e1e; background: #d4d4d4; font-style: normal; }
 .window-footer { padding: 2px 8px; white-space: pre; flex-shrink: 0; }
-.window-modeline { padding: 2px 8px; background: #252526; flex-shrink: 0; }
-.split-row { display: flex; flex-direction: row; flex: 1; min-height: 0; }
-.split-col { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+/* Emacs truncates a long mode line at the window edge; it never wraps. */
+.window-modeline { padding: 2px 8px; background: #252526; flex-shrink: 0; white-space: pre; overflow: hidden; }
+/* A nested split is itself a flex item: without `min-width: 0` (and
+ * `min-height: 0`) its automatic minimum is the min-content of its panes,
+ * so a long mode line widens it past the kernel's column budget and text
+ * wraps and centres for a width the DOM does not draw. */
+.split-row { display: flex; flex-direction: row; flex: 1; min-width: 0; min-height: 0; }
+.split-col { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .jemacs-child-frame { position: absolute; z-index: 20; border: 1px solid #665c54; box-shadow: 0 8px 24px rgba(0,0,0,.35); overflow: hidden; }
 .jemacs-child-frame-body { padding: 6px 8px; overflow: auto; max-height: inherit; white-space: pre-wrap; line-height: 1.35; }
 /* Inline image (markdown-display-inline-images): the link text stays as a
  * faint caption line (font-lock dims it), so point and editing still work on
  * it; the picture sits under it. Size and 8px gaps are the kernel's
  * (`imageBlockPx`). */
-.text-column .body-row.row-image > img.inline-image {
+.text-column .body-row > img.inline-image {
   display: block;
   margin: 8px 0;
   border-radius: 6px;

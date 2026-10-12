@@ -186,6 +186,29 @@ describe("undo-tree plugin", () => {
     expect(listWindowLeaves(editor.windowLayout)).toHaveLength(1)
   })
 
+  test("quit restores the buffer the visualizer replaced in a reused window", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const other = editor.scratch("other.txt", "other", "text")
+    const parent = editor.scratch("undo.txt", "base", "text")
+    await editor.run("split-window-right")
+    const leaves = listWindowLeaves(editor.windowLayout)
+    editor.selectWindow(leaves[1]!.id)
+    editor.switchToBuffer(other.id)
+    editor.selectWindow(leaves[0]!.id)
+
+    await editor.run("undo-tree-visualize")
+    const buf = visualizer(editor)
+    expect(editor.selectedWindowId).toBe(leaves[1]!.id)
+    await editor.run("undo-tree-visualizer-quit")
+
+    expect(editor.buffers.has(buf.id)).toBe(false)
+    const after = listWindowLeaves(editor.windowLayout)
+    expect(after.map(leaf => leaf.bufferId)).toEqual([parent.id, other.id])
+    expect(after[1]!.dedicated).toBeFalsy()
+    expect(editor.currentBuffer.id).toBe(parent.id)
+  })
+
   test("visualizer centers its rendered tree and binds both q spellings", async () => {
     const editor = makeEditor()
     install(editor)
@@ -298,5 +321,15 @@ describe("undo-tree plugin", () => {
       resetCustom("undo-tree-history-directory")
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  test("visualize does not overflow the stack on a deep edit history", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("deep.txt", "", "text")
+    for (let i = 0; i < 20000; i++) buffer.insert("x")
+    await editor.run("undo-tree-visualize")
+    expect(editor.currentBuffer.name).toBe("*undo-tree: deep.txt*")
+    expect(editor.currentBuffer.text).toContain("x")
   })
 })

@@ -336,6 +336,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (!buffer.path) return
     await editor.openDirectory(dirname(buffer.path))
   }, "Open the parent directory in Dired.")
+  editor.command("dired-summary", ({ editor }) => {
+    editor.message("d-flag delete, x-execute flags, u-unflag, RET-visit, g-refresh, h-help, q-quit")
+  }, "Print a one-line Dired command summary in the echo area.")
   editor.command("dired-mark", ({ buffer, prefixArgument }) => {
     for (const entry of diredEntriesForPrefix(buffer, prefixArgument)) {
       diredMarkEntry(buffer, entry, "marked")

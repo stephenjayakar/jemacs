@@ -47,6 +47,8 @@ export function installDiredMode(): void {
   const keymap = new Keymap("dired-map")
   keymap.bind("enter", "dired-find-file")
   keymap.bind("g", "revert-buffer")
+  keymap.bind("h", "describe-mode")
+  keymap.bind("?", "dired-summary")
   keymap.bind("^", "dired-up-directory")
   keymap.bind("q", "quit-window")
   keymap.bind("m", "dired-mark")

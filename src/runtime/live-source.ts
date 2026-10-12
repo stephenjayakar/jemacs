@@ -1,5 +1,5 @@
 import type { Editor } from "../kernel/editor"
-import { normalizeSequence } from "../kernel/keymap"
+import { emacsKeyDescription, metaToEscPrefix, normalizeSequence } from "../kernel/keymap"
 import type { CustomVariable } from "./custom"
 import { getCustomVariable, listCustomVariables } from "./custom"
 import type { Evaluator } from "./evaluator"
@@ -18,7 +18,7 @@ import {
   parseSourceLineAtPoint,
   visitSource,
 } from "./source"
-import { getMode } from "../modes/mode"
+import { getMode, modeLineage } from "../modes/mode"
 import { HELP_BUTTONS_KEY, helpButtonAt, moveHelpButton, type HelpButton } from "../modes/help"
 
 export const HELP_TOPIC_KEY = "jemacs-help-topic"
@@ -251,12 +251,43 @@ export function installLiveSourceCommands(editor: Editor, evaluator: Evaluator):
       entry?.source ? formatSourceLine(entry.source) : "",
       entry?.source ? "RET — visit source" : "",
       !args[0] && editor.activeMinorModes(buffer).length ? `Minor modes: ${editor.activeMinorModes(buffer).map(m => m.name).join(", ")}` : "",
+      ...modeBindingLines(name),
     ].filter(Boolean)
     showHelp(editor, lines.join("\n"), { kind: "mode", name }, {
       command: "describe-mode",
       args: [name],
     })
   }, "Describe major mode and link to its source.")
+}
+
+/** Emacs `describe-mode` lists the mode's own key bindings. Walk the mode
+ *  lineage so an inherited binding still appears, and let the nearest mode win. */
+function modeBindingLines(name: string): string[] {
+  const bindings = new Map<string, string>()
+  for (const mode of modeLineage(name)) {
+    for (const [sequence, command] of mode.keymap?.all() ?? []) {
+      if (!bindings.has(sequence)) bindings.set(sequence, command)
+    }
+  }
+  // `Keymap.bind` also stores an `esc <k>` twin for every `M-<k>` binding.
+  // Show only the `M-` spelling, the same way GNU Emacs does.
+  for (const sequence of [...bindings.keys()]) {
+    if (metaToEscPrefix(sequence) !== sequence) bindings.delete(metaToEscPrefix(sequence))
+  }
+  if (!bindings.size) return []
+  const rows = [...bindings.entries()]
+    .map(([sequence, command]) => [describeModeKey(sequence), command] as const)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+  const width = Math.max(...rows.map(([key]) => key.length))
+  return ["", "Key bindings:", ...rows.map(([key, command]) => `${key.padEnd(width)}  ${command}`)]
+}
+
+/** Emacs prints a shifted letter as the capital letter: `S-r` reads as `R`. */
+function describeModeKey(sequence: string): string {
+  return emacsKeyDescription(sequence)
+    .split(" ")
+    .map(token => /^S-[a-z]$/.test(token) ? token.slice(2).toUpperCase() : token)
+    .join(" ")
 }
 
 export function showHelp(editor: Editor, body: string, topic: HelpTopic, page?: HelpPage): void {

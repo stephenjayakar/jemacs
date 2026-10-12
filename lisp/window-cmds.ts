@@ -113,19 +113,36 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   }))
 
   editor.command("recenter-top-bottom", ({ editor, prefixArgument }) => {
-    if (!editor.selectedWindowLeaf()) return
-    const page = pageScrollLines(editor.lastViewport?.rows)
+    const leaf = editor.selectedWindowLeaf()
+    if (!leaf) return
+    // Emacs places point on a screen row, not a logical line: with visual-line-mode
+    // (markdown) or tall heading faces a line can fill several rows, so count rows.
+    const recorded = editor.selectedWindowRows
+    const fresh = recorded?.windowId === leaf.id && recorded.bufferId === leaf.bufferId ? recorded : undefined
+    const page = fresh?.lineBudget ?? pageScrollLines(editor.lastViewport?.rows)
+    const cost = (line: number) => fresh?.rows?.[line] ?? 1
     const lineIdx = editor.currentBuffer.lineCol().line - 1
+    // First visible line such that at most `rowsAbove` screen rows sit above point's line.
+    const startFor = (rowsAbove: number) => {
+      let start = lineIdx
+      let used = 0
+      while (start > 0 && used + cost(start - 1) <= rowsAbove + 1e-6) {
+        start--
+        used += cost(start)
+      }
+      return start
+    }
+    const bottomRows = page - cost(lineIdx)
     if (prefixArgument != null) {
-      const targetRow = prefixArgument >= 0 ? prefixArgument : Math.max(0, page + prefixArgument)
-      editor.setSelectedWindowStartLine(Math.max(0, lineIdx - targetRow))
+      const targetRow = prefixArgument >= 0 ? prefixArgument : Math.max(0, page + prefixArgument - (cost(lineIdx) - 1))
+      editor.setSelectedWindowStartLine(startFor(targetRow))
       editor.message("Recenter")
       return
     }
     const cycle = recenterCycle.get(editor) ?? 0
-    const start = cycle === 0 ? Math.max(0, lineIdx - Math.floor(page / 2))
+    const start = cycle === 0 ? startFor(Math.floor((page - cost(lineIdx) + 1) / 2))
       : cycle === 1 ? lineIdx
-      : Math.max(0, lineIdx - page + 1)
+      : startFor(bottomRows)
     editor.setSelectedWindowStartLine(start)
     recenterCycle.set(editor, (cycle + 1) % 3)
     editor.message("Recenter")

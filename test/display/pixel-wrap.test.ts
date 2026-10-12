@@ -123,3 +123,16 @@ test("without adjust-for-text-scale a zoomed text column keeps its px width", ()
   expect(pane(2)!.widthPx).toBe(base.widthPx)
   expect(pane(-2)!.widthPx).toBe(base.widthPx)
 })
+
+test("a narrow column draws the partly visible paragraph under a heading", () => {
+  // Emacs clips the last line at the window bottom instead of dropping it.
+  // Three side-by-side panes used to show only the heading.
+  const para = "Lorem ipsum dolor sit amet consectetur adipiscing elit. ".repeat(20)
+  const { editor } = markdownEditor(`# Heading\n\n${para}\n`)
+  const model = buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 12, cols: 40 }, hostCapabilities: guiCaps(new EmMetrics()) })
+  const pane = model.windows.kind === "leaf" ? model.windows.pane : null
+  const rows = themedTextPlain(pane!.body).split("\n")
+  expect(rows[0]).toBe("Heading")
+  expect(rows[2]).toStartWith("Lorem ipsum")
+  expect(rows.length).toBeGreaterThan(3)
+})
