@@ -67,7 +67,7 @@ test("a row carrying a margin note is at least one note line tall", () => {
   const model = serializeDisplayModel(buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 20, cols: 100 }, hostCapabilities: CAPS }))
   presentDomFrame(dom, model, () => {}, () => {})
 
-  const rows = [...dom.windows.querySelectorAll<HTMLElement>(".body-row")]
+  const rows = Array.from(dom.windows.querySelectorAll(".body-row")) as HTMLElement[]
   const noted = rows.filter(r => r.querySelector(".margin-note"))
   expect(noted.length).toBeGreaterThan(1)
   // The blank row under "The fox runs." carries the note's second line.

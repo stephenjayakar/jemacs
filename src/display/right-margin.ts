@@ -207,12 +207,12 @@ export function appendRightMargin(
         const firstWidth = actions ? textWidth - ACTIONS_COLS : textWidth
         let lines = wrapWordRanges(text, textWidth, firstWidth)
         let fold: QueuedLine["fold"]
-        if (margin.maxLines && lines.length > margin.maxLines) {
+        if (margin.maxLines && lines.length > margin.maxLines && !note.expanded) {
           if (note.pinned) {
             fold = { action: "collapse", label: COLLAPSE_LABEL }
             // No room after the last line: the button gets a line of its own.
             if (wordsWidth(lines[lines.length - 1]!) + COLLAPSE_LABEL.length > textWidth) lines.push([])
-          } else if (!note.expanded) {
+          } else {
             fold = { action: "expand", label: EXPAND_LABEL }
             lines = lines.slice(0, margin.maxLines)
             const last = lines.length - 1
@@ -225,7 +225,8 @@ export function appendRightMargin(
           style,
           id: note.id,
           actions: actions && i === 0,
-          fold: note.id && i === lines.length - 1 ? fold : undefined,
+          // Without an id the `…` still marks the cut, it just isn't clickable.
+          fold: i === lines.length - 1 ? fold : undefined,
         }))
       }
     }
@@ -250,7 +251,8 @@ export function appendRightMargin(
     const noteCols = pieces.reduce((n, p) => n + p.text.length, 0)
     const padCols = bodyCols - noteCols - (next.fold?.label.length ?? 0)
     const pad = { text: " ".repeat(Math.max(0, padCols)), style: next.style }
-    if (!next.fold && padCols > 0) pieces.push(...mergePieces([pieces.pop()!, pad]))
+    // Without a fold button the pad joins the note's last run (one edit cell).
+    if (!next.fold && pad.text) pieces.push(...mergePieces([pieces.pop()!, pad]))
     for (const piece of pieces) push(piece.text, "edit", piece.style)
     // The fold button follows the text; the pad after it keeps the bar aligned.
     if (next.fold) {
