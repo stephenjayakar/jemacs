@@ -33,7 +33,9 @@ export type CritiqueComment = {
 
 // Order matters: anchored forms before their bare point-comment forms.
 const COMMENT_RE = new RegExp([
-  String.raw`==([^\n=](?:[^\n]*?[^\n=])??)==%%([^\n]*?)%%`,
+  // The highlight can't contain `==`, or a bare highlight earlier on the line
+  // would swallow everything up to the next commented one.
+  String.raw`==([^\n=](?:(?:[^\n=]|=(?!=))*?[^\n=])??)==%%([^\n]*?)%%`,
   String.raw`\{==([^\n]*?)==\}\{>>([^\n]*?)<<\}`,
   String.raw`\{>>([^\n]*?)<<\}`,
   String.raw`%%([^\n%](?:[^\n]*?[^\n%])??)%%`,

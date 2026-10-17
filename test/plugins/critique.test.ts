@@ -61,6 +61,11 @@ describe("parseCritiqueComments", () => {
     expect(parseCritiqueComments(text).map(c => c.text)).toEqual(["yes"])
   })
 
+  test("a bare highlight doesn't merge into a later commented one", () => {
+    expect(parseCritiqueComments("==bare== and ==b=c==%%note%%").map(c => [c.quote, c.text]))
+      .toEqual([["b=c", "note"]])
+  })
+
   test("does not span lines (Obsidian block comments are not critique notes)", () => {
     expect(parseCritiqueComments("%%\nblock\n%%")).toEqual([])
   })
