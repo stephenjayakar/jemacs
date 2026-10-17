@@ -101,6 +101,7 @@ export type FaceName =
   | "markdown-strong"
   | "markdown-link"
   | "markdown-strikethrough"
+  | "markdown-highlighting-face"
   | "markdown-inline-code"
   | "markdown-blockquote"
   // tab-bar.el's faces, drawn by the tab bar above the window stack.
