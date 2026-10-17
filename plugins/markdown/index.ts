@@ -82,7 +82,7 @@ defcustom("markdown-indent-on-enter", "sexp", "indent-and-new-item", "RET behavi
 defcustom("markdown-trim-trailing-whitespace-on-enter", "boolean", true, "Trim trailing whitespace from the previous line after RET.", "text")
 // Like a notes app: Emacs `auto-save-visited-mode` with a markdown-only
 // `auto-save-visited-predicate`, but on an idle delay instead of a fixed period.
-defcustom("markdown-auto-save-idle-seconds", "integer", 2,
+defcustom("markdown-auto-save-idle-seconds", "integer", 1,
   "Seconds without input before modified markdown buffers save to their files. 0 disables.", "text")
 defcustom("markdown-fontify-code-block-default-mode", "string", "", "Default mode for fenced blocks with no language (empty = none).", "text")
 defcustom("markdown-code-lang-modes", "sexp", [
@@ -97,6 +97,7 @@ defcustom("markdown-code-lang-modes", "sexp", [
 defcustom("markdown-uri-types", "sexp", DEFAULT_MARKDOWN_URI_TYPES, "Link types for syntax highlighting of URIs.", "text")
 defcustom(MARKDOWN_GFM_LANGUAGE_HISTORY, "sexp", [] as string[], "Languages used in GFM fenced code block prompts.")
 defcustom("markdown-gfm-use-electric-backquote", "boolean", true, "When non-nil, typing ``` at BOL in GFM prompts for a fenced code language.", "text")
+defcustom("markdown-enable-highlighting-syntax", "boolean", true, "When non-nil, fontify ==highlighted== text. GNU markdown-mode defaults this to nil; jemacs notes are Obsidian vaults.", "text")
 defcustom("markdown-enable-wiki-links", "boolean", true, "When non-nil, fontify and follow [[wiki links]]. GNU markdown-mode defaults this to nil; jemacs notes are Obsidian vaults.", "text")
 defcustom("markdown-wiki-link-search-subdirectories", "boolean", false, "When non-nil, search for wiki link targets in subdirectories.", "text")
 defcustom("markdown-display-inline-images", "boolean", true, "Replace image links with inline placeholders in the display layer.", "text")
@@ -202,6 +203,7 @@ type DisplayFilterCache = {
   ranges: FoldRange[]
   hideMarkup: boolean
   hideUrls: boolean
+  highlighting: boolean
   ruleWidth: number
   pixel: boolean
   images: string
@@ -324,6 +326,14 @@ function markdownLineKinds(lines: readonly string[], blocks: readonly FencedCode
   }
   return kinds
 }
+
+function markdownHighlightingSyntax(): boolean {
+  return getCustom<boolean>("markdown-enable-highlighting-syntax") ?? true
+}
+
+/** markdown-mode's `markdown-regex-highlighting`, kept to one line and kept
+ *  off setext `===` underlines. */
+const MARKDOWN_HIGHLIGHT_RE = /(?<![\\=])==([^\s\\=]|[^\s=].*?[^\s\\=])==(?!=)/g
 
 function markdownHideUrls(buffer: BufferModel): boolean {
   const local = buffer.locals.get(MARKDOWN_HIDE_URLS)
@@ -864,6 +874,7 @@ function collectInlineMarkupHides(
   protectedRanges: Array<[number, number]>,
   ops: MarkupOp[],
   gfm = false,
+  highlighting = false,
 ): void {
   for (const m of line.matchAll(/!?\[([^\]]*)\]\(([^)]*)\)/g)) {
     if (m.index == null) continue
@@ -918,6 +929,11 @@ function collectInlineMarkupHides(
     pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 2, protectedRanges)
     pushMarkupHide(ops, lineStart + m.index + m[0].length - 2, lineStart + m.index + m[0].length, protectedRanges)
   }
+  for (const m of highlighting ? line.matchAll(MARKDOWN_HIGHLIGHT_RE) : []) {
+    if (m.index == null) continue
+    pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 2, protectedRanges)
+    pushMarkupHide(ops, lineStart + m.index + m[0].length - 2, lineStart + m.index + m[0].length, protectedRanges)
+  }
   for (const m of line.matchAll(/(?<!\*)\*(?!\*)(\S(?:.*?\S)?)\*(?!\*)/g)) {
     if (m.index == null) continue
     pushMarkupHide(ops, lineStart + m.index, lineStart + m.index + 1, protectedRanges)
@@ -936,7 +952,7 @@ function collectInlineMarkupHides(
   }
 }
 
-function collectMarkupHides(text: string, hideUrls: boolean, gfm = false, ruleWidth = MARKDOWN_DEFAULT_RULE_WIDTH, pixel = false): MarkupOp[] {
+function collectMarkupHides(text: string, hideUrls: boolean, gfm = false, ruleWidth = MARKDOWN_DEFAULT_RULE_WIDTH, pixel = false, highlighting = false): MarkupOp[] {
   const ops: MarkupOp[] = []
   const lines = text.split("\n")
   const blocks = parseFencedCodeBlocks(text)
@@ -1036,7 +1052,7 @@ function collectMarkupHides(text: string, hideUrls: boolean, gfm = false, ruleWi
     // delimiters go whenever markup hiding is on; URLs additionally need
     // `markdown-hide-urls`.
     const protectedRanges = protectedInlineCodeRanges(line, lineStart)
-    collectInlineMarkupHides(line, lineStart, hideUrls, protectedRanges, ops, gfm)
+    collectInlineMarkupHides(line, lineStart, hideUrls, protectedRanges, ops, gfm, highlighting)
   }
   return mergeMarkupOps(ops)
 }
@@ -1096,12 +1112,14 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
   // of the cache key: a window resize changes the composed string.
   const ruleWidth = markdownRuleWidth(buffer)
   const pixel = markdownPixelDisplay(buffer)
+  const highlighting = markdownHighlightingSyntax()
   const cached = buffer.locals.get(MARKDOWN_FILTER_CACHE) as DisplayFilterCache | undefined
   if (cached
     && cached.text === src
     && cached.ranges === ranges
     && cached.hideMarkup === hideMarkup
     && cached.hideUrls === hideUrls
+    && cached.highlighting === highlighting
     && cached.ruleWidth === ruleWidth
     && cached.pixel === pixel
     && cached.images === markdownImagesKey(buffer)
@@ -1116,7 +1134,7 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     for (let i = Math.max(0, a); i <= b && i < L; i++) foldHidden[i] = 1
 
   // (`parseFencedCodeBlocks` is no longer needed here: fence lines stay visible.)
-  const baseOps = hideMarkup ? collectMarkupHides(src, hideUrls, markdownIsGfmMode(buffer), ruleWidth, pixel) : []
+  const baseOps = hideMarkup ? collectMarkupHides(src, hideUrls, markdownIsGfmMode(buffer), ruleWidth, pixel, highlighting) : []
   const markupOps = extraHides.length ? mergeMarkupOps([...baseOps, ...extraHides.flat()]) : baseOps
   const sourceKinds = pixel ? markdownLineKinds(lines, fencedCodeBlocksFor(buffer)) : undefined
   const images = pixel && hideMarkup ? markdownInlineImages(buffer, lines, sourceKinds!) : undefined
@@ -1230,6 +1248,7 @@ export function markdownDisplayFilter(buffer: BufferModel): DisplayFilterResult 
     ranges,
     hideMarkup,
     hideUrls,
+    highlighting,
     ruleWidth,
     extraHides,
     result,
@@ -1470,8 +1489,12 @@ function fenceLineSpan(buffer: BufferModel, line: number): TextSpan | null {
   return { start, end, face: "string" }
 }
 
-function markdownStrikethroughSpans(
+/** `~~strike~~` or `==highlight==`: the text in `face`, both 2-char
+ *  delimiters in `markdown-markup`. */
+function markdownDelimitedSpans(
   text: string,
+  re: RegExp,
+  face: FaceName,
   range?: FontLockRange,
   protectedRanges: Array<readonly [number, number]> = [],
 ): TextSpan[] {
@@ -1484,13 +1507,13 @@ function markdownStrikethroughSpans(
     protectedRanges.push(...protectedInlineCodeRanges(line, offset))
     offset += line.length + 1
   }
-  for (const match of slice.matchAll(/~~(\S(?:.*?\S)?)~~/g)) {
+  for (const match of slice.matchAll(re)) {
     if (match.index == null) continue
     const matchStart = start + match.index
     const matchEnd = matchStart + match[0].length
     if (spanInsideRegions(matchStart, matchEnd, protectedRanges)) continue
     spans.push({ start: matchStart, end: matchStart + 2, face: "markdown-markup" as FaceName })
-    spans.push({ start: matchStart + 2, end: matchEnd - 2, face: "markdown-strikethrough" as FaceName })
+    spans.push({ start: matchStart + 2, end: matchEnd - 2, face })
     spans.push({ start: matchEnd - 2, end: matchEnd, face: "markdown-markup" as FaceName })
   }
   return spans
@@ -1543,7 +1566,10 @@ function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[
   }
 
   spans = overlayFrontMatterFaces(buffer, spans)
-  if (gfm) spans.push(...markdownStrikethroughSpans(buffer.text, range, bodyRegions))
+  if (gfm) spans.push(...markdownDelimitedSpans(buffer.text, /~~(\S(?:.*?\S)?)~~/g, "markdown-strikethrough", range, bodyRegions))
+  if (markdownHighlightingSyntax()) {
+    spans.push(...markdownDelimitedSpans(buffer.text, MARKDOWN_HIGHLIGHT_RE, "markdown-highlighting-face", range, [...bodyRegions]))
+  }
   spans = overlayMarkdownLinkFaces(buffer.text, spans, range, gfm, bodyRegions)
   spans = overlayMarkdownHeaderFaces(buffer.text, spans, range)
   if (markdownPixelDisplay(buffer)) {
@@ -2719,7 +2745,7 @@ function installMarkdownIdleAutoSave(editor: Editor, ctx: PluginContext): void {
   let lastInput = Date.now()
   ctx.hook("post-command-hook", () => { lastInput = Date.now() })
   const timer = setInterval(() => {
-    const seconds = getCustom<number>("markdown-auto-save-idle-seconds") ?? 2
+    const seconds = getCustom<number>("markdown-auto-save-idle-seconds") ?? 1
     if (seconds <= 0 || Date.now() - lastInput < seconds * 1000) return
     if (editor.minibuffer) return
     for (const buffer of editor.buffers.values()) {
@@ -2784,6 +2810,7 @@ export function install(editor: Editor, depsOrCtx: MarkdownDeps | PluginContext 
   // `markdown-markup-face` makes.
   defface("markdown-markup", { inherit: ["comment"], italic: false }, "Markdown markup delimiter face.")
   defface("markdown-strikethrough", { strikeThrough: true }, "GFM strikethrough text face.")
+  defface("markdown-highlighting-face", { bg: "#5a4f00", fg: "#fff6bf" }, "Markdown ==highlighted== text face.")
   defface("markdown-inline-code", { inherit: ["string"] }, "Markdown inline `code` span.")
   defface("markdown-blockquote", { inherit: ["comment"], italic: true }, "Markdown blockquote body.")
   const keymap = new Keymap("markdown-map")

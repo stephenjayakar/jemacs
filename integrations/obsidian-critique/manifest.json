@@ -1,9 +1,9 @@
 {
   "id": "critique",
   "name": "Critique",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
-  "description": "Margin comments on highlighted text (==text==%%comment%% or CriticMarkup), shown in a sidebar. Compatible with jemacs critique-mode.",
+  "description": "Margin comments on highlighted text (==text==%%comment%% or CriticMarkup), drawn in the right margin and listed in a sidebar. Compatible with jemacs critique-mode.",
   "author": "jemacs",
   "isDesktopOnly": false
 }

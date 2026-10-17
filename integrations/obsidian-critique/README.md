@@ -1,17 +1,18 @@
 # Critique for Obsidian
 
-Sidebar viewer for margin comments written by jemacs' `critique-mode`. It reads the same syntax and uses the same parser (`plugins/critique/parse.ts`).
+Margin comments written by jemacs' `critique-mode`, drawn in Obsidian the way jemacs draws them: a note in the right margin beside the highlighted text. It reads the same syntax and uses the same parser (`plugins/critique/parse.ts`).
 
 | syntax | example | without this plugin |
 |---|---|---|
 | native (default) | `==highlighted text==%%comment%%` | highlight renders, comment hidden in reading view |
 | point comment | `%%comment%%` | hidden in reading view |
-| CriticMarkup | `{==text==}{>>comment<<}`, `{>>comment<<}` | needs a CriticMarkup plugin to render |
+| CriticMarkup | `{==text==}{>>comment<<}`, `{>>comment<<}` | needs a CriticMarkup plugin to render (this plugin hides it in Live Preview only) |
 
 Comments are single-line. Obsidian's multi-line `%%` block comments are left alone.
 
 ## Features
 
+- **Margin notes** in Live Preview, source mode and reading view. Live Preview hides the comment markup until the cursor enters it, like Obsidian's own formatting. Click a note's text to edit it, `√` to resolve it, `+` to add another comment under it. When the pane is too narrow for a margin, the text column moves in to make room. If that would squeeze it too much, the notes sit inline. Notes already open in reading view pick up the margin the next time they render.
 - **Comments panel** (ribbon icon or "Critique: Open comments panel"): lists the active note's comments with the quoted text. Click a card to jump to it. Each card has Edit, Reply and Resolve buttons. Reply adds another comment right after this one; Resolve keeps the text and drops the comment.
 - **Critique: Comment on selection**: wraps the selection, or adds a point comment at the cursor.
 - **Critique: Go to next / previous comment**.

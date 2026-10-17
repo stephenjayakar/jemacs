@@ -163,6 +163,28 @@ test("gfm strikethrough delimiters hide under markdown-hide-markup", () => {
   expect(markdownDisplayFilter(buffer)?.text).toBe("gone\n")
 })
 
+test("==highlight== font-lock marks delimiters and body", () => {
+  const editor = makeEditor()
+  install(editor)
+  const buffer = editor.scratch("note.md", "a ==hi there== b\n\nx\n======\n\n`==code==` \\==esc== ===tri===\n", "markdown")
+
+  const spans = editor.fontLock(buffer)
+  const highlights = spans.filter(span => String(span.face) === "markdown-highlighting-face")
+
+  // `markdown-regex-highlighting`; the setext underline, code span, escaped
+  // `\==`, and `===` runs stay plain.
+  expect(highlights.map(span => [span.start, span.end])).toEqual([[4, 12]])
+  expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 2 && span.end === 4)).toBe(true)
+  expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 12 && span.end === 14)).toBe(true)
+})
+
+test("==highlight== delimiters hide under markdown-hide-markup", () => {
+  const buffer = new BufferModel({ name: "note.md", text: "==This was fine==. Then\n", mode: "markdown" })
+  buffer.locals.set("markdown-hide-markup", true)
+
+  expect(markdownDisplayFilter(buffer)?.text).toBe("This was fine. Then\n")
+})
+
 test("intraword underscores stay literal in gfm but italicize in markdown", () => {
   const markdown = new BufferModel({ name: "doc.md", text: "foo_bar_baz\n", mode: "markdown" })
   markdown.locals.set("markdown-hide-markup", true)
@@ -1798,6 +1820,6 @@ test("modified markdown buffers save to their files after markdown-auto-save-idl
     expect(readFileSync(other, "utf8")).toBe("a\n")
   } finally {
     ctx.dispose()
-    setCustom("markdown-auto-save-idle-seconds", before ?? 2)
+    setCustom("markdown-auto-save-idle-seconds", before ?? 1)
   }
 })

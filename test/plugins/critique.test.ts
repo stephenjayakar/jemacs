@@ -66,6 +66,11 @@ describe("parseCritiqueComments", () => {
     expect(parseCritiqueComments(text).map(c => c.text)).toEqual(["use `y`", "see `z`"])
   })
 
+  test("a bare highlight doesn't merge into a later commented one", () => {
+    expect(parseCritiqueComments("==bare== and ==b=c==%%note%%").map(c => [c.quote, c.text]))
+      .toEqual([["b=c", "note"]])
+  })
+
   test("does not span lines (Obsidian block comments are not critique notes)", () => {
     expect(parseCritiqueComments("%%\nblock\n%%")).toEqual([])
   })
@@ -205,14 +210,15 @@ describe("display", () => {
     editor.disableMinorMode(CRITIQUE_MODE, { buffer })
     const rows = displayRows(editor, VIEW)
     expect(rows.join("\n")).not.toContain("│")
-    expect(rows[0]).toContain("==fox==%%c%%")
+    // markdown-mode hides the `==` highlight markers itself; the comment shows.
+    expect(rows[0]).toContain("fox%%c%%")
   })
 
   test("critique-toggle-inline-comments shows raw markup but keeps the margin", async () => {
     const { editor } = setup("The ==fox==%%c%% runs.\n")
     await keySeq(editor, "C-c", "C-x", ";")
     const row = displayRows(editor, VIEW)[0]!
-    expect(row).toContain("==fox==%%c%%")
+    expect(row).toContain("fox%%c%%")
     expect(row.trimEnd()).toMatch(/│ • c +√ \+$/)
   })
 

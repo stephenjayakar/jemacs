@@ -46,8 +46,14 @@ defcustom("desktop-save-mode", "boolean", false,
   "When non-nil, restore the saved Jemacs desktop at startup and save it on exit.", "convenience")
 defcustom("desktop-save-file", "string", join(homedir(), ".jemacs", "desktop.json"),
   "File where desktop-save-mode persists the session.", "convenience")
+defcustom("desktop-auto-save-timeout", "integer", 30,
+  "Seconds between automatic desktop saves while desktop-save-mode is on; 0 disables.", "convenience")
 
 const restoredPaths = new WeakMap<Editor, Set<string>>()
+const lastSaved = new WeakMap<Editor, string>()
+// Editors whose after-init-hook has run. Auto-saving before then could replace
+// the saved desktop with the bare startup layout before it is restored.
+const initialized = new WeakSet<Editor>()
 
 export function desktopSaveFile(): string {
   return getCustom<string>("desktop-save-file") ?? join(homedir(), ".jemacs", "desktop.json")
@@ -229,7 +235,7 @@ function restoreWindowLayout(
   editor.captureSelectedTab()
 }
 
-export async function desktopSave(editor: Editor): Promise<void> {
+export async function desktopSave(editor: Editor, options: { onlyIfChanged?: boolean } = {}): Promise<void> {
   const config = editor.currentWindowConfiguration()
   const files = visitedFileBuffers(editor).flatMap(buffer => entryForBuffer(buffer) ?? [])
   const currentPath = bufferPath(editor, config.currentBufferId)
@@ -239,9 +245,12 @@ export async function desktopSave(editor: Editor): Promise<void> {
     ...(currentPath ? { currentBuffer: currentPath } : {}),
     layout: serializeWindowLayout(editor, config.layout),
   }
+  const text = JSON.stringify(manifest, null, 2)
   const file = desktopSaveFile()
+  if (options.onlyIfChanged && lastSaved.get(editor) === `${file}\0${text}`) return
   await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(manifest, null, 2), "utf8")
+  await writeFile(file, text, "utf8")
+  lastSaved.set(editor, `${file}\0${text}`)
 }
 
 export async function desktopRead(editor: Editor): Promise<number> {
@@ -301,9 +310,32 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     onDisable: () => setCustom("desktop-save-mode", false),
   })
 
-  ctx.hook("kill-emacs-hook", async ({ editor }) => {
-    if (editor.globalMinorModes.has("desktop-save-mode")) await desktopSave(editor)
+  // Hooks are process-global; only act for the editor this install belongs to.
+  ctx.hook("kill-emacs-hook", async ({ editor: ed }) => {
+    if (ed === editor && editor.globalMinorModes.has("desktop-save-mode")) await desktopSave(editor)
   })
+
+  // Like GNU desktop.el, restore from after-init-hook so enabling the mode in
+  // init.ts or custom.ts (both loaded after this plugin) still takes effect.
+  ctx.hook("after-init-hook", async ({ editor: ed }) => {
+    if (ed !== editor || initialized.has(editor)) return
+    initialized.add(editor)
+    if (getCustom<boolean>("desktop-save-mode") !== true && !editor.globalMinorModes.has("desktop-save-mode")) return
+    editor.enableMinorMode("desktop-save-mode")
+    await desktopRead(editor)
+  })
+
+  // Saves on exit alone lose the session when the terminal is closed or the
+  // process is killed, so also save periodically (GNU desktop-auto-save-timeout).
+  const autoSaveSeconds = getCustom<number>("desktop-auto-save-timeout") ?? 30
+  if (autoSaveSeconds > 0) {
+    const timer = setInterval(() => {
+      if (!initialized.has(editor) || !editor.globalMinorModes.has("desktop-save-mode")) return
+      desktopSave(editor, { onlyIfChanged: true }).catch(() => { /* retry next tick */ })
+    }, autoSaveSeconds * 1000)
+    timer.unref?.()
+    ctx.onDispose(() => clearInterval(timer))
+  }
 
   ctx.command("desktop-save-mode", ({ editor, prefixArgument }) => {
     if (prefixArgument != null && prefixArgument <= 0) editor.disableMinorMode("desktop-save-mode")
@@ -332,8 +364,5 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     editor.message(n ? `Reverted desktop with ${n} buffer${n === 1 ? "" : "s"}` : "No desktop buffers restored")
   }, "Clear restored desktop buffers and read the saved desktop again.")
 
-  if (getCustom<boolean>("desktop-save-mode") === true) {
-    editor.enableMinorMode("desktop-save-mode")
-    await desktopRead(editor)
-  }
+  if (getCustom<boolean>("desktop-save-mode") === true) editor.enableMinorMode("desktop-save-mode")
 }

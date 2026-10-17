@@ -352,6 +352,7 @@ async function main(): Promise<void> {
   await installBuiltinPlugins(editor)
   await installUserConfig(editor, evaluator)
   await loadCustomFile(editor, evaluator)
+  await editor.runHook("after-init-hook", editor.currentBuffer)
 
   const host = new ElectronHost()
   const binding = await runJemacsCore(editor, host)

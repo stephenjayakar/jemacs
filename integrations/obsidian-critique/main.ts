@@ -19,6 +19,13 @@ import {
   type CritiqueComment,
   type CritiqueSyntax,
 } from "../../plugins/critique/parse"
+import {
+  critiqueEdit,
+  critiqueEditorExtension,
+  critiqueReadingProcessor,
+  type CritiqueChange,
+  type NoteHost,
+} from "./notes"
 
 const VIEW_TYPE = "critique-comments"
 
@@ -57,23 +64,45 @@ export default class CritiquePlugin extends Plugin {
       editorCallback: (editor: Editor) => this.step(editor, -1),
     })
 
+    const notes: NoteHost = {
+      ask: (heading, initial, onSubmit) => new CommentModal(this.app, heading, initial, onSubmit).open(),
+    }
+    const layout = debounce(() => this.fitMargins(), 100, true)
+    this.registerEditorExtension(critiqueEditorExtension(notes, layout))
+    this.registerMarkdownPostProcessor(critiqueReadingProcessor(notes, (path, c, change) => {
+      const file = this.app.vault.getFileByPath(path)
+      if (file) void this.rewriteFile(file, c, change)
+    }))
+
     const refresh = debounce(() => this.refreshViews(), 150, true)
     this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
       if (leaf?.view instanceof MarkdownView) this.target = leaf.view
       refresh()
+      layout()
     }))
-    this.registerEvent(this.app.workspace.on("editor-change", refresh))
+    this.registerEvent(this.app.workspace.on("editor-change", () => {
+      refresh()
+      layout()
+    }))
+    this.registerEvent(this.app.workspace.on("layout-change", layout))
+    this.registerEvent(this.app.workspace.on("resize", layout))
     this.registerEvent(this.app.vault.on("modify", file => {
       if (file === this.target?.file) refresh()
+      layout()
     }))
     this.app.workspace.onLayoutReady(() => {
       this.target = this.app.workspace.getActiveViewOfType(MarkdownView)
       this.refreshViews()
+      this.fitMargins()
     })
   }
 
   async onunload(): Promise<void> {
-    // Obsidian detaches the plugin's views itself.
+    // Obsidian detaches the plugin's views and editor extensions itself.
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      leaf.view.containerEl.removeClass("critique-margin")
+      leaf.view.containerEl.style.removeProperty("--critique-reserve")
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -141,32 +170,80 @@ export default class CritiquePlugin extends Plugin {
     else view.setEphemeralState({ line: c.line })
   }
 
-  /** Rewrite a comment in the target file: `edit` replaces its text, `resolve`
-   *  drops it (keeping the highlighted text), `reply` adds another comment
-   *  right after it, the same markup jemacs' `critique-reply-comment` writes. */
-  async rewrite(c: CritiqueComment, change: { kind: "edit" | "reply"; text: string } | { kind: "resolve" }): Promise<void> {
+  /** Apply a sidebar card's edit/reply/resolve to the target note. */
+  async rewrite(c: CritiqueComment, change: CritiqueChange): Promise<void> {
     const t = await this.targetText()
     if (!t) return
-    // Re-parse so stale offsets from an old render can't clobber an edit.
-    const fresh = parseCritiqueComments(t.text).find(x => x.start === c.start && x.end === c.end)
-    if (!fresh) {
-      new Notice("Comment moved; try again")
-      this.refreshViews()
-      return
-    }
-    const replacement = change.kind === "resolve" ? fresh.quote
-      : change.kind === "edit" ? formatCritiqueComment(fresh.quote || null, change.text, fresh.syntax)
-      : t.text.slice(fresh.start, fresh.end) + formatCritiqueComment(null, change.text, fresh.syntax)
-    if (t.view.getMode() === "source") {
-      const editor = t.view.editor
-      editor.replaceRange(replacement, editor.offsetToPos(fresh.start), editor.offsetToPos(fresh.end))
-    } else {
-      await this.app.vault.process(t.file, data =>
-        data.slice(fresh.start, fresh.end) === t.text.slice(fresh.start, fresh.end)
-          ? data.slice(0, fresh.start) + replacement + data.slice(fresh.end)
-          : data)
+    if (t.view.getMode() !== "source") return this.rewriteFile(t.file, c, change)
+    const edit = critiqueEdit(t.text, c, change)
+    if (!edit) return this.moved()
+    const editor = t.view.editor
+    editor.replaceRange(edit.insert, editor.offsetToPos(edit.from), editor.offsetToPos(edit.to))
+  }
+
+  async rewriteFile(file: TFile, c: CritiqueComment, change: CritiqueChange): Promise<void> {
+    let found = true
+    await this.app.vault.process(file, data => {
+      const edit = critiqueEdit(data, c, change)
+      found = edit != null
+      return edit ? data.slice(0, edit.from) + edit.insert + data.slice(edit.to) : data
+    })
+    if (!found) this.moved()
+  }
+
+  moved(): void {
+    new Notice("Comment moved; try again")
+    this.refreshViews()
+  }
+
+  /** Margin notes float just right of the text column. Where the pane is too
+   *  narrow for that, pad the text in by `--critique-reserve`; where even that
+   *  would squeeze the text too much, drop `critique-margin` and let the notes
+   *  sit inline. Files without comments are left untouched. */
+  fitMargins(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view
+      if (!(view instanceof MarkdownView)) continue
+      const host = view.containerEl
+      if (!parseCritiqueComments(view.getViewData()).length) {
+        host.removeClass("critique-margin")
+        host.style.removeProperty("--critique-reserve")
+        continue
+      }
+      const box = textColumn(view)
+      if (!box || !box.scroller.clientWidth) continue // hidden tab; fitted when shown
+      const style = getComputedStyle(host)
+      const need = (parseFloat(style.getPropertyValue("--critique-note-width")) || 220)
+        + (parseFloat(style.getPropertyValue("--critique-note-gap")) || 24)
+      // The reserve is padding inside a border-box block, so the block's outer
+      // edge doesn't move as it changes.
+      const rect = box.block.getBoundingClientRect()
+      const limit = box.scroller.getBoundingClientRect().left + box.scroller.clientWidth
+      const reserve = Math.max(0, Math.ceil(rect.right + need - limit))
+      const fits = reserve <= rect.width * 0.4
+      host.toggleClass("critique-margin", fits)
+      host.style.setProperty("--critique-reserve", `${fits ? reserve : 0}px`)
     }
   }
+}
+
+/** A text block whose right edge the margin notes float against (themes like
+ *  Minimal size each line rather than the container), and the scroller they
+ *  have to fit inside, for whichever mode is showing. */
+function textColumn(view: MarkdownView): { block: HTMLElement; scroller: HTMLElement } | null {
+  let scroller: HTMLElement | null | undefined
+  let blocks: HTMLElement[]
+  if (view.getMode() === "preview") {
+    scroller = view.previewMode.containerEl.querySelector<HTMLElement>(".markdown-preview-view")
+    const sizer = scroller?.querySelector<HTMLElement>(":scope > .markdown-preview-sizer")
+    blocks = sizer ? Array.from(sizer.querySelectorAll<HTMLElement>(":scope > .el-p")) : []
+  } else {
+    const cm = (view.editor as unknown as { cm?: { contentDOM: HTMLElement; scrollDOM: HTMLElement } }).cm
+    scroller = cm?.scrollDOM
+    blocks = cm ? Array.from(cm.contentDOM.querySelectorAll<HTMLElement>(":scope > .cm-line")) : []
+  }
+  const block = blocks.find(b => b.querySelector(".critique-note")) ?? blocks[0]
+  return scroller && block ? { block, scroller } : null
 }
 
 function selectComment(editor: Editor, c: CritiqueComment): void {
