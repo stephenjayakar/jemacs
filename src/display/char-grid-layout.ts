@@ -357,7 +357,7 @@ function layoutLeafPane(
   let marginHits: RightMarginHit[] | undefined
   if (margin && textCols != null) {
     const origins = wrapped.rows.map(r => ({ row: r.line, first: r.start === 0 }))
-    const appended = appendRightMargin(body, origins, startLine, margin, textCols, logical.theme, pane.buffer)
+    const appended = appendRightMargin(body, origins, startLine, margin, textCols, logical.theme, pane.buffer, maxLines)
     body = appended.text
     if (appended.hits.length) marginHits = appended.hits
   }

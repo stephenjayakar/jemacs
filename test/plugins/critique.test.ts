@@ -3,7 +3,7 @@ import { makeEditor } from "./helper"
 import { displayRows, keySeq } from "../harness"
 import { getCustom } from "../../src/runtime/custom"
 import { createPluginContext } from "../../src/runtime/plugin-context"
-import { wrapWords } from "../../src/display/right-margin"
+import { rightMarginClick, wrapWords } from "../../src/display/right-margin"
 import { bindJemacsHost } from "../../src/run"
 import type { UiHost } from "../../src/display/protocol"
 import { themedTextPlain } from "../../src/display/themed-text"
@@ -203,6 +203,48 @@ describe("display", () => {
       ...expected.slice(1),
       "• second",
     ])
+  })
+
+  const marginHits = (editor: ReturnType<typeof makeEditor>) => {
+    const model = buildDisplayModel(editor, { lastMessage: "", viewport: VIEW })
+    return model.windows.kind === "leaf" ? model.windows.pane.marginHits ?? [] : []
+  }
+
+  test("notes past right-margin-note-max-lines fold behind a clickable …", () => {
+    const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
+    const { editor, buffer } = setup(`a ==x==%%${long}%% ==y==%%second%%\nb\nc\nd\ne\nf\ng\nh\n`)
+    const margin = () => displayRows(editor, VIEW).map(r => (r.split("│")[1] ?? "").trim()).filter(Boolean)
+    const folded = margin()
+    expect(folded).toHaveLength(4)
+    expect(folded[2]).toMatch(/ …$/)
+    expect(folded[3]).toMatch(/^• second/)
+    for (const row of displayRows(editor, VIEW).filter(r => r.includes("│"))) expect(row.length).toBe(VIEW.cols)
+
+    const hit = marginHits(editor).find(h => h.action === "expand")!
+    expect(hit).toBeDefined()
+    expect(rightMarginClick(buffer, hit.note, "expand")).toBe(true)
+    const open = margin()
+    expect(open.join(" ")).toContain("word29")
+    expect(open[open.length - 2]).toMatch(/ ▴$/)
+    expect(open[open.length - 1]).toMatch(/^• second/)
+
+    expect(rightMarginClick(buffer, hit.note, "collapse")).toBe(true)
+    expect(margin()).toEqual(folded)
+  })
+
+  test("the comment at point shows in full", () => {
+    const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
+    const { editor, buffer } = setup(`a ==x==%%${long}%%\nb\nc\nd\ne\nf\ng\nh\n`)
+    buffer.point = buffer.text.indexOf("x")
+    const margin = displayRows(editor, VIEW).map(r => (r.split("│")[1] ?? "").trim()).filter(Boolean)
+    expect(margin.join(" ")).toContain("word29")
+    expect(margin.join(" ")).not.toMatch(/[…▴]/)
+  })
+
+  test("notes on the last line get rows past the end of the buffer", () => {
+    const { editor } = setup("a ==x==%%first note%% ==y==%%second note%%")
+    const margin = displayRows(editor, VIEW).map(r => (r.split("│")[1] ?? "").trim()).filter(Boolean)
+    expect(margin.map(m => m.replace(/\s*√ \+$/, ""))).toEqual(["• first note", "• second note"])
   })
 
   test("margin and highlighting vanish when the mode is off", () => {

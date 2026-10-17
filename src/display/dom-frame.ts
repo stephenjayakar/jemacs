@@ -156,11 +156,24 @@ export function renderBodyRows(
     if (isBodyRow(child)) existing.push(child)
   }
 
+  // A margin note's line is pinned out of flow, so its row must be at least
+  // one note line tall: a blank row is sized by the (smaller) body font, and
+  // the next row's note would otherwise overlap this one's.
+  const lineHeight = Number.parseFloat(el.style.lineHeight) || DOM_FRAME_LINE_HEIGHT_RATIO
+  const noteRowPx = (parts: Array<{ chunk: SerializedChunk }>): number => {
+    let px = 0
+    for (const { chunk } of parts) {
+      if (chunk.margin) px = Math.max(px, effectiveFontSizePx(chunk, options.textScale ?? 1, options.defaultFontPx ?? DOM_FRAME_BODY_FONT_PX) ?? 0)
+    }
+    return px * lineHeight
+  }
+
   const rows: HTMLElement[] = []
   for (let i = 0; i < lines.length; i++) {
     const parts = lines[i]!
     const decoration = options.decorations?.[i] ?? null
-    const signature = rowSignature(parts, options) + decorationSignature(decoration)
+    const minHeight = noteRowPx(parts)
+    const signature = rowSignature(parts, options) + decorationSignature(decoration) + (minHeight ? `\u0002${minHeight}` : "")
     const reusable = existing[i]
     if (reusable && rowSignatures.get(reusable) === signature) {
       rows.push(reusable)
@@ -203,6 +216,7 @@ export function renderBodyRows(
       renderChunk(cell, { ...chunk, text }, options)
     }
     row.style.position = note ? "relative" : ""
+    row.style.minHeight = minHeight ? `${minHeight}px` : ""
     if (decoration?.image) appendInlineImage(row, decoration.image)
     rowSignatures.set(row, signature)
     rows.push(row)

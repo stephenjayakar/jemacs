@@ -43,6 +43,6 @@ Then enable "Critique" under Settings → Community plugins.
 | `C-c C-x ;` | `critique-toggle-inline-comments`: show or hide the raw markup |
 | | `critique-list-comments`: jump with completion |
 
-The margin notes are clickable too: click a note's text to edit it in the minibuffer, `√` to resolve it, `+` to add another comment under it. This works in the terminal (with mouse support) and in the GUI.
+The margin notes are clickable too: click a note's text to edit it in the minibuffer, `√` to resolve it, `+` to add another comment under it. This works in the terminal (with mouse support) and in the GUI. Notes longer than `right-margin-note-max-lines` (3) end in `…`: click it to expand the note, `▴` to fold it again. The comment at point always shows in full.
 
 Customize with `critique-syntax` (`"obsidian"` or `"critic"`), `critique-margin-width`, `critique-hide-inline-comments` and `critique-auto-enable`.
