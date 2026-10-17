@@ -100,11 +100,11 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.defineKey("minibuffer", "down", "vertico-next")
   editor.defineKey("minibuffer", "C-p", "vertico-previous")
   editor.defineKey("minibuffer", "C-n", "vertico-next")
-  // fido binds minibuffer C-s/C-r to its own movement commands at install(); those
-  // commands no-op while vertico owns the frontend, so rebind them here (t: C-s/C-r
-  // dead in find-file under vertico-mode).
-  editor.defineKey("minibuffer", "C-s", "vertico-next")
-  editor.defineKey("minibuffer", "C-r", "vertico-previous")
+  // vertico-map leaves C-s/C-r alone, so GNU falls through to isearch, which searches
+  // the input and then minibuffer history. fido binds them in the shared minibuffer
+  // map at install(), so reclaim them here.
+  editor.defineKey("minibuffer", "C-s", "isearch-forward")
+  editor.defineKey("minibuffer", "C-r", "isearch-backward")
   editor.defineKey("minibuffer", "M-<", "vertico-first")
   editor.defineKey("minibuffer", "M->", "vertico-last")
   editor.defineKey("minibuffer", "C-v", "vertico-scroll-up")

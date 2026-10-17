@@ -6,6 +6,18 @@ import { createPluginContext, type PluginContext } from "../src/runtime/plugin-c
 /** isearch per-key UI loop (DESIGN.md: kernel keeps findForward/findBackward only). */
 async function handleIsearchKey(editor: Editor, key: KeyEventLike): Promise<KeyDispatchResult | null> {
   const state = editor.isearch
+  if (state && key.ctrl && !key.meta && key.name === "g") {
+    await editor.run("isearch-abort", [], key)
+    return { status: "command", command: "isearch-abort" }
+  }
+  // isearch-mode-map overrides local maps, so C-s/C-r repeat even where the
+  // minibuffer (fido, vertico) binds them to candidate movement.
+  if (state && key.ctrl && !key.meta && (key.name === "s" || key.name === "r")) {
+    const base = key.name === "s" ? "isearch-forward" : "isearch-backward"
+    const command = state.regexp && editor.commands.get(`${base}-regexp`) ? `${base}-regexp` : base
+    await editor.run(command, [], key)
+    return { status: "command", command }
+  }
   if (state && key.ctrl && !key.meta && key.name === "w") {
     const buffer = editor.buffers.get(state.bufferId)
     if (buffer) {
@@ -56,15 +68,32 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.isearchKeyHandler = (key) => handleIsearchKey(editor, key)
   ctx.onDispose(() => { if (editor.isearchKeyHandler) editor.isearchKeyHandler = null })
 
-  editor.command("isearch-forward", ({ editor }) => {
-    if (editor.isearch?.direction === 1) editor.isearchRepeat()
-    else editor.startIsearch(1)
-  }, "Incremental search forward.")
+  function isearch(direction: 1 | -1): void {
+    if (!editor.isearch) return editor.startIsearch(direction)
+    editor.isearch.direction = direction
+    editor.isearchRepeat()
+  }
 
-  editor.command("isearch-backward", ({ editor }) => {
-    if (editor.isearch?.direction === -1) editor.isearchRepeat()
-    else editor.startIsearch(-1)
-  }, "Incremental search backward.")
+  editor.command("isearch-forward", () => isearch(1), "Incremental search forward.")
+  editor.command("isearch-backward", () => isearch(-1), "Incremental search backward.")
+
+  editor.command("isearch-abort", ({ editor }) => {
+    editor.keymaps.clearPending()
+    editor.prefixArg.clear()
+    const state = editor.isearch
+    if (!state) return
+    if (state.string && !state.match) {
+      // Failing search: discard the unmatched tail instead of quitting.
+      let string = state.string
+      while (string && editor.isearch && !editor.isearch.match) {
+        string = string.slice(0, -1)
+        editor.setIsearchString(string)
+      }
+      return
+    }
+    editor.cancelIsearch()
+    editor.message("Quit")
+  }, "Abort incremental search: drop the failing part, else cancel and restore point (and minibuffer input).")
 
   editor.key("C-s", "isearch-forward")
   editor.key("C-r", "isearch-backward")

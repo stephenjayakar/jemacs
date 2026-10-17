@@ -439,19 +439,25 @@ function themedModeline(text: string, selected: boolean, theme: Theme): ThemedTe
 }
 
 function logicalMinibuffer(editor: Editor, depth: string): LogicalMinibuffer | null {
+  const state = editor.isearch
+  const label = state?.direction === 1 ? "I-search" : "I-search backward"
   if (editor.minibuffer) {
     const buffer = editor.activeBuffer
+    // minibuffer-history-isearch-message: the isearch prefix overlays the prompt while the
+    // search succeeds; a failing search shows the full isearch message instead.
+    const historySearch = state?.minibuffer && state.bufferId === buffer.id
+    if (historySearch && state.string && !state.match) {
+      return { prompt: ` Failing ${label}: `, text: state.string, point: state.string.length }
+    }
     return {
-      prompt: `${depth} ${editor.minibuffer.prompt}`,
+      prompt: `${depth} ${historySearch ? `${label}: ` : editor.minibuffer.prompt}`,
       text: buffer.text,
       point: buffer.point,
       mask: editor.minibuffer.mask,
       mark: buffer.markActive ? buffer.mark : null,
     }
   }
-  if (editor.isearch) {
-    const state = editor.isearch
-    const label = state.direction === 1 ? "I-search" : "I-search backward"
+  if (state) {
     return { prompt: ` ${label}: `, text: state.string, point: state.string.length }
   }
   return null
