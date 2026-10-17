@@ -132,7 +132,7 @@ test("desktop-read skips missing files without error", async () => {
   expect(listWindowLeaves(editor.windowLayout)).toHaveLength(1)
 })
 
-test("install auto-restores only when desktop-save-mode custom is enabled", async () => {
+test("after-init-hook auto-restores only when desktop-save-mode custom is enabled", async () => {
   const desktopFile = join(dir, "desktop.json")
   const path = await writeText("auto.txt", "auto restore\n")
   await writeFile(desktopFile, JSON.stringify({
@@ -145,13 +145,37 @@ test("install auto-restores only when desktop-save-mode custom is enabled", asyn
   setCustom("desktop-save-mode", false)
   const disabled = makeEditor()
   await install(disabled)
+  await disabled.runHook("after-init-hook", disabled.currentBuffer)
   expect(fileBufferPaths(disabled)).toEqual([])
 
   setCustom("desktop-save-file", desktopFile)
   setCustom("desktop-save-mode", true)
   const enabled = makeEditor()
   await install(enabled)
+  expect(fileBufferPaths(enabled)).toEqual([])
+  await enabled.runHook("after-init-hook", enabled.currentBuffer)
   expect(fileBufferPaths(enabled)).toEqual([path])
   expect(enabled.currentBuffer.point).toBe(5)
   expect(enabled.globalMinorModes.has("desktop-save-mode")).toBe(true)
+})
+
+test("enabling desktop-save-mode after install, as init.ts does, restores at after-init", async () => {
+  const desktopFile = join(dir, "desktop.json")
+  const path = await writeText("late.txt", "late enable\n")
+  await writeFile(desktopFile, JSON.stringify({
+    version: 1,
+    files: [{ path, point: 3 }],
+    currentBuffer: path,
+  } satisfies DesktopManifest, null, 2), "utf8")
+  setCustom("desktop-save-file", desktopFile)
+
+  const editor = makeEditor()
+  await install(editor)
+  editor.enableMinorMode("desktop-save-mode")
+  await editor.runHook("after-init-hook", editor.currentBuffer)
+  // A second run (e.g. another editor's boot in the same process) must not re-read.
+  await editor.runHook("after-init-hook", editor.currentBuffer)
+
+  expect(fileBufferPaths(editor)).toEqual([path])
+  expect(editor.currentBuffer.point).toBe(3)
 })

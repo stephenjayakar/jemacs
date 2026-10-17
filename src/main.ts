@@ -43,6 +43,9 @@ async function main(): Promise<void> {
   await installBuiltinPlugins(editor)
   await installUserConfig(editor, evaluator)
   await loadCustomFile(editor, evaluator)
+  // A stdio authority mirrors another session; restoring (and later saving)
+  // the desktop there would clobber the interactive session's.
+  if (!serveStdio) await editor.runHook("after-init-hook", editor.currentBuffer)
 
   const file = args.files[0]
 
