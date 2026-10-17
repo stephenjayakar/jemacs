@@ -82,7 +82,7 @@ defcustom("markdown-indent-on-enter", "sexp", "indent-and-new-item", "RET behavi
 defcustom("markdown-trim-trailing-whitespace-on-enter", "boolean", true, "Trim trailing whitespace from the previous line after RET.", "text")
 // Like a notes app: Emacs `auto-save-visited-mode` with a markdown-only
 // `auto-save-visited-predicate`, but on an idle delay instead of a fixed period.
-defcustom("markdown-auto-save-idle-seconds", "integer", 2,
+defcustom("markdown-auto-save-idle-seconds", "integer", 1,
   "Seconds without input before modified markdown buffers save to their files. 0 disables.", "text")
 defcustom("markdown-fontify-code-block-default-mode", "string", "", "Default mode for fenced blocks with no language (empty = none).", "text")
 defcustom("markdown-code-lang-modes", "sexp", [
@@ -2745,7 +2745,7 @@ function installMarkdownIdleAutoSave(editor: Editor, ctx: PluginContext): void {
   let lastInput = Date.now()
   ctx.hook("post-command-hook", () => { lastInput = Date.now() })
   const timer = setInterval(() => {
-    const seconds = getCustom<number>("markdown-auto-save-idle-seconds") ?? 2
+    const seconds = getCustom<number>("markdown-auto-save-idle-seconds") ?? 1
     if (seconds <= 0 || Date.now() - lastInput < seconds * 1000) return
     if (editor.minibuffer) return
     for (const buffer of editor.buffers.values()) {

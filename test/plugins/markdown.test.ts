@@ -1820,6 +1820,6 @@ test("modified markdown buffers save to their files after markdown-auto-save-idl
     expect(readFileSync(other, "utf8")).toBe("a\n")
   } finally {
     ctx.dispose()
-    setCustom("markdown-auto-save-idle-seconds", before ?? 2)
+    setCustom("markdown-auto-save-idle-seconds", before ?? 1)
   }
 })
