@@ -429,6 +429,27 @@ describe("vertico-save", () => {
     editor.minibufferCancel()
     await result
   })
+
+  test("M-w with no matching candidate copies the input", async () => {
+    const { editor, result } = await open(["alpha", "gamma"])
+    for (const ch of "zzz") await editor.handleKey({ name: ch, sequence: ch })
+    await editor.refreshMinibufferCompletions()
+    await editor.handleKey({ name: "w", sequence: "w", meta: true })
+    expect(currentKill(editor)).toBe("zzz")
+    editor.minibufferCancel()
+    await result
+  })
+
+  test("M-w in a non-completion prompt falls back to kill-ring-save", async () => {
+    const { editor, result } = await open(["alpha"])
+    editor.minibufferCancel()
+    await result
+    const plain = editor.prompt("Text: ", "hello")
+    await editor.handleKey({ name: "w", sequence: "w", meta: true })
+    expect(currentKill(editor)).not.toBe("alpha")
+    editor.minibufferCancel()
+    await plain
+  })
 })
 
 // Layer 2: the flag above is only useful if the renderer actually paints it. The

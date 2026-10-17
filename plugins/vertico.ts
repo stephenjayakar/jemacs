@@ -343,13 +343,13 @@ function isCompletionPrompt(editor: Editor): boolean {
 
 /** Vertico `vertico-save': copy the active region, else the current candidate, to the kill ring. */
 async function verticoSave(editor: Editor): Promise<void> {
-  if (editor.activeBuffer.useRegion() || !isTransientMarkModeEnabled()) {
+  const active = editor.isMinorModeEnabled("vertico-mode") && isCompletionPrompt(editor) && states.has(editor)
+  if (!active || editor.activeBuffer.useRegion() || !isTransientMarkModeEnabled()) {
     await editor.run("kill-ring-save")
     return
   }
-  const candidate = verticoCandidate(editor)
-  if (candidate == null) return
-  killNew(editor, candidate)
+  // Like `vertico--candidate', fall back to the input when nothing matches.
+  killNew(editor, verticoCandidate(editor) ?? editor.activeBuffer.text)
 }
 
 function showVerticoCompletions(editor: Editor, state: VerticoState): void {
