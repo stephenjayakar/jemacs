@@ -78,6 +78,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   editor.command("isearch-backward", () => isearch(-1), "Incremental search backward.")
 
   editor.command("isearch-abort", ({ editor }) => {
+    editor.keymaps.clearPending()
+    editor.prefixArg.clear()
     const state = editor.isearch
     if (!state) return
     if (state.string && !state.match) {

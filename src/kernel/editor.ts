@@ -2153,7 +2153,7 @@ export class Editor {
     void this.refreshMinibufferCompletions().then(() => this.changed("minibuffer-history"))
   }
 
-  /** Minibuffer text before any inline completion overlay, without file-name `//` restarts. */
+  /** Minibuffer text before any inline completion overlay; unlike minibufferInput(), `//` restarts are kept. */
   private minibufferRawInput(buffer = this.activeBuffer): string {
     const text = buffer.text
     const nl = text.indexOf("\n")
