@@ -1,6 +1,7 @@
 import type { Editor, CompletingReadFunction, MinibufferCompletionFrontend } from "../src/kernel/editor"
 import { createPluginContext, type PluginContext } from "../src/runtime/plugin-context"
-import { BufferModel } from "../src/kernel/buffer"
+import { killNew } from "../src/runtime/kill-ring"
+import { isTransientMarkModeEnabled } from "../src/kernel/transient-mark"
 import { completionStyleMatches, completionStylesFor, expandUserPath, fileCompletionCandidatesBounded, splitCompletionInput } from "../src/kernel/completion"
 import { defcustom, defvar, getCustom } from "../src/runtime/custom"
 
@@ -92,7 +93,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     state.exitInput = true
     editor.minibufferSubmit()
   }, "Exit the minibuffer with the current input.")
-  editor.command("vertico-save", ({ editor }) => verticoSave(editor), "Save the current Vertico candidates to a buffer.")
+  editor.command("vertico-save", ({ editor }) => verticoSave(editor), "Save the active region or the current candidate to the kill ring.")
   editor.command("vertico-insert", ({ editor }) => verticoInsert(editor), "Insert the current Vertico candidate in the minibuffer.")
 
   editor.defineKey("minibuffer", "up", "vertico-previous")
@@ -340,14 +341,15 @@ function isCompletionPrompt(editor: Editor): boolean {
 
 
 
-function verticoSave(editor: Editor): void {
-  const state = states.get(editor)
-  if (!state) return
-  const body = state.candidates.join("\n")
-  const existing = [...editor.buffers.values()].find(b => b.name === "*Vertico Completions*")
-  if (existing) existing.setText(body, false)
-  else editor.addBuffer(new BufferModel({ name: "*Vertico Completions*", text: body, kind: "scratch", mode: "text" }))
-  void editor.changed("vertico-save")
+/** Vertico `vertico-save': copy the active region, else the current candidate, to the kill ring. */
+async function verticoSave(editor: Editor): Promise<void> {
+  const active = editor.isMinorModeEnabled("vertico-mode") && isCompletionPrompt(editor) && states.has(editor)
+  if (!active || editor.activeBuffer.useRegion() || !isTransientMarkModeEnabled()) {
+    await editor.run("kill-ring-save")
+    return
+  }
+  // Like `vertico--candidate', fall back to the input when nothing matches.
+  killNew(editor, verticoCandidate(editor) ?? editor.activeBuffer.text)
 }
 
 function showVerticoCompletions(editor: Editor, state: VerticoState): void {
