@@ -7,6 +7,7 @@ import { defface } from "../../src/runtime/faces"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import type { RightMarginClickFn, RightMarginFn, RightMarginSpec } from "../../src/display/right-margin"
 import type { MarkdownHideFn, MarkupOp } from "../markdown"
+import { parseInlineMarkdown, type InlineMarkdown } from "../markdown/inline"
 import {
   critiqueCommentAt,
   critiqueHiddenRanges,
@@ -22,7 +23,7 @@ export const CRITIQUE_MODE = "critique-mode"
 const CACHE_LOCAL = "critique--cache"
 const HIDE_LOCAL = "critique-hide-inline-comments"
 
-type Cache = { text: string; comments: CritiqueComment[]; hides: MarkupOp[] }
+type Cache = { text: string; comments: CritiqueComment[]; hides: MarkupOp[]; rendered: InlineMarkdown[] }
 
 /** Parse once per buffer text; the `hides` array identity is what keeps the
  *  markdown display-filter cache warm, so only rebuild it when text changes. */
@@ -35,7 +36,9 @@ function cached(buffer: BufferModel): Cache {
   if (hit && hit.text === buffer.text) return hit
   const comments = parseCritiqueComments(buffer.text)
   const hides = comments.flatMap(c => critiqueHiddenRanges(c).map(([start, end]) => ({ start, end, display: "" })))
-  const next = { text: buffer.text, comments, hides }
+  // Comment text is markdown too: the margin shows it rendered.
+  const rendered = comments.map(c => parseInlineMarkdown(c.text))
+  const next = { text: buffer.text, comments, hides, rendered }
   buffer.locals.set(CACHE_LOCAL, next)
   return next
 }
@@ -90,14 +93,15 @@ export function critiqueSpans(editor: Editor, buffer: BufferModel): TextSpan[] {
 
 export function critiqueMargin(editor: Editor, buffer: BufferModel, point: number): RightMarginSpec | null {
   if (!enabled(editor, buffer)) return null
-  const comments = critiqueComments(buffer)
+  const { comments, rendered } = cached(buffer)
   if (!comments.length) return null
   const active = critiqueCommentAt(comments, point)
   return {
     width: getCustom<number>("critique-margin-width") ?? 36,
-    notes: comments.map(c => ({
+    notes: comments.map((c, i) => ({
       pos: anchorOf(c),
-      text: c.text,
+      text: rendered[i]!.text,
+      spans: rendered[i]!.spans,
       face: c === active ? "critique-margin-active-face" : "critique-margin-face",
       // Clicking the text edits it; the √ / + buttons resolve and reply.
       id: String(c.start),

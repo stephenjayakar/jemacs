@@ -174,7 +174,10 @@ export function renderBodyRows(
     row.replaceChildren()
     // A row's margin chunks share one pinned `.margin-note` box; clickable ones
     // carry the note id/action that `renderWindows` reports on mousedown.
+    // Adjacent chunks of one note and action (differently styled runs of a
+    // note's text) share a cell, so it hovers and clicks as a unit.
     let note: HTMLElement | null = null
+    let cell: HTMLElement | null = null
     for (const { chunk, text } of parts) {
       if (!chunk.margin) {
         renderChunk(row, { ...chunk, text }, options)
@@ -185,13 +188,19 @@ export function renderBodyRows(
         note.className = "margin-note"
         row.appendChild(note)
       }
-      renderChunk(note, { ...chunk, text }, options)
-      if (chunk.marginNote && chunk.marginAction) {
-        const cell = note.lastElementChild as HTMLElement
+      if (!chunk.marginNote || !chunk.marginAction) {
+        cell = null
+        renderChunk(note, { ...chunk, text }, options)
+        continue
+      }
+      if (!cell || cell.dataset.marginNote !== chunk.marginNote || cell.dataset.marginAction !== chunk.marginAction) {
+        cell = document.createElement("span")
         cell.className = "margin-action"
         cell.dataset.marginNote = chunk.marginNote
         cell.dataset.marginAction = chunk.marginAction
+        note.appendChild(cell)
       }
+      renderChunk(cell, { ...chunk, text }, options)
     }
     row.style.position = note ? "relative" : ""
     if (decoration?.image) appendInlineImage(row, decoration.image)

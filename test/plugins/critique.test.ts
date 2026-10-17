@@ -61,6 +61,11 @@ describe("parseCritiqueComments", () => {
     expect(parseCritiqueComments(text).map(c => c.text)).toEqual(["yes"])
   })
 
+  test("allows inline code inside the comment or highlight", () => {
+    const text = "==`x`==%%use `y`%% {>>see `z`<<} `a %%b` c%%"
+    expect(parseCritiqueComments(text).map(c => c.text)).toEqual(["use `y`", "see `z`"])
+  })
+
   test("a bare highlight doesn't merge into a later commented one", () => {
     expect(parseCritiqueComments("==bare== and ==b=c==%%note%%").map(c => [c.quote, c.text]))
       .toEqual([["b=c", "note"]])
@@ -205,14 +210,15 @@ describe("display", () => {
     editor.disableMinorMode(CRITIQUE_MODE, { buffer })
     const rows = displayRows(editor, VIEW)
     expect(rows.join("\n")).not.toContain("│")
-    expect(rows[0]).toContain("==fox==%%c%%")
+    // markdown-mode hides the `==` highlight markers itself; the comment shows.
+    expect(rows[0]).toContain("fox%%c%%")
   })
 
   test("critique-toggle-inline-comments shows raw markup but keeps the margin", async () => {
     const { editor } = setup("The ==fox==%%c%% runs.\n")
     await keySeq(editor, "C-c", "C-x", ";")
     const row = displayRows(editor, VIEW)[0]!
-    expect(row).toContain("==fox==%%c%%")
+    expect(row).toContain("fox%%c%%")
     expect(row.trimEnd()).toMatch(/│ • c +√ \+$/)
   })
 
@@ -249,6 +255,22 @@ describe("GUI text column (pixel wrap)", () => {
     const notes = withMargin.body.chunks.filter(c => c.margin).map(c => [c.text.trim(), c.marginAction])
     expect(notes).toEqual([["│ • too quick", "edit"], ["√", "resolve"], ["+", "reply"]])
     expect(without.body.chunks.some(c => c.margin)).toBe(false)
+  })
+
+  test("comment text renders as markdown in the margin", () => {
+    const { editor, buffer } = setup("See ==this==%%in _The Coddling_ **really** `code`%% ok.\n")
+    // Span faces merge over the note face: on the (upright) active note, emphasis shows.
+    buffer.point = 5
+    const row = displayRows(editor, VIEW).find(r => r.includes("│ •"))!
+    expect(row.trimEnd()).toMatch(/│ • in The Coddling really code +√ \+$/)
+    const chunk = (text: string) =>
+      pane(editor).body.chunks.find(c => c.margin && c.marginAction === "edit" && c.text === text)!
+    expect(chunk("The Coddling").italic).toBe(true)
+    expect(chunk("code").fg).toBeDefined()
+    expect(chunk("code").fg).not.toBe(chunk("The Coddling").fg)
+    // The inactive face is italic but not bold, so there strong shows.
+    buffer.point = 0
+    expect(chunk("really").bold).toBe(true)
   })
 
   test("window-body-cols excludes the margin, like Emacs window-body-width", () => {

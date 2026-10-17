@@ -44,7 +44,7 @@ const COMMENT_RE = new RegExp([
 const FENCE_RE = /^\s*(`{3,}|~{3,})/
 
 /** Offsets covered by fenced code blocks and inline code spans; comments
- *  inside them are literal text. */
+ *  inside them are literal text, but code spans inside a comment are fine. */
 function codeRanges(text: string): Array<[number, number]> {
   const out: Array<[number, number]> = []
   let offset = 0
@@ -78,8 +78,6 @@ export function parseCritiqueComments(text: string): CritiqueComment[] {
   for (const m of text.matchAll(COMMENT_RE)) {
     const start = m.index!
     const end = start + m[0].length
-    if (code.some(([a, b]) => start < b && end > a)) continue
-    for (; lineScan < start; lineScan++) if (text.charCodeAt(lineScan) === 10) line++
     let comment: Omit<CritiqueComment, "start" | "end" | "line">
     if (m[1] != null) {
       const hs = start + 2
@@ -94,6 +92,11 @@ export function parseCritiqueComments(text: string): CritiqueComment[] {
     } else {
       comment = point(start + 2, m[6]!, "obsidian")
     }
+    const inside = (a: number, b: number) =>
+      (a >= comment.commentStart && b <= comment.commentEnd)
+      || (comment.highlightStart != null && a >= comment.highlightStart && b <= comment.highlightEnd!)
+    if (code.some(([a, b]) => start < b && end > a && !inside(a, b))) continue
+    for (; lineScan < start; lineScan++) if (text.charCodeAt(lineScan) === 10) line++
     out.push({ start, end, line, ...comment })
   }
   return out

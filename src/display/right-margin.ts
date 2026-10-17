@@ -1,17 +1,20 @@
 import type { BufferModel } from "../kernel/buffer"
 import type { FaceName } from "../modes/mode"
 import { defvar, getCustom } from "../runtime/custom"
+import { mergeFaceStyles } from "../runtime/faces"
 import { resolveFace } from "./face-resolve"
-import type { Theme } from "./theme"
-import { styleToChunk, type ThemedChunk, type ThemedText } from "./themed-text"
+import type { FaceStyle, Theme } from "./theme"
+import { sameChunkStyle, styleToChunk, type ThemedChunk, type ThemedText } from "./themed-text"
 
 /** A note pinned to buffer offset `pos`, drawn in the window's right margin
  *  beside the row that shows `pos`. Notes that collide stack downward.
  *
  *  With an `id`, the note is clickable: clicking its text reports the `edit`
  *  action, and `actions: true` adds `√` (`resolve`) and `+` (`reply`) buttons.
- *  Clicks go to `right-margin-click-functions`. */
-export type RightMarginNote = { pos: number; text: string; face?: string; id?: string; actions?: boolean }
+ *  Clicks go to `right-margin-click-functions`. `spans` lay extra faces over
+ *  parts of `text` (offsets into `text`), e.g. rendered markdown emphasis. */
+export type RightMarginNote = { pos: number; text: string; face?: string; spans?: RightMarginSpan[]; id?: string; actions?: boolean }
+export type RightMarginSpan = { start: number; end: number; face: string }
 export type RightMarginSpec = { width: number; notes: RightMarginNote[] }
 /** `point` is the window's point (not necessarily `buffer.point` for an
  *  unselected window). Return null to draw nothing. */
@@ -31,7 +34,7 @@ export type RowOrigin = { row: number; first: boolean }
 /** Viewport-independent margin: notes resolved to display-text line indices. */
 export type LogicalRightMargin = {
   width: number
-  notes: Array<{ line: number; text: string; face?: string; id?: string; actions?: boolean }>
+  notes: Array<{ line: number; text: string; face?: string; spans?: RightMarginSpan[]; id?: string; actions?: boolean }>
 }
 
 defvar("right-margin-functions", [] as RightMarginFn[],
@@ -99,7 +102,7 @@ export function logicalRightMargin(
   for (const { note, dpos } of placed) {
     const limit = Math.min(dpos, displayText.length)
     for (; scan < limit; scan++) if (displayText.charCodeAt(scan) === 10) line++
-    notes.push({ line, text: note.text, face: note.face, id: note.id, actions: note.actions })
+    notes.push({ line, text: note.text, face: note.face, spans: note.spans, id: note.id, actions: note.actions })
   }
   return { width: Math.floor(width), notes }
 }
@@ -134,7 +137,7 @@ export function appendRightMargin(
     else byLine.set(note.line, [note])
   }
   const textWidth = margin.width - NOTE_PREFIX_COLS
-  type QueuedLine = { bullet: boolean; text: string; style: Omit<ThemedChunk, "text">; id?: string; actions: boolean }
+  type QueuedLine = { bullet: boolean; pieces: StyledPiece[]; style: Omit<ThemedChunk, "text">; id?: string; actions: boolean }
   const queue: QueuedLine[] = []
   const rows = splitRows(body)
   const out: ThemedChunk[] = []
@@ -146,10 +149,19 @@ export function appendRightMargin(
     const origin = origins[k]
     if (origin?.first) {
       for (const note of byLine.get(startLine + origin.row) ?? []) {
-        const style = styleToChunk(resolveFace((note.face ?? "comment") as FaceName, theme, buffer))
+        const base = resolveFace((note.face ?? "comment") as FaceName, theme, buffer)
+        const style = styleToChunk(base)
         const actions = Boolean(note.id && note.actions && textWidth - ACTIONS_COLS > 4)
-        wrapWords(note.text || "(empty)", textWidth, actions ? textWidth - ACTIONS_COLS : textWidth)
-          .forEach((text, i) => queue.push({ bullet: i === 0, text, style, id: note.id, actions: actions && i === 0 }))
+        const text = note.text || "(empty)"
+        const spans = note.text ? note.spans ?? [] : []
+        wrapWordRanges(text, textWidth, actions ? textWidth - ACTIONS_COLS : textWidth)
+          .forEach((words, i) => queue.push({
+            bullet: i === 0,
+            pieces: styleLine(text, words, spans, base, theme, buffer),
+            style,
+            id: note.id,
+            actions: actions && i === 0,
+          }))
       }
     }
     const next = queue.shift()
@@ -157,16 +169,22 @@ export function appendRightMargin(
     const used = row.reduce((n, c) => n + cellWidth(c.text), 0)
     if (used < textCols) out.push({ text: " ".repeat(textCols - used), marginPad: true })
     let col = Math.max(used, textCols)
-    const push = (text: string, action: RightMarginAction) => {
+    const push = (text: string, action: RightMarginAction, style = next.style) => {
       const target = next.id ? { marginNote: next.id, marginAction: action } : {}
-      out.push({ ...next.style, text, margin: true, ...target })
+      out.push({ ...style, text, margin: true, ...target })
       if (next.id) hits.push({ row: k, start: col, end: col + text.length, note: next.id, action })
       col += text.length
     }
     // Pad to the full margin width so DOM hosts (which pin the note) keep
     // every row's bar in the same column.
     const bodyCols = margin.width - (next.actions ? ACTIONS_COLS : 0)
-    push(` │ ${next.bullet ? "•" : " "} ${next.text}`.padEnd(bodyCols), "edit")
+    const pieces = mergePieces([
+      { text: ` │ ${next.bullet ? "•" : " "} `, style: next.style },
+      ...next.pieces,
+    ])
+    const noteCols = pieces.reduce((n, p) => n + p.text.length, 0)
+    if (noteCols < bodyCols) pieces.push(...mergePieces([pieces.pop()!, { text: " ".repeat(bodyCols - noteCols), style: next.style }]))
+    for (const piece of pieces) push(piece.text, "edit", piece.style)
     if (next.actions) for (const { action, label } of ACTIONS) push(label, action)
   }
   return { text: { chunks: out }, hits }
@@ -190,27 +208,88 @@ function cellWidth(text: string): number {
   return n
 }
 
+type StyledPiece = { text: string; style: Omit<ThemedChunk, "text"> }
+
 /** Greedy word wrap; words longer than the line are hard-split. The first
  *  line may be narrower (`firstWidth`) to leave room for action buttons. */
 export function wrapWords(text: string, width: number, firstWidth = width): string[] {
-  const lines: string[] = []
-  let line = ""
+  return wrapWordRanges(text, width, firstWidth)
+    .map(words => words.map(([start, end]) => text.slice(start, end)).join(" "))
+}
+
+/** `wrapWords`, but each line is the [start, end) offsets of its words in
+ *  `text`, so styles keyed to `text` survive the wrap. Words on one line are
+ *  joined by a single space. */
+function wrapWordRanges(text: string, width: number, firstWidth: number): Array<Array<[number, number]>> {
+  const lines: Array<Array<[number, number]>> = []
+  let line: Array<[number, number]> = []
+  let len = 0
   const cap = () => (lines.length ? width : firstWidth)
-  for (const word of text.split(/\s+/).filter(Boolean)) {
-    let w = word
+  for (const match of text.matchAll(/\S+/g)) {
+    let start = match.index!
+    const end = start + match[0].length
     for (;;) {
       const c = cap()
-      if (!line) {
-        if (w.length <= c) { line = w; break }
-        lines.push(w.slice(0, c))
-        w = w.slice(c)
+      if (!line.length) {
+        if (end - start <= c) { line = [[start, end]]; len = end - start; break }
+        lines.push([[start, start + c]])
+        start += c
         continue
       }
-      if (line.length + 1 + w.length <= c) { line += ` ${w}`; break }
+      if (len + 1 + end - start <= c) { line.push([start, end]); len += 1 + end - start; break }
       lines.push(line)
-      line = ""
+      line = []
     }
   }
-  if (line) lines.push(line)
-  return lines.length ? lines : [""]
+  if (line.length) lines.push(line)
+  return lines.length ? lines : [[]]
+}
+
+/** Render one wrapped line: each character takes the note face with every
+ *  span covering it layered on top. The space between two words is styled
+ *  like the whitespace it stands for, so `**two words**` stays one run. */
+function styleLine(
+  text: string,
+  words: Array<[number, number]>,
+  spans: readonly RightMarginSpan[],
+  base: FaceStyle | undefined,
+  theme: Theme,
+  buffer: BufferModel | undefined,
+): StyledPiece[] {
+  const baseChunk = styleToChunk(base)
+  if (!spans.length) {
+    return [{ text: words.map(([s, e]) => text.slice(s, e)).join(" "), style: baseChunk }]
+  }
+  const styleAt = (i: number): Omit<ThemedChunk, "text"> => {
+    let style = base
+    for (const span of spans) {
+      if (span.start <= i && i < span.end) style = mergeFaceStyles(style, marginOverlay(resolveFace(span.face as FaceName, theme, buffer)))
+    }
+    return style === base ? baseChunk : styleToChunk(style)
+  }
+  const pieces: StyledPiece[] = []
+  words.forEach(([start, end], w) => {
+    if (w > 0) pieces.push({ text: " ", style: styleAt(words[w - 1]![1]) })
+    for (let i = start; i < end; i++) pieces.push({ text: text[i]!, style: styleAt(i) })
+  })
+  return mergePieces(pieces)
+}
+
+/** A span face may recolour or embolden, but the margin is a fixed-pitch
+ *  column on the row's line: drop font family and size, which would break
+ *  the alignment. */
+function marginOverlay(style: FaceStyle | undefined): FaceStyle | undefined {
+  if (!style) return undefined
+  const { family: _family, height: _height, heightScale: _scale, ...rest } = style
+  return rest
+}
+
+function mergePieces(pieces: StyledPiece[]): StyledPiece[] {
+  const out: StyledPiece[] = []
+  for (const piece of pieces) {
+    const last = out[out.length - 1]
+    if (last && sameChunkStyle(last.style, piece.style)) last.text += piece.text
+    else if (piece.text) out.push({ ...piece })
+  }
+  return out
 }
