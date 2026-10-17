@@ -6,6 +6,7 @@ import { makeEditor } from "./helper"
 import { display as displayModel } from "../harness/display"
 import { install } from "../../plugins/vertico"
 import { resetCustom, setCustom } from "../../src/runtime/custom"
+import { currentKill } from "../../src/runtime/kill-ring"
 
 /** Editor with vertico-mode enabled and a collection prompt open + refreshed.
  *  `customs` are applied after install (defcustom would otherwise overwrite them). */
@@ -406,30 +407,27 @@ describe("vertico refresh after minibuffer edits", () => {
 })
 
 describe("vertico-save", () => {
-  test("populates *Vertico Completions* with current candidates", async () => {
-    const { editor, result } = await open(["alpha", "gamma", "delta"])
-    await editor.run("vertico-save")
-    const buf = [...editor.buffers.values()].find(b => b.name === "*Vertico Completions*")
-    expect(buf).toBeDefined()
-    // candidates are sorted length-then-alpha → all len 5: alpha, delta, gamma
-    expect(buf?.text).toBe("alpha\ndelta\ngamma")
+  test("M-w with an active region copies the marked minibuffer text", async () => {
+    const { editor, result } = await open(["alpha", "gamma"])
+    const input = editor.activeBuffer
+    input.setText("~/src/project", true)
+    input.point = 2
+    input.setMark()
+    input.point = 5
+    await editor.handleKey({ name: "w", sequence: "w", meta: true })
+    expect(currentKill(editor)).toBe("src")
     editor.minibufferCancel()
     await result
   })
 
-  test("overwrites existing *Vertico Completions* buffer", async () => {
-    const { editor, result } = await open(["one", "two"])
-    await editor.run("vertico-save")
+  test("M-w without a region copies the current candidate", async () => {
+    const { editor, result } = await open(["alpha", "gamma", "delta"])
+    await editor.handleKey({ name: "w", sequence: "w", meta: true })
+    // candidates are sorted length-then-alpha → all len 5: alpha first
+    expect(currentKill(editor)).toBe("alpha")
+    expect([...editor.buffers.values()].some(b => b.name === "*Vertico Completions*")).toBe(false)
     editor.minibufferCancel()
     await result
-
-    const result2 = editor.prompt("Pick: ", "", undefined, { collection: ["xx"] })
-    await editor.refreshMinibufferCompletions()
-    await editor.run("vertico-save")
-    const buf = [...editor.buffers.values()].find(b => b.name === "*Vertico Completions*")
-    expect(buf?.text).toBe("xx")
-    editor.minibufferCancel()
-    await result2
   })
 })
 
