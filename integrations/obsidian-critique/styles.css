@@ -30,3 +30,52 @@
 .critique-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
 .critique-actions button { font-size: var(--font-ui-smaller); padding: 2px 8px; height: auto; }
 .critique-input { width: 100%; resize: vertical; }
+
+/* Margin notes, drawn like jemacs' critique-mode. Inline by default (hover
+   popovers, embeds, narrow panes); `fitMargins` adds `.critique-margin` to a
+   note's view when there's room to float them right of the text. */
+body {
+  --critique-note-width: 220px;
+  --critique-note-gap: 24px;
+}
+.critique-note {
+  display: inline;
+  margin: 0 4px;
+  padding: 0 4px;
+  border-left: 2px solid var(--text-highlight-bg);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-style: normal;
+  font-weight: var(--font-normal);
+  line-height: var(--line-height-tight);
+  white-space: normal;
+  text-indent: 0;
+  user-select: none;
+}
+.critique-margin .critique-note {
+  float: right;
+  clear: right;
+  display: block;
+  width: var(--critique-note-width);
+  margin: 0 calc(-1 * (var(--critique-note-width) + var(--critique-note-gap))) 4px 0;
+  padding: 1px 6px;
+  text-align: start;
+}
+.critique-note.is-active {
+  border-left-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+.critique-note-text { cursor: text; }
+.critique-note-text:hover { color: var(--text-normal); }
+.critique-note-actions { margin-left: 6px; white-space: nowrap; }
+.critique-note-button {
+  cursor: pointer;
+  padding: 0 2px;
+  color: var(--text-faint);
+}
+.critique-note-button:hover { color: var(--interactive-accent); }
+.critique-margin .markdown-source-view .cm-scroller > .cm-sizer > .cm-contentContainer > .cm-content > .cm-line,
+.critique-margin .markdown-reading-view .markdown-preview-sizer > div {
+  box-sizing: border-box;
+  padding-right: var(--critique-reserve, 0px);
+}
