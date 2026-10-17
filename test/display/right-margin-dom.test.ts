@@ -28,7 +28,7 @@ test("margin note renders as one box with clickable cells that report pane actio
   const editor = makeEditor()
   installMarkdown(editor)
   installCritique(editor)
-  const buffer = editor.scratch("doc.md", "The ==fox==%%too quick%% runs.\n", "markdown")
+  const buffer = editor.scratch("doc.md", "The ==fox==%%too **quick**%% runs.\n", "markdown")
   editor.enableMinorMode(CRITIQUE_MODE, { buffer })
 
   const make = () => window.document.createElement("div") as unknown as HTMLElement
@@ -44,6 +44,9 @@ test("margin note renders as one box with clickable cells that report pane actio
   const cells = [...notes[0]!.querySelectorAll<HTMLElement>(".margin-action")]
   expect(cells.map(c => c.dataset.marginAction)).toEqual(["edit", "resolve", "reply"])
   expect(cells[0]!.textContent).toContain("too quick")
+  // Styled runs of the note's text stay inside the one edit cell.
+  const runs = Array.from(cells[0]!.querySelectorAll("span")) as HTMLElement[]
+  expect(runs.find(r => r.textContent === "quick")?.style.fontWeight).toBe("bold")
 
   cells[1]!.dispatchEvent(new window.MouseEvent("mousedown", { button: 0, bubbles: true }) as never)
   expect(actions).toEqual([[editor.selectedWindowId, "right-margin-click", { note: cells[1]!.dataset.marginNote, action: "resolve" }]])
