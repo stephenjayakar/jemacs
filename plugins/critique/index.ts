@@ -106,6 +106,8 @@ export function critiqueMargin(editor: Editor, buffer: BufferModel, point: numbe
       // Clicking the text edits it; the √ / + buttons resolve and reply.
       id: String(c.start),
       actions: true,
+      // The comment at point shows in full; the rest fold after a few lines.
+      expanded: c === active,
     })),
   }
 }

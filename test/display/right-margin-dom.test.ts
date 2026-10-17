@@ -52,3 +52,26 @@ test("margin note renders as one box with clickable cells that report pane actio
   expect(actions).toEqual([[editor.selectedWindowId, "right-margin-click", { note: cells[1]!.dataset.marginNote, action: "resolve" }]])
   expect(clicks).toEqual([])
 })
+
+test("a row carrying a margin note is at least one note line tall", () => {
+  const editor = makeEditor()
+  installMarkdown(editor)
+  installCritique(editor)
+  const long = Array.from({ length: 12 }, (_, i) => `word${i}`).join(" ")
+  const buffer = editor.scratch("doc.md", `The ==fox==%%${long}%% runs.\n\nNext.\n`, "markdown")
+  editor.enableMinorMode(CRITIQUE_MODE, { buffer })
+
+  const make = () => window.document.createElement("div") as unknown as HTMLElement
+  const dom = { title: make(), windows: make(), minibuffer: make(), echo: make() }
+  for (const el of Object.values(dom)) window.document.body.appendChild(el as never)
+  const model = serializeDisplayModel(buildDisplayModel(editor, { lastMessage: "", viewport: { rows: 20, cols: 100 }, hostCapabilities: CAPS }))
+  presentDomFrame(dom, model, () => {}, () => {})
+
+  const rows = [...dom.windows.querySelectorAll<HTMLElement>(".body-row")]
+  const noted = rows.filter(r => r.querySelector(".margin-note"))
+  expect(noted.length).toBeGreaterThan(1)
+  // The blank row under "The fox runs." carries the note's second line.
+  expect(noted[1]!.textContent?.replace(/[\s│]/g, "").length).toBeGreaterThan(0)
+  for (const row of noted) expect(Number.parseFloat(row.style.minHeight)).toBeGreaterThan(0)
+  expect(rows.filter(r => !r.querySelector(".margin-note")).every(r => !r.style.minHeight)).toBe(true)
+})

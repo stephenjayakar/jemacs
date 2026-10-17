@@ -1,6 +1,6 @@
 import type { BufferModel } from "../kernel/buffer"
 import type { FaceName } from "../modes/mode"
-import { defvar, getCustom } from "../runtime/custom"
+import { defcustom, defvar, getCustom } from "../runtime/custom"
 import { mergeFaceStyles } from "../runtime/faces"
 import { resolveFace } from "./face-resolve"
 import type { FaceStyle, Theme } from "./theme"
@@ -12,16 +12,31 @@ import { sameChunkStyle, styleToChunk, type ThemedChunk, type ThemedText } from 
  *  With an `id`, the note is clickable: clicking its text reports the `edit`
  *  action, and `actions: true` adds `√` (`resolve`) and `+` (`reply`) buttons.
  *  Clicks go to `right-margin-click-functions`. `spans` lay extra faces over
- *  parts of `text` (offsets into `text`), e.g. rendered markdown emphasis. */
-export type RightMarginNote = { pos: number; text: string; face?: string; spans?: RightMarginSpan[]; id?: string; actions?: boolean }
+ *  parts of `text` (offsets into `text`), e.g. rendered markdown emphasis.
+ *
+ *  A note longer than `right-margin-note-max-lines` is cut short with a `…`
+ *  that expands it when clicked (`▴` folds it again). `expanded` shows it in
+ *  full regardless, e.g. for the note at point. */
+export type RightMarginNote = {
+  pos: number
+  text: string
+  face?: string
+  spans?: RightMarginSpan[]
+  id?: string
+  actions?: boolean
+  expanded?: boolean
+}
 export type RightMarginSpan = { start: number; end: number; face: string }
 export type RightMarginSpec = { width: number; notes: RightMarginNote[] }
 /** `point` is the window's point (not necessarily `buffer.point` for an
  *  unselected window). Return null to draw nothing. */
 export type RightMarginFn = (buffer: BufferModel, point: number) => RightMarginSpec | null
-export type RightMarginAction = "edit" | "resolve" | "reply"
+/** Actions offered to `right-margin-click-functions`. */
+export type RightMarginNoteAction = "edit" | "resolve" | "reply"
+/** Every clickable margin cell; `expand`/`collapse` are handled here. */
+export type RightMarginAction = RightMarginNoteAction | "expand" | "collapse"
 /** Return true when the click was handled. */
-export type RightMarginClickFn = (buffer: BufferModel, note: string, action: RightMarginAction) => boolean
+export type RightMarginClickFn = (buffer: BufferModel, note: string, action: RightMarginNoteAction) => boolean
 /** A clickable margin cell range on body row `row`, columns [start, end). For
  *  char-grid hosts, whose clicks arrive as cells; DOM hosts read the chunk's
  *  `marginNote`/`marginAction` instead. */
@@ -31,16 +46,25 @@ export type RightMarginHit = { row: number; start: number; end: number; note: st
  *  and whether it is that row's first wrapped segment. */
 export type RowOrigin = { row: number; first: boolean }
 
-/** Viewport-independent margin: notes resolved to display-text line indices. */
+/** Viewport-independent margin: notes resolved to display-text line indices.
+ *  `pinned` notes were expanded by a click, so they get a fold button. */
 export type LogicalRightMargin = {
   width: number
-  notes: Array<{ line: number; text: string; face?: string; spans?: RightMarginSpan[]; id?: string; actions?: boolean }>
+  maxLines: number
+  notes: Array<Omit<RightMarginNote, "pos"> & { line: number; pinned?: boolean }>
 }
 
 defvar("right-margin-functions", [] as RightMarginFn[],
   "Functions returning right-margin notes for a buffer (see `RightMarginSpec`).")
 defvar("right-margin-click-functions", [] as RightMarginClickFn[],
   "Functions called with (buffer, note-id, action) when a clickable margin note is clicked.")
+defcustom("right-margin-note-max-lines", "number", 3,
+  "Margin notes longer than this many lines are cut short with a clickable `…`; 0 shows them in full.")
+
+/** Ids of the notes a click expanded, per buffer. */
+const EXPANDED_LOCAL = "right-margin--expanded"
+const EXPAND_LABEL = " …"
+const COLLAPSE_LABEL = " ▴"
 
 const ACTIONS: Array<{ action: RightMarginAction; label: string }> = [
   { action: "resolve", label: " √" },
@@ -51,8 +75,21 @@ const ACTIONS_COLS = ACTIONS.reduce((n, a) => n + a.label.length, 0)
 /** `pane-action` name DOM hosts send for a margin click (payload: note, action). */
 export const RIGHT_MARGIN_CLICK = "right-margin-click"
 
-/** Offer a margin click to `right-margin-click-functions`; true if one took it. */
+function expandedNotes(buffer: BufferModel): ReadonlySet<string> {
+  const set = buffer.locals.get(EXPANDED_LOCAL)
+  return set instanceof Set ? set as Set<string> : new Set()
+}
+
+/** Expand/fold a note, or offer the click to `right-margin-click-functions`;
+ *  true if it was handled. */
 export function rightMarginClick(buffer: BufferModel, note: string, action: string): boolean {
+  if (action === "expand" || action === "collapse") {
+    const next = new Set(expandedNotes(buffer))
+    if (action === "expand") next.add(note)
+    else next.delete(note)
+    buffer.locals.set(EXPANDED_LOCAL, next)
+    return true
+  }
   if (action !== "edit" && action !== "resolve" && action !== "reply") return false
   for (const fn of getCustom<RightMarginClickFn[]>("right-margin-click-functions") ?? []) {
     try {
@@ -96,15 +133,18 @@ export function logicalRightMargin(
   const placed = raw
     .map(note => ({ note, dpos: displayMap ? displayMap(note.pos) : note.pos }))
     .sort((a, b) => a.dpos - b.dpos)
+  const pinned = expandedNotes(buffer)
   const notes: LogicalRightMargin["notes"] = []
   let line = 0
   let scan = 0
   for (const { note, dpos } of placed) {
     const limit = Math.min(dpos, displayText.length)
     for (; scan < limit; scan++) if (displayText.charCodeAt(scan) === 10) line++
-    notes.push({ line, text: note.text, face: note.face, spans: note.spans, id: note.id, actions: note.actions })
+    const { pos: _pos, ...rest } = note
+    notes.push({ ...rest, line, pinned: note.id != null && pinned.has(note.id) })
   }
-  return { width: Math.floor(width), notes }
+  const maxLines = Math.max(0, Math.floor(getCustom<number>("right-margin-note-max-lines") ?? 0))
+  return { width: Math.floor(width), maxLines, notes }
 }
 
 /** Clamp the requested margin to the window; null when the window is too
@@ -119,6 +159,8 @@ export function fitRightMargin(margin: LogicalRightMargin | undefined, cols: num
 /** Append margin cells to each body row. `origins[k]` says which logical row
  *  (offset from `startLine`) body row `k` belongs to; notes start on the first
  *  wrapped row of their line and push later notes down when they overlap.
+ *  Note lines still queued after the last row get rows of their own, up to
+ *  `maxRows` in all, so notes near the end of the buffer aren't cut off.
  *  Margin chunks are tagged so DOM hosts can position them independently of
  *  variable-pitch text; `hits` locates the clickable cells for char-grid hosts. */
 export function appendRightMargin(
@@ -129,6 +171,7 @@ export function appendRightMargin(
   textCols: number,
   theme: Theme,
   buffer?: BufferModel,
+  maxRows?: number,
 ): { text: ThemedText; hits: RightMarginHit[] } {
   const byLine = new Map<number, LogicalRightMargin["notes"]>()
   for (const note of margin.notes) {
@@ -137,14 +180,21 @@ export function appendRightMargin(
     else byLine.set(note.line, [note])
   }
   const textWidth = margin.width - NOTE_PREFIX_COLS
-  type QueuedLine = { bullet: boolean; pieces: StyledPiece[]; style: Omit<ThemedChunk, "text">; id?: string; actions: boolean }
+  type QueuedLine = {
+    bullet: boolean
+    pieces: StyledPiece[]
+    style: Omit<ThemedChunk, "text">
+    id?: string
+    actions: boolean
+    fold?: { action: "expand" | "collapse"; label: string }
+  }
   const queue: QueuedLine[] = []
   const rows = splitRows(body)
   const out: ThemedChunk[] = []
   const hits: RightMarginHit[] = []
-  for (let k = 0; k < rows.length; k++) {
+  for (let k = 0; k < rows.length || (queue.length && k < (maxRows ?? 0)); k++) {
     if (k > 0) out.push({ text: "\n" })
-    const row = rows[k]!
+    const row = rows[k] ?? []
     out.push(...row)
     const origin = origins[k]
     if (origin?.first) {
@@ -154,14 +204,29 @@ export function appendRightMargin(
         const actions = Boolean(note.id && note.actions && textWidth - ACTIONS_COLS > 4)
         const text = note.text || "(empty)"
         const spans = note.text ? note.spans ?? [] : []
-        wrapWordRanges(text, textWidth, actions ? textWidth - ACTIONS_COLS : textWidth)
-          .forEach((words, i) => queue.push({
-            bullet: i === 0,
-            pieces: styleLine(text, words, spans, base, theme, buffer),
-            style,
-            id: note.id,
-            actions: actions && i === 0,
-          }))
+        const firstWidth = actions ? textWidth - ACTIONS_COLS : textWidth
+        let lines = wrapWordRanges(text, textWidth, firstWidth)
+        let fold: QueuedLine["fold"]
+        if (margin.maxLines && lines.length > margin.maxLines) {
+          if (note.pinned) {
+            fold = { action: "collapse", label: COLLAPSE_LABEL }
+            // No room after the last line: the button gets a line of its own.
+            if (wordsWidth(lines[lines.length - 1]!) + COLLAPSE_LABEL.length > textWidth) lines.push([])
+          } else if (!note.expanded) {
+            fold = { action: "expand", label: EXPAND_LABEL }
+            lines = lines.slice(0, margin.maxLines)
+            const last = lines.length - 1
+            lines[last] = fitWords(lines[last]!, (last ? textWidth : firstWidth) - EXPAND_LABEL.length)
+          }
+        }
+        lines.forEach((words, i) => queue.push({
+          bullet: i === 0,
+          pieces: styleLine(text, words, spans, base, theme, buffer),
+          style,
+          id: note.id,
+          actions: actions && i === 0,
+          fold: note.id && i === lines.length - 1 ? fold : undefined,
+        }))
       }
     }
     const next = queue.shift()
@@ -183,8 +248,15 @@ export function appendRightMargin(
       ...next.pieces,
     ])
     const noteCols = pieces.reduce((n, p) => n + p.text.length, 0)
-    if (noteCols < bodyCols) pieces.push(...mergePieces([pieces.pop()!, { text: " ".repeat(bodyCols - noteCols), style: next.style }]))
+    const padCols = bodyCols - noteCols - (next.fold?.label.length ?? 0)
+    const pad = { text: " ".repeat(Math.max(0, padCols)), style: next.style }
+    if (!next.fold && padCols > 0) pieces.push(...mergePieces([pieces.pop()!, pad]))
     for (const piece of pieces) push(piece.text, "edit", piece.style)
+    // The fold button follows the text; the pad after it keeps the bar aligned.
+    if (next.fold) {
+      push(next.fold.label, next.fold.action)
+      if (pad.text) push(pad.text, "edit")
+    }
     if (next.actions) for (const { action, label } of ACTIONS) push(label, action)
   }
   return { text: { chunks: out }, hits }
@@ -209,6 +281,20 @@ function cellWidth(text: string): number {
 }
 
 type StyledPiece = { text: string; style: Omit<ThemedChunk, "text"> }
+
+/** Drop trailing words from a wrapped line until it fits `width`, hard-cutting
+ *  a lone word that is still too long. */
+function fitWords(words: Array<[number, number]>, width: number): Array<[number, number]> {
+  const out = [...words]
+  while (out.length > 1 && wordsWidth(out) > width) out.pop()
+  if (out.length === 1 && wordsWidth(out) > width) out[0] = [out[0]![0], out[0]![0] + Math.max(0, width)]
+  return out
+}
+
+/** Cells a wrapped line takes: its words joined by single spaces. */
+function wordsWidth(words: ReadonlyArray<[number, number]>): number {
+  return words.reduce((n, [s, e], i) => n + e - s + (i ? 1 : 0), 0)
+}
 
 /** Greedy word wrap; words longer than the line are hard-split. The first
  *  line may be narrower (`firstWidth`) to leave room for action buttons. */
