@@ -7,6 +7,8 @@ export type IsearchState = {
   startPoint: number
   regexp?: boolean
   match?: IsearchMatch
+  /** Emacs `minibuffer-history-isearch`: input and history position at search start, restored by C-g. */
+  minibuffer?: { originalText: string; originalIndex: number | null }
 }
 
 export type IsearchMatch = { start: number; end: number }

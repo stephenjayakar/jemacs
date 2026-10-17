@@ -2015,6 +2015,9 @@ export class Editor {
   startIsearch(direction: 1 | -1): void {
     const buffer = this.activeBuffer
     this.isearch = { bufferId: buffer.id, string: "", direction, startPoint: buffer.point }
+    if (this.minibuffer?.bufferId === buffer.id) {
+      this.isearch.minibuffer = { originalText: this.minibufferRawInput(), originalIndex: this.minibuffer.historyIndex }
+    }
     this.message(direction === 1 ? "Isearch forward" : "Isearch backward")
     void this.changed("isearch-start")
   }
@@ -2030,9 +2033,11 @@ export class Editor {
     }
     const buffer = this.buffers.get(state.bufferId)
     if (!buffer) return
-    const match = state.direction === 1
-      ? findRestrictedMatchForward(buffer, state.string, buffer.point, state.regexp ?? false)
-      : findRestrictedMatchBackward(buffer, state.string, buffer.point, state.regexp ?? false)
+    const match = state.minibuffer && this.minibuffer
+      ? this.minibufferHistoryIsearch(buffer, state, state.string, this.minibuffer.historyIndex, buffer.point)
+      : state.direction === 1
+        ? findRestrictedMatchForward(buffer, state.string, buffer.point, state.regexp ?? false)
+        : findRestrictedMatchBackward(buffer, state.string, buffer.point, state.regexp ?? false)
     if (match == null) {
       this.message(`Search failed: ${state.string}`)
       return
@@ -2045,6 +2050,8 @@ export class Editor {
   cancelIsearch(): void {
     if (!this.isearch) return
     const buffer = this.buffers.get(this.isearch.bufferId)
+    const original = this.isearch.minibuffer
+    if (buffer && original) this.setMinibufferHistoryElement(buffer, original.originalText, original.originalIndex)
     if (buffer) buffer.point = this.isearch.startPoint
     this.isearch = null
     void this.changed("isearch-cancel")
@@ -2064,16 +2071,20 @@ export class Editor {
     const buffer = this.buffers.get(state.bufferId)
     if (!buffer) return
     state.string = string
+    const original = state.minibuffer
     if (!string) {
+      if (original) this.setMinibufferHistoryElement(buffer, original.originalText, original.originalIndex)
       buffer.point = state.startPoint
       state.match = undefined
       this.message(isearchPrompt(state))
       void this.changed("isearch-input")
       return
     }
-    const match = state.direction === 1
-      ? findRestrictedMatchForward(buffer, string, state.startPoint, state.regexp ?? false)
-      : findRestrictedMatchBackward(buffer, string, state.startPoint, state.regexp ?? false)
+    const match = original
+      ? this.minibufferHistoryIsearch(buffer, state, string, original.originalIndex, state.startPoint)
+      : state.direction === 1
+        ? findRestrictedMatchForward(buffer, string, state.startPoint, state.regexp ?? false)
+        : findRestrictedMatchBackward(buffer, string, state.startPoint, state.regexp ?? false)
     if (match == null) {
       state.match = undefined
       this.message(`Failing I-search: ${string}`)
@@ -2088,6 +2099,65 @@ export class Editor {
   applyIsearchMatch(buffer: BufferModel, state: IsearchState, match: IsearchMatch): void {
     state.match = match
     buffer.point = state.direction === 1 ? match.end : match.start
+  }
+
+  /**
+   * Emacs `minibuffer-history-isearch-search`: search the history element at INDEX from FROM, then
+   * successively older (backward) or newer (forward) elements. A match in another element replaces
+   * the minibuffer contents with it, like M-p/M-n would.
+   */
+  private minibufferHistoryIsearch(
+    buffer: BufferModel,
+    state: IsearchState,
+    string: string,
+    index: number | null,
+    from: number,
+  ): IsearchMatch | null {
+    const request = this.minibuffer
+    const original = state.minibuffer
+    if (!request || !original) return null
+    const history = request.historyName ? this.minibufferHistory.get(request.historyName) ?? [] : []
+    const element = (i: number | null): string =>
+      i === original.originalIndex ? original.originalText : i == null ? "" : history[i] ?? ""
+    const regexp = state.regexp ?? false
+    let text = index === request.historyIndex ? this.minibufferRawInput(buffer) : element(index)
+    let pos = from
+    for (;;) {
+      const match = state.direction === 1
+        ? findMatchForward(text, string, pos, regexp)
+        : findMatchBackward(text, string, pos, regexp)
+      if (match) {
+        this.setMinibufferHistoryElement(buffer, text, index)
+        return match
+      }
+      if (state.direction === -1) {
+        const older = index == null ? history.length - 1 : index - 1
+        if (older < 0) return null
+        index = older
+        text = element(index)
+        pos = text.length
+      } else {
+        if (index == null) return null
+        index = index + 1 < history.length ? index + 1 : null
+        text = element(index)
+        pos = 0
+      }
+    }
+  }
+
+  private setMinibufferHistoryElement(buffer: BufferModel, text: string, index: number | null): void {
+    if (!this.minibuffer) return
+    if (index === this.minibuffer.historyIndex && text === this.minibufferRawInput(buffer)) return
+    this.minibuffer.historyIndex = index
+    buffer.setText(text, true)
+    void this.refreshMinibufferCompletions().then(() => this.changed("minibuffer-history"))
+  }
+
+  /** Minibuffer text before any inline completion overlay, without file-name `//` restarts. */
+  private minibufferRawInput(buffer = this.activeBuffer): string {
+    const text = buffer.text
+    const nl = text.indexOf("\n")
+    return nl === -1 ? text : text.slice(0, nl)
   }
 
   async minibufferInsert(s: string): Promise<void> {
