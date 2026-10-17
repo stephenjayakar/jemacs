@@ -1494,7 +1494,7 @@ function fenceLineSpan(buffer: BufferModel, line: number): TextSpan | null {
 function markdownDelimitedSpans(
   text: string,
   re: RegExp,
-  face: string,
+  face: FaceName,
   range?: FontLockRange,
   protectedRanges: Array<readonly [number, number]> = [],
 ): TextSpan[] {
@@ -1513,7 +1513,7 @@ function markdownDelimitedSpans(
     const matchEnd = matchStart + match[0].length
     if (spanInsideRegions(matchStart, matchEnd, protectedRanges)) continue
     spans.push({ start: matchStart, end: matchStart + 2, face: "markdown-markup" as FaceName })
-    spans.push({ start: matchStart + 2, end: matchEnd - 2, face: face as FaceName })
+    spans.push({ start: matchStart + 2, end: matchEnd - 2, face })
     spans.push({ start: matchEnd - 2, end: matchEnd, face: "markdown-markup" as FaceName })
   }
   return spans

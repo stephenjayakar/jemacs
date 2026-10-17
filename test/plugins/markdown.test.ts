@@ -166,12 +166,13 @@ test("gfm strikethrough delimiters hide under markdown-hide-markup", () => {
 test("==highlight== font-lock marks delimiters and body", () => {
   const editor = makeEditor()
   install(editor)
-  const buffer = editor.scratch("note.md", "a ==hi there== b\n\nx\n======\n\n`==code==`\n", "markdown")
+  const buffer = editor.scratch("note.md", "a ==hi there== b\n\nx\n======\n\n`==code==` \\==esc== ===tri===\n", "markdown")
 
   const spans = editor.fontLock(buffer)
   const highlights = spans.filter(span => String(span.face) === "markdown-highlighting-face")
 
-  // `markdown-regex-highlighting`; the setext underline and code span stay plain.
+  // `markdown-regex-highlighting`; the setext underline, code span, escaped
+  // `\==`, and `===` runs stay plain.
   expect(highlights.map(span => [span.start, span.end])).toEqual([[4, 12]])
   expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 2 && span.end === 4)).toBe(true)
   expect(spans.some(span => String(span.face) === "markdown-markup" && span.start === 12 && span.end === 14)).toBe(true)
