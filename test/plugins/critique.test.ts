@@ -148,6 +148,22 @@ describe("critique-comment", () => {
     await editor.run("critique-comment")
     expect(buffer.text).toBe("one\ntwo")
   })
+
+  test("a blank comment on a region or quoted comment leaves a bare highlight", async () => {
+    const { editor, buffer } = setup("a quick fox ==b==%%old%%")
+    buffer.point = 2
+    buffer.setMark()
+    buffer.point = 7
+    editor.prompt = async () => "  "
+    await editor.run("critique-comment")
+    expect(buffer.text).toBe("a ==quick== fox ==b==%%old%%")
+    expect(buffer.point).toBe("a ==quick==".length)
+
+    buffer.point = buffer.text.length - 3
+    editor.prompt = async () => ""
+    await editor.run("critique-comment")
+    expect(buffer.text).toBe("a ==quick== fox ==b==")
+  })
 })
 
 describe("navigation and resolve", () => {

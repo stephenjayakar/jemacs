@@ -132,11 +132,12 @@ export function sanitizeCommentText(text: string, syntax: CritiqueSyntax): strin
   return syntax === "obsidian" ? flat.replace(/%%/g, "%") : flat.replace(/<<\}/g, "<< }")
 }
 
-/** Render a comment in `syntax`. `quote` null/empty makes a point comment. */
+/** Render a comment in `syntax`. `quote` null/empty makes a point comment;
+ *  a blank comment on a quote is just the highlight. */
 export function formatCritiqueComment(quote: string | null, comment: string, syntax: CritiqueSyntax): string {
   const body = sanitizeCommentText(comment, syntax)
-  if (syntax === "critic") return quote ? `{==${quote}==}{>>${body}<<}` : `{>>${body}<<}`
-  return quote ? `==${quote}==%%${body}%%` : `%%${body}%%`
+  if (syntax === "critic") return quote ? (body ? `{==${quote}==}{>>${body}<<}` : `{==${quote}==}`) : `{>>${body}<<}`
+  return quote ? (body ? `==${quote}==%%${body}%%` : `==${quote}==`) : `%%${body}%%`
 }
 
 /** Delimiter ranges to hide when rendering inline (everything except the

@@ -118,7 +118,8 @@ export function critiqueHides(editor: Editor, buffer: BufferModel): readonly Mar
 }
 
 /** Wrap [start, end) in a highlight + comment, or insert a point comment when
- *  start === end. Leaves point after the construct. */
+ *  start === end. A blank comment leaves just the highlight. Leaves point
+ *  after the construct. */
 export function critiqueInsert(buffer: BufferModel, start: number, end: number, comment: string, style = syntax()): void {
   const quote = buffer.text.slice(start, end)
   const markup = formatCritiqueComment(quote || null, comment, style)
@@ -127,7 +128,8 @@ export function critiqueInsert(buffer: BufferModel, start: number, end: number, 
   buffer.clearMark()
 }
 
-/** Replace the comment text, keeping the highlight and the comment's dialect. */
+/** Replace the comment text, keeping the highlight and the comment's dialect.
+ *  A blank comment drops the comment and keeps the bare highlight. */
 export function critiqueEdit(buffer: BufferModel, c: CritiqueComment, comment: string): void {
   const markup = formatCritiqueComment(c.quote || null, comment, c.syntax)
   buffer.replaceRange(c.start, c.end, markup)
@@ -240,7 +242,8 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     }
     const existing = region ? null : critiqueCommentAt(comments, buffer.point)
     const text = await editor.prompt(existing ? "Edit comment: " : "Comment: ", existing?.text ?? "", "critique-comment")
-    if (text == null || !text.trim()) return
+    // Blank on highlighted text means "just highlight it"; a blank point comment is a no-op.
+    if (text == null || (!text.trim() && !(region || existing?.quote))) return
     ensureMode(editor, buffer)
     if (existing) critiqueEdit(buffer, existing, text)
     else if (region) critiqueInsert(buffer, region.start, region.end, text)

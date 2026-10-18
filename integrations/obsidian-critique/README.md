@@ -36,7 +36,7 @@ Then enable "Critique" under Settings → Community plugins.
 
 | key | command |
 |---|---|
-| `C-c ;` | `critique-comment`: comment on region / edit comment at point / point comment |
+| `C-c ;` | `critique-comment`: comment on region / edit comment at point / point comment. A blank comment on a region (or when editing) leaves just the `==highlight==` |
 | `C-c ]` / `C-c [` | next / previous comment |
 | `C-c /` | `critique-resolve-comment` |
 | `C-c =` | `critique-reply-comment`: add another comment under the one at point |
