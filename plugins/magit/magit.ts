@@ -1431,7 +1431,7 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   if (buffer.mode === "magit-status") {
     const point = buffer.point
     const status = await buildStatus(root, visibilityCache(buffer), context, editor)
-    buffer.setText(status.text, false)
+    buffer.setText(status.text, false, false)
     buffer.locals.set("magit-entries", status.entries)
     buffer.locals.set("magit-hunks", status.hunks)
     buffer.locals.set("magit-diff-context", context)
@@ -1445,7 +1445,7 @@ async function refreshDiffBuffer(editor: Editor, buffer: BufferModel, context: n
   if (!baseArgs || !title) return false
   const { out } = await git(withDiffOptions(baseArgs, displayDiffContextArgs(baseArgs, context)), root, undefined, undefined, editor)
   buffer.readOnly = false
-  buffer.setText(out || "(no changes)\n", false)
+  buffer.setText(out || "(no changes)\n", false, false)
   buffer.readOnly = true
   buffer.locals.set("magit-diff-context", context)
   buffer.point = 0

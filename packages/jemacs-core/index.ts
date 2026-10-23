@@ -24,6 +24,8 @@ export * from "../../src/kernel/transient-mark"
 export * from "../../src/modes/mode"
 export * from "../../src/modes/minor-mode"
 export * from "../../src/platform/runtime"
+// Path-only project roots, so packages skip slow marker walks on deep mounts.
+export { addPathOnlyRoot, fastProjectRoot, findProjectRoot } from "../../src/lsp/project-root"
 
 // Runtime — eval/plugin surface (defcustom, defineMode, addHook, addAdvice, …)
 // plus the per-plugin disposable registration context.

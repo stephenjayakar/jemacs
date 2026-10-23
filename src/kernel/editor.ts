@@ -55,7 +55,7 @@ import { createFrame, makeTab, tabTimestamp, type FrameRecord, type TabRecord } 
 import type { RegisterContents } from "./register"
 import { modeHookName, runHooks, runHooksMaybeAsync } from "./hooks"
 import type { LspManager } from "../lsp/manager"
-import { fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
+import { accessDenied, fileExists, homedir, isDirectory, mkdir, readFileText, stat, unlink, writeFileText } from "../platform/runtime"
 import { invokeWithAdvice } from "../runtime/advice"
 import { defcustom, defvar, getCustom } from "../runtime/custom"
 import { readInteractiveArgs } from "../runtime/interactive"
@@ -288,6 +288,8 @@ export class Editor {
   running = true
   overridingTerminalLocalMap: Keymap | null = null
   overridingMap: Keymap | null = null
+  /** Emacs `set-transient-map` ON-EXIT: runs when a key outside `overridingMap` ends it. */
+  overridingMapExit: (() => void) | null = null
   readonly prefixArg = new PrefixArgumentState()
   readonly globalMinorModes = new Set<string>()
   lastKeyEvent: KeyEventLike | null = null
@@ -356,6 +358,7 @@ export class Editor {
     this.frames.push(initialFrame)
     this.selectedFrameId = initialFrame.id
     defcustom("transient-values-file", "string", join(homedir(), ".jemacs", "transient.json"), "File where transient-saved values are persisted.", "transient")
+    defcustom("message-log-max", "sexp", 1000, "Maximum number of lines to keep in the *messages* buffer. t means no limit.", "message")
     defcustom("transient-default-level", "integer", 4, "Default visibility level for transient groups and suffixes.", "transient")
     defcustom(
       "file-completion-timeout",
@@ -997,35 +1000,40 @@ export class Editor {
   }
 
   /** Visit a path: reuse an existing buffer, else create one via `make`. The factory is what
-   *  decouples the kernel from modes/ — `modeSystem.makeDirectoryBuffer` supplies the dired one. */
-  async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string, options: { skipFileHooks?: boolean; skipLsp?: boolean } = {}): Promise<BufferModel> {
+   *  decouples the kernel from modes/ — `modeSystem.makeDirectoryBuffer` supplies the dired one.
+   *  `select: false` is `find-file-noselect`: the buffer is created but no window shows it. */
+  async visitPath(full: string, make: (full: string) => Promise<BufferModel>, mode?: string, options: { skipFileHooks?: boolean; skipLsp?: boolean; select?: boolean } = {}): Promise<BufferModel> {
+    const select = options.select ?? true
     const existing = [...this.buffers.values()].find(b => b.path === full)
-    if (existing) return this.switchToBuffer(existing.id)
+    if (existing) return select ? this.switchToBuffer(existing.id) : existing
     const buffer = await make(full)
     this.addBuffer(buffer)
     if (buffer.kind === "file" && !options.skipLsp) this.lsp?.attachBuffer(buffer)
-    this.setSelectedWindowBuffer(buffer.id)
+    if (select) this.setSelectedWindowBuffer(buffer.id)
     this.enterMode(buffer, mode ?? buffer.mode)
     await this.changed("visit-path")
     if (buffer.kind === "file" && !options.skipFileHooks) await this.runHook("find-file-hook", buffer)
     return buffer
   }
 
-  async openFile(path: string, options: { readOnly?: boolean; literally?: boolean } = {}): Promise<BufferModel> {
+  async openFile(path: string, options: { readOnly?: boolean; literally?: boolean; select?: boolean } = {}): Promise<BufferModel> {
     const full = resolve(path)
     const st = await stat(full)
     if (st && isDirectory(st)) return this.openDirectory(full)
+    // Emacs signals `file-error` here rather than visiting a "new" file.
+    if (!st && await accessDenied(full)) throw new Error(`Opening input file: Permission denied, ${full}`)
     if (options.literally || shouldOpenLiterally(st?.size)) {
       return this.openFileLiterally(full, st?.mtime, st?.size ?? 0, options)
     }
-    const buffer = await this.visitPath(full, BufferModel.fromFile)
+    const buffer = await this.visitPath(full, BufferModel.fromFile, undefined, { select: options.select })
     if (options.readOnly) buffer.readOnly = true
     return buffer
   }
 
-  private async openFileLiterally(full: string, mtime: number | undefined, size: number, options: { readOnly?: boolean } = {}): Promise<BufferModel> {
+  private async openFileLiterally(full: string, mtime: number | undefined, size: number, options: { readOnly?: boolean; select?: boolean } = {}): Promise<BufferModel> {
+    const select = options.select ?? true
     const existing = [...this.buffers.values()].find(b => b.path === full)
-    if (existing) return this.switchToBuffer(existing.id)
+    if (existing) return select ? this.switchToBuffer(existing.id) : existing
     // `find-file-literally` leaves the buffer in fundamental-mode in Emacs.
     const buffer = new BufferModel({ name: basename(full), path: full, text: "", kind: "file", mode: FUNDAMENTAL_MODE })
     buffer.locals.set(LARGE_FILE_LITERAL_LOCAL, true)
@@ -1034,7 +1042,7 @@ export class Editor {
     buffer.locals.set(LARGE_FILE_SIZE_LOCAL, size)
     buffer.readOnly = true
     this.addBuffer(buffer)
-    this.setSelectedWindowBuffer(buffer.id)
+    if (select) this.setSelectedWindowBuffer(buffer.id)
     await this.changed("visit-large-file")
     this.message(`Opening ${buffer.name} literally (${formatBytes(size)})`)
 
@@ -1076,6 +1084,8 @@ export class Editor {
   }
 
   async openDirectory(path: string): Promise<BufferModel> {
+    // Emacs `dired` signals this instead of listing an empty directory.
+    if (await accessDenied(resolve(path), true)) throw new Error(`Opening directory: Permission denied, ${resolve(path)}`)
     const make = modeSystem.makeDirectoryBuffer ?? (async full => {
       const b = new BufferModel({ name: `${basename(full) || full}/`, path: full, kind: "directory" })
       b.readOnly = true
@@ -1087,7 +1097,7 @@ export class Editor {
   scratch(name: string, text = "", mode = FUNDAMENTAL_MODE, select = true): BufferModel {
     const existing = [...this.buffers.values()].find(b => b.name === name)
     if (existing) {
-      existing.setText(text, false)
+      existing.setText(text, false, false)
       existing.kind = name === "*messages*" ? "messages" : "scratch"
       this.enterMode(existing, mode)
       if (select) {
@@ -1251,9 +1261,14 @@ export class Editor {
     }
 
     let fed = this.keymaps.feed(key)
-    if (fed.status === "unmatched" && this.overridingMap) {
+    // Emacs `set-transient-map`: any key the transient map does not bind exits it,
+    // and that key then runs as normal (even when a lower map binds it).
+    if (this.overridingMap && (fed.status === "unmatched" || fed.mapName !== "overriding-map")) {
+      const onExit = this.overridingMapExit
       this.overridingMap = null
-      fed = this.keymaps.feed(key)
+      this.overridingMapExit = null
+      onExit?.()
+      if (fed.status === "unmatched") fed = this.keymaps.feed(key)
     }
     if (fed.status === "matched") {
       const wasRecording = this.macroRecording
@@ -1800,7 +1815,7 @@ export class Editor {
     if (candidates.length > 1) {
       const existing = [...this.buffers.values()].find(b => b.name === "*Completions*")
       const body = texts.join("\n")
-      if (existing) existing.setText(body, false)
+      if (existing) existing.setText(body, false, false)
       else this.addBuffer(new BufferModel({ name: "*Completions*", text: body, kind: "scratch", mode: "text" }))
     }
     void this.changed("completion-at-point")
@@ -2352,7 +2367,7 @@ export class Editor {
     this.minibufferCompletionDisplay = { text: matches.join("\n") }
     const existing = [...this.buffers.values()].find(b => b.name === "*Completions*")
     const body = matches.join("\n")
-    if (existing) existing.setText(body, false)
+    if (existing) existing.setText(body, false, false)
     else this.addBuffer(new BufferModel({ name: "*Completions*", text: body, kind: "scratch", mode: "text" }))
     void this.changed("minibuffer-complete")
   }
@@ -2397,6 +2412,13 @@ export class Editor {
     const msg = [...this.buffers.values()].find(b => b.name === "*messages*")
     if (msg) {
       msg.append(`${new Date().toISOString()}  ${text}\n`)
+      // Emacs `message-log-max`: keep only the newest lines, or a chatty
+      // plugin grows *messages* for as long as the editor runs.
+      const max = getCustom<number | boolean>("message-log-max")
+      if (typeof max === "number" && max >= 0 && msg.lineCount - 1 > max) {
+        const cut = msg.lineStarts[msg.lineCount - 1 - max]!
+        msg.splice(0, cut, "", { markDirty: false, snapshot: false })
+      }
       msg.point = msg.text.length
     }
     void this.events.emit("message", { text })

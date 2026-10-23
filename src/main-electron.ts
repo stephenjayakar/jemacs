@@ -263,18 +263,13 @@ async function assertRendererPaints(editor: Editor, host: ElectronHost): Promise
 
     // Clicking the bar must reach the editor. This is the only check that
     // proves the renderer's listener, the IPC hop, and the hit test all line up.
-    // Column 0 is the separator, so aim at column 1: the first tab's name. The
-    // bar is monospace, so one Range over its text gives the character width.
+    // The GUI draws real tabs, so click the first drawn tab element.
     const clicked = await host.queryRenderer<boolean>(`(() => {
-      const el = document.getElementById("jemacs-tab-bar")
-      if (!el) return false
-      const range = document.createRange()
-      range.selectNodeContents(el)
-      const text = range.getBoundingClientRect()
-      const charWidth = text.width / (el.textContent.length || 1)
-      el.dispatchEvent(new MouseEvent("mousedown", {
-        bubbles: true, button: 0,
-        clientX: text.left + charWidth * 1.5, clientY: text.top + text.height / 2,
+      const tab = document.querySelector("#jemacs-tab-bar .jemacs-tab")
+      if (!tab) return false
+      const r = tab.getBoundingClientRect()
+      tab.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2,
       }))
       return true
     })()`)

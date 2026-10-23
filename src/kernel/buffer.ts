@@ -2,6 +2,7 @@ import { dirname, basename } from "node:path"
 import { cp, cwd, fileExists, mkdir, readFileText, stat, writeFileText } from "../platform/runtime"
 import { resolveBackupPath, type BackupDirectoryAlist } from "./backup-path"
 import { isTransientMarkModeEnabled } from "./transient-mark"
+import { defcustom, getCustom } from "../runtime/custom"
 import type { ShadowLink } from "../shadow/link"
 import type { Splice } from "../shadow/ops"
 
@@ -55,6 +56,20 @@ export type UndoTreeNodeView = {
   children: UndoTreeNodeView[]
 }
 
+// Emacs `undo-limit` / `undo-outer-limit` (alloc.c, undo.c). Without a cap, a
+// buffer redrawn many times (a streamed agent transcript) keeps two full copies
+// of its text per redraw, and the heap grows until V8 aborts.
+defcustom("undo-limit", "integer", 160000, "Keep no more undo information than this many bytes, but always keep the most recent change.", "undo")
+defcustom("undo-outer-limit", "integer", 24000000, "Discard even the most recent change from undo when it is larger than this many bytes.", "undo")
+
+/** Bytes charged per undo op on top of its text, like Emacs counts the conses. */
+const UNDO_OP_OVERHEAD = 32
+/** A linked buffer keeps at least this many recent nodes: the shadow rebase
+ *  rewinds up to MAX_SENT (256) nodes through the undo tree. */
+const LINKED_UNDO_KEEP = 512
+/** `savedNode` after truncation dropped it: no reachable node matches disk. */
+const DETACHED_UNDO_NODE: UndoNode = { ops: [], parent: null, children: [], seq: -1, at: 0 }
+
 export class BufferModel {
   readonly id: string
   private _name: string
@@ -86,6 +101,8 @@ export class BufferModel {
   private undoCur: UndoNode = this.undoRoot
   /** Tree node at which text matches disk. */
   private savedNode: UndoNode = this.undoRoot
+  /** Sum of `undoNodeBytes` over every node below the root. */
+  private undoBytes = 0
   private backedUp = false
   private _restriction: BufferRestriction | null = null
   /** Widget-style editable regions (Custom buffers). When set, user edits are
@@ -505,7 +522,8 @@ export class BufferModel {
     if (data.version !== 1 || data.textHash !== textHash(this._text)) return false
 
     const roots = data.nodes.filter(node => node.parentId === null)
-    if (roots.length !== 1 || roots[0]!.id !== 0) return false
+    // Truncation re-roots the tree, so the root id is not always 0.
+    if (roots.length !== 1) return false
     if (data.nextSeq < Math.max(...data.nodes.map(node => node.id))) return false
 
     const byId = new Map<number, UndoNode>()
@@ -530,7 +548,7 @@ export class BufferModel {
       parent.children.push(node)
     }
 
-    const root = byId.get(0)
+    const root = byId.get(roots[0]!.id)
     const current = byId.get(data.currentId)
     if (!root || !current) return false
     for (const node of byId.values()) {
@@ -551,6 +569,9 @@ export class BufferModel {
     this.undoCur = current
     this.nextSeq = data.nextSeq
     this.savedNode = current
+    let bytes = 0
+    for (const node of byId.values()) if (node !== root) bytes += undoNodeBytes(node)
+    this.undoBytes = bytes
     this.dirty = false
     return true
   }
@@ -723,6 +744,38 @@ export class BufferModel {
     this.undoCur.children.push(node)
     this.undoCur.activeChild = this.undoCur.children.length - 1
     this.undoCur = node
+    this.undoBytes += undoNodeBytes(node)
+    this.truncateUndo()
+  }
+
+  /** Drop the oldest history until the tree fits `undo-limit`, as Emacs
+   *  truncate_undo_list does. The newest change stays unless it alone exceeds
+   *  `undo-outer-limit`. Old history goes by re-rooting the tree one step
+   *  along the path to the current node; branches off that path go with it. */
+  private truncateUndo(): void {
+    const limit = getCustom<number>("undo-limit") ?? 160000
+    if (this.undoBytes <= limit) return
+    const outer = getCustom<number>("undo-outer-limit") ?? 24000000
+    const path = this.pathToRoot(this.undoCur).reverse()
+    const keep = this.link ? LINKED_UNDO_KEEP : 0
+    let i = 0
+    while (i < path.length - 1 && path.length - 1 - i > keep && this.undoBytes > limit) {
+      const next = path[i + 1]!
+      if (next === this.undoCur && this.undoBytes <= outer) break
+      const old = path[i]!
+      for (const child of old.children) if (child !== next) this.undoBytes -= undoSubtreeBytes(child)
+      this.undoBytes -= undoNodeBytes(next)
+      old.children = []
+      next.parent = null
+      next.ops = []
+      this.undoRoot = next
+      i++
+    }
+    if (i === 0) return
+    let top = this.savedNode
+    while (top.parent) top = top.parent
+    // A saved node cut off from the tree would also pin the dropped history.
+    if (top !== this.undoRoot) this.savedNode = DETACHED_UNDO_NODE
   }
 
   private findUndoNode(seq: number): UndoNode | undefined {
@@ -922,6 +975,23 @@ function isSerializedUndoTree(data: unknown): data is SerializedUndoTree {
     }
   }
   return true
+}
+
+function undoNodeBytes(node: UndoNode): number {
+  let bytes = 0
+  for (const op of node.ops) bytes += op.removed.length + op.inserted.length + UNDO_OP_OVERHEAD
+  return bytes
+}
+
+function undoSubtreeBytes(node: UndoNode): number {
+  let bytes = 0
+  const stack = [node]
+  while (stack.length) {
+    const n = stack.pop()!
+    bytes += undoNodeBytes(n)
+    stack.push(...n.children)
+  }
+  return bytes
 }
 
 function isNonnegativeInteger(n: unknown): n is number {

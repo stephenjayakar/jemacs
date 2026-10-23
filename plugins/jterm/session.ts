@@ -312,7 +312,7 @@ export class JTermSession {
         textChanged = true
       }
     } else if (text !== this.buffer.text) {
-      this.buffer.setText(text, false)
+      this.buffer.setText(text, false, false)
       textChanged = true
     }
     this.lastRenderedText = text

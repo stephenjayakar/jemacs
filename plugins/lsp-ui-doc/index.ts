@@ -45,7 +45,7 @@ async function lspHoverDoc(editor: Editor, buffer: BufferModel): Promise<string 
 function docBuffer(editor: Editor, text: string): BufferModel {
   const existing = [...editor.buffers.values()].find(b => b.name === DOC_BUFFER)
   if (existing) {
-    existing.setText(text, false)
+    existing.setText(text, false, false)
     existing.kind = "scratch"
     editor.enterMode(existing, "markdown")
     return existing

@@ -117,7 +117,7 @@ test("_emphasis_ renders italic while its underscore markers stay upright", () =
   expect(chunks.filter(c => c.text === "_").every(c => !c.italic)).toBe(true)
 })
 
-test("gfm font-lock highlights bare URL autolinks and markdown does not", () => {
+test("font-lock highlights bare URL autolinks in gfm and markdown", () => {
   const editor = makeEditor()
   install(editor)
   const text = "Visit https://example.com/a.\n"
@@ -127,7 +127,7 @@ test("gfm font-lock highlights bare URL autolinks and markdown does not", () => 
   const markdown = new BufferModel({ name: "doc.md", text, mode: "markdown" })
 
   expect(editor.fontLock(gfm).some(span => String(span.face) === "markdown-link" && span.start === start && span.end === end)).toBe(true)
-  expect(editor.fontLock(markdown).some(span => String(span.face) === "markdown-link" && span.start === start && span.end === end)).toBe(false)
+  expect(editor.fontLock(markdown).some(span => String(span.face) === "markdown-link" && span.start === start && span.end === end)).toBe(true)
 })
 
 test("gfm follow command opens bare URL autolinks", async () => {
@@ -140,6 +140,18 @@ test("gfm follow command opens bare URL autolinks", async () => {
   await editor.run("markdown-follow-thing-at-point")
 
   expect(opened).toEqual(["https://example.com/a"])
+})
+
+test("markdown follow command opens bare URLs", async () => {
+  const opened: string[] = []
+  const editor = makeEditor()
+  install(editor, { openExternal: target => { opened.push(target) } })
+  const buffer = editor.scratch("notes.md", "* Spanner: https://example.com/#/project/a?b=false\n", "markdown")
+  buffer.point = buffer.text.indexOf("example")
+
+  await editor.run("markdown-follow-thing-at-point")
+
+  expect(opened).toEqual(["https://example.com/#/project/a?b=false"])
 })
 
 test("gfm strikethrough font-lock marks delimiters and body", () => {
@@ -367,6 +379,18 @@ describe("markdown list item parity", () => {
     expect(buffer.text).toBe("- alpha beta\n- ")
   })
 
+  test("RET at the start of item text pushes the text to a new item", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("doc.md", "1. Enrich universe changes\n2. \n3. ", "markdown")
+    buffer.point = buffer.text.indexOf("Enrich")
+
+    await editor.run("markdown-enter-key")
+
+    expect(buffer.text).toBe("1. \n2. Enrich universe changes\n3. \n4. ")
+    expect(buffer.point).toBe(buffer.text.indexOf("Enrich"))
+  })
+
   test("RET at the start of a buffer does not hang", async () => {
     const editor = makeEditor()
     install(editor)
@@ -409,7 +433,7 @@ describe("markdown list item parity", () => {
       const editor = makeEditor()
       install(editor)
       const buffer = editor.scratch("doc.md", "- one", "markdown")
-      buffer.point = buffer.text.indexOf("one")
+      buffer.point = buffer.text.length
 
       await keySeq(editor, "RET")
 
@@ -1076,6 +1100,7 @@ describe("markdown list and checkbox commands", () => {
     install(editor)
     const buffer = editor.scratch("todo.md", "  - [/] a\n- b\n", "markdown")
     buffer.mark = 0
+    buffer.markActive = true
     buffer.point = buffer.text.indexOf("b")
     await editor.run("markdown-cycle-task")
     expect(buffer.text).toBe("  - [x] a\n- [ ] b\n")
@@ -1083,6 +1108,17 @@ describe("markdown list and checkbox commands", () => {
     await editor.run("markdown-cycle-task")
     expect(blank.text).toBe("- [ ] ")
     expect(blank.point).toBe(6)
+  })
+
+  test("s-L with a stale inactive mark above changes only the current line", async () => {
+    const editor = makeEditor()
+    install(editor)
+    const buffer = editor.scratch("todo.md", "- [ ] a\n- [x] b\n- [ ] c\n", "markdown")
+    buffer.mark = 0
+    buffer.markActive = false
+    buffer.point = buffer.text.indexOf("c")
+    await editor.run("markdown-cycle-task-backward")
+    expect(buffer.text).toBe("- [ ] a\n- [x] b\n* c\n")
   })
 
   test("markdown-cleanup-list-numbers renumbers ordered lists by nesting level", async () => {

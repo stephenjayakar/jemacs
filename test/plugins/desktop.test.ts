@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { install, desktopRead, type DesktopManifest } from "../../plugins/desktop"
+import { install, desktopClear, desktopPendingCount, desktopRead, desktopSave, type DesktopManifest } from "../../plugins/desktop"
 import { listWindowLeaves } from "../../src/kernel/window"
 import { resetCustom, setCustom } from "../../src/runtime/custom"
 import { makeEditor } from "./helper"
@@ -12,6 +12,8 @@ let dir: string
 beforeEach(async () => {
   resetCustom("desktop-save-mode")
   resetCustom("desktop-save-file")
+  resetCustom("desktop-restore-eager")
+  resetCustom("desktop-lazy-idle-delay")
   dir = await mkdtemp(join(tmpdir(), "jemacs-desktop-"))
 })
 
@@ -157,6 +159,79 @@ test("after-init-hook auto-restores only when desktop-save-mode custom is enable
   expect(fileBufferPaths(enabled)).toEqual([path])
   expect(enabled.currentBuffer.point).toBe(5)
   expect(enabled.globalMinorModes.has("desktop-save-mode")).toBe(true)
+})
+
+async function lazyDesktop(): Promise<{ paths: string[]; shown: string }> {
+  const paths = await Promise.all([0, 1, 2, 3].map(i => writeText(`f${i}.txt`, `file ${i}\n`)))
+  const shown = paths[3]!
+  const desktopFile = join(dir, "desktop.json")
+  await writeFile(desktopFile, JSON.stringify({
+    version: 1,
+    files: paths.map(path => ({ path, point: 2 })),
+    currentBuffer: shown,
+    layout: { kind: "leaf", path: shown, point: 2 },
+  } satisfies DesktopManifest), "utf8")
+  setCustom("desktop-save-file", desktopFile)
+  setCustom("desktop-restore-eager", 1)
+  setCustom("desktop-lazy-idle-delay", 0)
+  return { paths, shown }
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5))
+}
+
+test("desktop-restore-eager restores N plus layout buffers now, the rest lazily", async () => {
+  const { paths, shown } = await lazyDesktop()
+  const editor = makeEditor()
+
+  expect(await desktopRead(editor)).toBe(2)
+  // Emacs: the first N, plus every buffer a saved window shows, restore eagerly.
+  expect(fileBufferPaths(editor).sort()).toEqual([paths[0]!, shown].sort())
+  expect(desktopPendingCount(editor)).toBe(2)
+
+  await waitFor(() => desktopPendingCount(editor) === 0)
+  expect(fileBufferPaths(editor).sort()).toEqual([...paths].sort())
+  // Lazy buffers are `find-file-noselect`ed: the restored layout keeps its buffer.
+  expect(editor.currentBuffer.path).toBe(shown)
+  expect(listWindowLeaves(editor.windowLayout).map(leaf => editor.buffers.get(leaf.bufferId)?.path)).toEqual([shown])
+  const lazyBuffer = [...editor.buffers.values()].find(buffer => buffer.path === paths[1])!
+  expect(lazyBuffer.point).toBe(2)
+})
+
+test("desktop-save keeps entries that are still pending lazy restoration", async () => {
+  const { paths } = await lazyDesktop()
+  setCustom("desktop-lazy-idle-delay", 60)
+  const editor = makeEditor()
+  await desktopRead(editor)
+  expect(desktopPendingCount(editor)).toBe(2)
+
+  await desktopSave(editor)
+  const saved = JSON.parse(await readFile(join(dir, "desktop.json"), "utf8")) as DesktopManifest
+  expect(saved.files.map(file => file.path).sort()).toEqual([...paths].sort())
+  await desktopClear(editor)
+})
+
+test("desktop-clear cancels pending lazy restoration", async () => {
+  await lazyDesktop()
+  const editor = makeEditor()
+  await desktopRead(editor)
+  await desktopClear(editor)
+  expect(desktopPendingCount(editor)).toBe(0)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  expect(fileBufferPaths(editor)).toEqual([])
+})
+
+test("desktop-save lists file buffers most recently used first", async () => {
+  const editor = makeEditor()
+  setCustom("desktop-save-file", join(dir, "desktop.json"))
+  const older = await writeText("older.txt", "a\n")
+  const newer = await writeText("newer.txt", "b\n")
+  await editor.openFile(older)
+  await editor.openFile(newer)
+  await desktopSave(editor)
+  const saved = JSON.parse(await readFile(join(dir, "desktop.json"), "utf8")) as DesktopManifest
+  expect(saved.files.map(file => file.path)).toEqual([newer, older])
 })
 
 test("enabling desktop-save-mode after install, as init.ts does, restores at after-init", async () => {

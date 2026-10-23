@@ -36,6 +36,7 @@ export function webLayout(logical: LogicalModel, viewport: ViewportSize = { rows
     tabBar: logical.tabBar
       ? serializeThemedText(applyTheme(logical.tabBar.text, logical.tabBar.spans, logical.theme))
       : undefined,
+    tabBarTabs: logical.tabBar?.items,
     windows: layoutNode(logical, logical.windows, areaLines),
     childFrames: logical.childFrames.map(frame => layoutChildFrame(logical, frame)),
     minibufferCompletions: themedCompletions(logical),

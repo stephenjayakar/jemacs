@@ -119,7 +119,7 @@ export function resizeSession(buffer: BufferModel, rows: number, cols: number): 
   s.pty.resize(rows, cols)
   s.xt.resize(cols, rows)
   const { text, point, spans } = renderTerminal(s.xt)
-  buffer.setText(text, false)
+  buffer.setText(text, false, false)
   buffer.point = point
   buffer.locals.set(TERM_SPANS_LOCAL, spans)
 }
@@ -230,7 +230,7 @@ export function feed(session: TermSession, buffer: BufferModel, chunk: string, d
       // snapshot. Fall back to a full replace only when VT codes rewrote
       // earlier cells (cursor positioning, erase-line, etc.).
       if (text.startsWith(buffer.text)) buffer.append(text.slice(buffer.text.length))
-      else buffer.setText(text, false)
+      else buffer.setText(text, false, false)
       buffer.point = point
       buffer.locals.set(TERM_SPANS_LOCAL, spans)
       done?.()

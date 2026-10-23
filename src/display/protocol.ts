@@ -8,6 +8,7 @@ import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ViewportSize } from "./viewport"
 import type { FontMetricsTable } from "./font-metrics"
 import type { RightMarginHit } from "./right-margin"
+import type { TabBarItem } from "./tab-bar"
 
 export type DisplayChunk = ThemedText
 export type { CanvasShapeModel, CanvasSurfaceModel, TableSurfaceModel, WebNodeModel, WebSurfaceModel } from "../kernel/extension-points"
@@ -98,6 +99,9 @@ export type DisplayModel = {
   title: DisplayChunk
   /** Tab-bar row above the window stack. Absent when the bar is hidden. */
   tabBar?: DisplayChunk
+  /** The same bar as discrete tabs, for hosts that draw real tab chrome
+   *  (the GUI). Char-grid hosts ignore it and draw `tabBar`. */
+  tabBarTabs?: TabBarItem[]
   windows: WindowDisplayNode
   childFrames: ChildFrameModel[]
   minibufferCompletions: DisplayChunk

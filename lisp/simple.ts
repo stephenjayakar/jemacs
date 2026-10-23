@@ -13,6 +13,9 @@ import { spawnProcess } from "../src/platform/runtime"
 import { readKey } from "./misc"
 
 const KILL_COMMANDS = new Set(["kill-line", "kill-word", "backward-kill-word", "kill-region", "clipboard-kill-region"])
+const INDENT_RIGIDLY_COMMANDS = new Set(["indent-rigidly-left", "indent-rigidly-right", "indent-rigidly-left-to-tab-stop", "indent-rigidly-right-to-tab-stop"])
+// Emacs defaults: `tab-width` 8 and `tab-stop-list` nil (a stop every `tab-width` columns).
+const TAB_WIDTH = 8
 
 defcustom("read-quoted-char-radix", "integer", 8,
   "Radix for numeric character input read by `quoted-insert'.", "editing")
@@ -508,6 +511,69 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.command("indent-for-tab-command", async ({ editor, buffer }) => {
     if (!await editor.completeAtPoint(buffer)) editor.indentLine(buffer)
   }, "Complete the symbol at point, or indent the current line.")
+
+  // indent.el: `C-x TAB` with no prefix arg opens a transient map; TAB, <left>,
+  // <right>, S-<left>, S-<right> shift the region, and any other key exits it.
+  const indentRigidlyMap = new Keymap("indent-rigidly-map")
+  indentRigidlyMap.bind("tab", "indent-rigidly-right")
+  indentRigidlyMap.bind("left", "indent-rigidly-left")
+  indentRigidlyMap.bind("right", "indent-rigidly-right")
+  indentRigidlyMap.bind("S-left", "indent-rigidly-left-to-tab-stop")
+  indentRigidlyMap.bind("S-right", "indent-rigidly-right-to-tab-stop")
+  // The buffer the last interactive step changed, so the next step joins its undo
+  // entry (Emacs `indent-rigidly--pop-undo`).
+  let indentRigidlyUndoBuffer: BufferModel | null = null
+
+  const regionBounds = (buffer: BufferModel, editor: Editor): [number, number] | null => {
+    if (buffer.mark == null) {
+      editor.message("The mark is not set now, so there is no region")
+      return null
+    }
+    return [Math.min(buffer.mark, buffer.point), Math.max(buffer.mark, buffer.point)]
+  }
+
+  const indentRigidlyStep = (buffer: BufferModel, editor: Editor, delta: (start: number, end: number) => number | null) => {
+    const bounds = regionBounds(buffer, editor)
+    if (!bounds) return
+    const amount = delta(bounds[0], bounds[1])
+    if (amount == null) return
+    const join = indentRigidlyUndoBuffer === buffer && lastCommandName != null && INDENT_RIGIDLY_COMMANDS.has(lastCommandName)
+    const changed = indentRigidly(buffer, bounds[0], bounds[1], amount, join)
+    indentRigidlyUndoBuffer = changed || join ? buffer : null
+    // Keep the region active while the transient map is still up.
+    if (editor.overridingMap === indentRigidlyMap) buffer.markActive = true
+  }
+
+  editor.command("indent-rigidly", ({ editor, buffer, prefixArgument }) => {
+    const bounds = regionBounds(buffer, editor)
+    if (!bounds) return
+    if (prefixArgument != null) {
+      indentRigidly(buffer, bounds[0], bounds[1], prefixArgument, false)
+      return
+    }
+    editor.overridingMap = indentRigidlyMap
+    editor.overridingMapExit = () => editor.currentBuffer.deactivateMark()
+    editor.message("Type TAB, <left>, <right>, S-<left>, S-<right> to indent region interactively")
+  }, "Indent all lines starting in the region; with no prefix arg, adjust interactively.")
+
+  editor.command("indent-rigidly-left", ({ editor, buffer }) => {
+    indentRigidlyStep(buffer, editor, () => -1)
+  }, "Indent all lines between BEG and END leftward by one space.")
+  editor.command("indent-rigidly-right", ({ editor, buffer }) => {
+    indentRigidlyStep(buffer, editor, () => 1)
+  }, "Indent all lines between BEG and END rightward by one space.")
+  editor.command("indent-rigidly-left-to-tab-stop", ({ editor, buffer }) => {
+    indentRigidlyStep(buffer, editor, (start, end) => {
+      const current = minIndentation(buffer, start, end)
+      return current == null ? null : previousTabStop(current) - current
+    })
+  }, "Indent all lines between BEG and END leftward to a tab stop.")
+  editor.command("indent-rigidly-right-to-tab-stop", ({ editor, buffer }) => {
+    indentRigidlyStep(buffer, editor, (start, end) => {
+      const current = minIndentation(buffer, start, end)
+      return current == null ? null : nextTabStop(current) - current
+    })
+  }, "Indent all lines between BEG and END rightward to a tab stop.")
 
   editor.command("undo", ({ buffer, prefixArgument }) => {
     for (let i = 0; i < (prefixArgument ?? 1); i++) buffer.undo()
@@ -1086,6 +1152,7 @@ export function install(editor: Editor, ctx?: PluginContext): void {
   editor.key("C-j", "newline-and-indent")
   editor.key("tab", "indent-for-tab-command")
   editor.key("C-i", "indent-for-tab-command")
+  editor.key("C-x tab", "indent-rigidly")
   editor.key("C-o", "open-line")
   editor.key("C-t", "transpose-chars")
   editor.key("C-q", "quoted-insert")
@@ -1456,4 +1523,67 @@ function moveByWord(buffer: CommandContext["buffer"], dir: 1 | -1): boolean {
 
 function capitalizeWords(text: string): string {
   return text.replace(/[\p{L}\p{M}\p{N}_]+/gu, w => w[0]!.toUpperCase() + w.slice(1).toLowerCase())
+}
+
+/** Column width of a run of leading spaces and tabs. */
+function indentWidth(ws: string): number {
+  let col = 0
+  for (const ch of ws) col = ch === "\t" ? (Math.floor(col / TAB_WIDTH) + 1) * TAB_WIDTH : col + 1
+  return col
+}
+
+/** indent.el `indent-rigidly` body: shift every line that starts in [start, end) by
+ *  `amount` columns. Blank lines lose their whitespace. All edits form one undo
+ *  step; with `joinPrevious` they also join the previous undo step. Returns true
+ *  when the text changed. Indentation is written with spaces. */
+export function indentRigidly(buffer: BufferModel, start: number, end: number, amount: number, joinPrevious: boolean): boolean {
+  const text = buffer.text
+  const edits: Array<{ from: number; to: number; repl: string }> = []
+  // Emacs `(or (bolp) (forward-line 1))`: a line that starts before START is skipped.
+  const firstNl = start === 0 || text[start - 1] === "\n" ? start - 1 : text.indexOf("\n", start)
+  let lineStart = firstNl === -1 && start !== 0 ? end : firstNl + 1
+  while (lineStart < end) {
+    const nl = text.indexOf("\n", lineStart)
+    const lineEnd = nl === -1 ? text.length : nl
+    const ws = /^[ \t]*/.exec(text.slice(lineStart, lineEnd))![0]
+    const blank = lineStart + ws.length === lineEnd
+    const repl = blank ? "" : " ".repeat(Math.max(0, indentWidth(ws) + amount))
+    if (repl !== ws) edits.push({ from: lineStart, to: lineStart + ws.length, repl })
+    if (nl === -1) break
+    lineStart = nl + 1
+  }
+  // Bottom-up so earlier offsets stay valid.
+  edits.reverse().forEach(({ from, to, repl }, i) => {
+    buffer.splice(from, to, repl)
+    if (i > 0 || joinPrevious) buffer.amalgamateUndo()
+  })
+  return edits.length > 0
+}
+
+/** indent.el `indent-rigidly--current-indentation`: smallest indentation of the
+ *  non-blank lines in [start, end], or null when every line is blank. */
+function minIndentation(buffer: BufferModel, start: number, end: number): number | null {
+  const text = buffer.text
+  let lineStart = start === 0 ? 0 : text.lastIndexOf("\n", start - 1) + 1
+  let min: number | null = null
+  while (lineStart <= end) {
+    const nl = text.indexOf("\n", lineStart)
+    const line = text.slice(lineStart, nl === -1 ? text.length : nl)
+    const ws = /^[ \t]*/.exec(line)![0]
+    if (ws.length < line.length && lineStart + ws.length < end) min = Math.min(min ?? Infinity, indentWidth(ws))
+    if (nl === -1) break
+    lineStart = nl + 1
+  }
+  return min
+}
+
+/** indent.el `indent-next-tab-stop` with `tab-stop-list` nil. */
+function nextTabStop(column: number): number {
+  return (Math.floor(column / TAB_WIDTH) + 1) * TAB_WIDTH
+}
+
+/** Emacs returns -tab-width at column 0, so S-<left> still strips up to one
+ *  tab stop from lines indented past the minimum. */
+function previousTabStop(column: number): number {
+  return column <= 0 ? -TAB_WIDTH : Math.floor((column - 1) / TAB_WIDTH) * TAB_WIDTH
 }

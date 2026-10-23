@@ -22,6 +22,8 @@ export type ThemedChunk = {
   underlineColor?: string
   /** Emacs `:box`, drawn inside the glyphs so it never changes their width. DOM hosts only. */
   box?: { color?: string; width: number }
+  /** Emacs `:extend`: the background fills the rest of the row after the text. */
+  extend?: boolean
   /** Right-margin note cell (see `right-margin.ts`); DOM hosts pin it to the
    *  row's right edge instead of flowing it after the text. */
   margin?: boolean
@@ -40,6 +42,7 @@ export function sameChunkStyle(a: Omit<ThemedChunk, "text">, b: Omit<ThemedChunk
     && a.strikeThrough === b.strikeThrough && a.overline === b.overline
     && a.underlineStyle === b.underlineStyle && a.underlineColor === b.underlineColor
     && a.box?.color === b.box?.color && a.box?.width === b.box?.width
+    && a.extend === b.extend
     && a.margin === b.margin && a.marginPad === b.marginPad
     && a.marginNote === b.marginNote && a.marginAction === b.marginAction
 }
@@ -75,6 +78,7 @@ export function styleToChunk(style?: FaceStyle): Omit<ThemedChunk, "text"> {
       ? { underlineStyle: style.underlineSpec.style } : {}),
     ...(style.underline && style.underlineSpec?.color && style.underlineSpec.color !== "foreground-color"
       ? { underlineColor: style.underlineSpec.color } : {}),
+    ...(style.extend && style.bg ? { extend: true } : {}),
     ...(style.box ? { box: { width: Math.max(1, Math.abs(style.box.width?.[0] ?? 1)), ...(style.box.color ? { color: style.box.color } : {}) } } : {}),
   }
 }
@@ -162,4 +166,62 @@ export function extractCursorMarker(
     if (text.length) chunks.push({ ...chunk, text })
   }
   return cursor ? { text: { chunks }, cursor } : null
+}
+
+/**
+ * The background that fills each row after its text, per Emacs `:extend`.
+ *
+ * Emacs takes it from the face on the newline that ends the row. A row whose
+ * newline has no extending face (a wrapped row, the last line) falls back to
+ * its last character. Entry I is the fill for row I, or undefined.
+ */
+export function rowExtendFills(body: ThemedText): Array<string | undefined> {
+  const fills: Array<string | undefined> = []
+  let last: ThemedChunk | undefined
+  for (const chunk of body.chunks) {
+    const parts = chunk.text.split("\n")
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        const eol = chunk.extend && chunk.bg ? chunk : last?.extend && last.bg ? last : undefined
+        fills.push(eol?.bg)
+        last = undefined
+      }
+      if (parts[i]) last = chunk
+    }
+  }
+  fills.push(last?.extend && last.bg ? last.bg : undefined)
+  return fills
+}
+
+/**
+ * Emacs `:extend` on a character grid: pad each row with spaces in its fill
+ * background up to WIDTH cells. DOM hosts paint the row element instead.
+ */
+export function extendRowBackgrounds(body: ThemedText, width: number): ThemedText {
+  if (!body.chunks.some(chunk => chunk.extend)) return body
+  const fills = rowExtendFills(body)
+  const out: ThemedChunk[] = []
+  let row = 0
+  let used = 0
+  const pad = (): void => {
+    const bg = fills[row]
+    if (bg && used < width) out.push({ text: " ".repeat(width - used), bg })
+  }
+  for (const chunk of body.chunks) {
+    const parts = chunk.text.split("\n")
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        pad()
+        out.push({ ...chunk, text: "\n" })
+        row++
+        used = 0
+      }
+      const part = parts[i]!
+      if (!part) continue
+      out.push({ ...chunk, text: part })
+      for (const _ of part) used++
+    }
+  }
+  pad()
+  return { chunks: out }
 }

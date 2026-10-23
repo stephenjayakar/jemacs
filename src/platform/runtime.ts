@@ -144,8 +144,14 @@ function nodeReadableToWeb(stream: Readable): ReadableStream<Uint8Array> {
   })
 }
 
-function mergedEnv(extra?: Record<string, string>): Record<string, string> | undefined {
-  if (!extra) return undefined
+/**
+ * The child's environment: `process.env` as it is now, plus EXTRA.
+ *
+ * Always explicit: `Bun.spawn` with no `env` passes the environment Bun started
+ * with and ignores later `process.env` writes, so a variable a plugin set at
+ * load time (say, a default `LANG`) never reached the subprocess in the terminal.
+ */
+function mergedEnv(extra?: Record<string, string>): Record<string, string> {
   const base: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value != null) base[key] = value
@@ -373,6 +379,26 @@ export function whichExecutable(name: string): string | null {
 
 export async function fileExists(path: string): Promise<boolean> {
   return (override?.fileExists ?? nodeRuntime.fileExists)(path)
+}
+
+/**
+ * True when the OS refuses access to PATH (EACCES/EPERM). `stat`, `readdir`
+ * and `fileExists` fold that into "missing", so an unreadable directory (a
+ * network mount whose credentials expired) looked empty or new. With DIRECTORY, also
+ * require read and search access, as listing it does. Hosts with a runtime
+ * override answer false: they report their own errors.
+ */
+export async function accessDenied(path: string, directory = false): Promise<boolean> {
+  if (override) return false
+  try {
+    // A file handed to `dired` lists its directory; only a real directory needs R and X.
+    const listable = directory && (await nodeStat(path)).isDirectory()
+    await access(path, listable ? constants.R_OK | constants.X_OK : constants.F_OK)
+    return false
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    return code === "EACCES" || code === "EPERM"
+  }
 }
 
 export async function readFileText(path: string): Promise<string> {

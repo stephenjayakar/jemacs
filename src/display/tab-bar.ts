@@ -41,11 +41,21 @@ export type TabBarHit =
   | { kind: "close"; index: number }
   | { kind: "new" }
 
+/**
+ * One element of the bar, for hosts that draw real tabs (the GUI) instead of
+ * the text row. Each carries the column of its text segment, so a click on a
+ * drawn tab goes through the same `tabBarHitTest` as a click on the text.
+ */
+export type TabBarItem =
+  | { kind: "tab"; index: number; name: string; selected: boolean; col: number; closeCol?: number }
+  | { kind: "new"; col: number }
+
 export type TabBarLayout = {
   text: string
   spans: TextSpan[]
   /** `hits[col]` is the element under that column, or null for a separator. */
   hits: Array<TabBarHit | null>
+  items: TabBarItem[]
 }
 
 /**
@@ -65,6 +75,7 @@ export function tabBarLayout(editor: Editor, frame: FrameRecord = editor.selecte
   let text = ""
   const spans: TextSpan[] = []
   const hits: Array<TabBarHit | null> = []
+  const items: TabBarItem[] = []
   const push = (chunk: string, hit: TabBarHit | null) => {
     text += chunk
     for (let i = 0; i < chunk.length; i++) hits.push(hit)
@@ -74,22 +85,28 @@ export function tabBarLayout(editor: Editor, frame: FrameRecord = editor.selecte
     const isSelected = index === frame.selectedTab
     push(separator, null)
     const start = text.length
-    push(`${hints ? `${index + 1} ` : ""}${editor.tabName(tab)}`, { kind: "select", index })
+    const name = editor.tabName(tab)
+    push(`${hints ? `${index + 1} ` : ""}${name}`, { kind: "select", index })
     // `tab-bar-tab-name-format-close-button`: `selected` / `non-selected` name
     // the tabs that must *not* carry the button.
     const showClose = closeShow === true
       || (closeShow === "selected" && isSelected)
       || (closeShow === "non-selected" && !isSelected)
+    const closeCol = showClose ? text.length : undefined
     if (showClose) push(closeButton, { kind: "close", index })
     spans.push({ start, end: text.length, face: isSelected ? "tab-bar-tab" : "tab-bar-tab-inactive" })
+    items.push({ kind: "tab", index, name: hints ? `${index + 1} ${name}` : name, selected: isSelected, col: start, closeCol })
   })
 
   push(separator, null)
-  if (getCustom<boolean>("tab-bar-new-button-show") !== false) push(newButton, { kind: "new" })
+  if (getCustom<boolean>("tab-bar-new-button-show") !== false) {
+    items.push({ kind: "new", col: text.length })
+    push(newButton, { kind: "new" })
+  }
   // Emacs draws the whole row on the `tab-bar' face and layers the per-tab
   // faces over it, so separators and the "+" button share the bar's
   // background. `applyTheme` merges a fully-covering span underneath.
-  return { text, spans: [{ start: 0, end: text.length, face: "tab-bar" }, ...spans], hits }
+  return { text, spans: [{ start: 0, end: text.length, face: "tab-bar" }, ...spans], hits, items }
 }
 
 /** Which tab-bar element sits at column `col`? */

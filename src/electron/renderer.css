@@ -33,6 +33,21 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 /* Tab bar: one row of frame chrome between the title and the window stack.
  * `pre` keeps the separator/padding spacing the model already computed. */
 #jemacs-tab-bar { padding: 2px 8px; border-bottom: 1px solid #252526; flex-shrink: 0; white-space: pre; overflow: hidden; cursor: default; }
+/* Drawn tabs (`tabBarTabs`): browser-style chrome. The selected tab is the
+ * buffer background, lifted a little so it reads on any theme; colours come from the theme
+ * faces through the --jemacs-tab-* variables `applyThemeSurfaces` sets. */
+#jemacs-tab-bar.jemacs-tab-bar-tabs { display: flex; align-items: flex-end; gap: 2px; padding: 4px 6px 0; height: 34px; font-family: var(--jemacs-sans); font-size: 12px; user-select: none; }
+.jemacs-tab { position: relative; display: flex; align-items: center; gap: 6px; flex: 0 1 180px; min-width: 64px; height: 30px; padding: 0 8px 0 12px; border-radius: 7px 7px 0 0; color: var(--jemacs-tab-inactive-fg, #9d9d9d); transition: background-color 120ms, color 120ms; }
+.jemacs-tab:hover { background: rgba(127,127,127,.12); color: var(--jemacs-tab-fg, #d4d4d4); }
+.jemacs-tab.selected { background: color-mix(in srgb, var(--jemacs-tab-bg, #1e1e1e), #fff 8%); color: var(--jemacs-tab-fg, #d4d4d4); box-shadow: inset 0 2px 0 var(--jemacs-tab-accent, #264f78); }
+/* A thin divider between two unselected tabs, hidden next to the selected or hovered one. */
+.jemacs-tab:not(.selected):not(:hover) + .jemacs-tab:not(.selected):not(:hover)::before { content: ""; position: absolute; left: -2px; top: 8px; bottom: 8px; width: 1px; background: rgba(127,127,127,.3); }
+.jemacs-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jemacs-tab-close { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; font-size: 14px; line-height: 1; opacity: 0; }
+.jemacs-tab.selected .jemacs-tab-close, .jemacs-tab:hover .jemacs-tab-close { opacity: .7; }
+.jemacs-tab-close:hover { opacity: 1 !important; background: rgba(127,127,127,.25); }
+.jemacs-tab-new { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; margin: 0 0 2px 4px; border-radius: 6px; font-size: 16px; color: var(--jemacs-tab-inactive-fg, #9d9d9d); }
+.jemacs-tab-new:hover { background: rgba(127,127,127,.18); color: var(--jemacs-tab-fg, #d4d4d4); }
 #jemacs-windows { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #jemacs-minibuffer-completions, #jemacs-minibuffer, #jemacs-echo { padding: 2px 8px; border-top: 1px solid #252526; flex-shrink: 0; white-space: pre; }
 #jemacs-minibuffer-completions { max-height: 40vh; overflow: hidden; }

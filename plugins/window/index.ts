@@ -1,4 +1,5 @@
 import type { Editor } from "../../src/kernel/editor"
+import type { WindowNode } from "../../src/kernel/window"
 import { createPluginContext, type PluginContext } from "../../src/runtime/plugin-context"
 import { removeAdvice } from "../../src/runtime/advice"
 
@@ -30,7 +31,35 @@ function splitWindow(editor: Editor, direction: string | undefined): void {
   }
 }
 
+/** Share of its immediate parent split that leaf `id` holds, or null if it is the only window. */
+function leafShare(node: WindowNode, id: string): number | null {
+  if (node.kind === "leaf") return null
+  const first = node.firstRatio ?? 0.5
+  if (node.first.kind === "leaf" && node.first.id === id) return first
+  if (node.second.kind === "leaf" && node.second.id === id) return 1 - first
+  return leafShare(node.first, id) ?? leafShare(node.second, id)
+}
+
+// Same step and command names as jwm's ⌘D . / ⌘D ,: grow or shrink the selected window
+// by 5% of its parent split. The kernel clamps the share to 10%..90%.
+function resizeSelectedWindow(editor: Editor, delta: number): void {
+  const id = editor.selectedWindowId
+  const share = leafShare(editor.windowLayout, id)
+  if (share === null) {
+    editor.message("Only one window")
+    return
+  }
+  editor.setWindowSplitRatio(id, share + delta)
+}
+
 export function install(editor: Editor, ctx: PluginContext = createPluginContext(editor)): void {
+  ctx.command("enlarge-window", ({ editor }) => resizeSelectedWindow(editor, 0.05),
+    "Grow the selected window by 5% of its parent split.")
+  ctx.command("shrink-window", ({ editor }) => resizeSelectedWindow(editor, -0.05),
+    "Shrink the selected window by 5% of its parent split.")
+  ctx.key("global-map", "C-x .", "enlarge-window")
+  ctx.key("global-map", "C-x ,", "shrink-window")
+
   editor.command("balance-windows", ({ editor }) => {
     editor.balanceWindows()
     editor.message("Balanced windows")
