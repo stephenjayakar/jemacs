@@ -218,7 +218,7 @@ async function sendCurrent(editor: Editor, buffer: BufferModel, deps: Restclient
   let response = [...editor.buffers.values()].find(b => b.name === "*HTTP Response*")
   if (response) {
     response.readOnly = false
-    response.setText(text, false)
+    response.setText(text, false, false)
     editor.enterMode(response, "text")
   } else {
     response = editor.addBuffer(new BufferModel({ name: "*HTTP Response*", text, kind: "scratch", mode: "text" }))

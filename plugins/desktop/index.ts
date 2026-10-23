@@ -46,10 +46,22 @@ defcustom("desktop-save-mode", "boolean", false,
   "When non-nil, restore the saved Jemacs desktop at startup and save it on exit.", "convenience")
 defcustom("desktop-save-file", "string", join(homedir(), ".jemacs", "desktop.json"),
   "File where desktop-save-mode persists the session.", "convenience")
+defcustom("desktop-restore-eager",
+  { kind: "choice", options: [{ const: true, tag: "All" }, { type: "natnum", tag: "Number" }] }, true,
+  "Number of buffers to restore immediately; the rest restore lazily after startup.\n"
+  + "t restores all buffers at once. Buffers shown in the saved window layout always\n"
+  + "restore immediately, because the layout needs them.", "convenience")
+defcustom("desktop-lazy-idle-delay", "number", 5,
+  "Seconds to wait after a desktop read before lazy buffer restoration starts.", "convenience")
+
+const restoredPaths = new WeakMap<Editor, Set<string>>()
+/** `desktop-buffer-args-list`: entries still waiting for lazy restoration. */
+const pendingEntries = new WeakMap<Editor, DesktopFileEntry[]>()
+/** Each read gets a fresh token; a lazy loop whose token is stale stops. */
+const lazyTokens = new WeakMap<Editor, object>()
 defcustom("desktop-auto-save-timeout", "integer", 30,
   "Seconds between automatic desktop saves while desktop-save-mode is on; 0 disables.", "convenience")
 
-const restoredPaths = new WeakMap<Editor, Set<string>>()
 const lastSaved = new WeakMap<Editor, string>()
 // Editors whose after-init-hook has run. Auto-saving before then could replace
 // the saved desktop with the bare startup layout before it is restored.
@@ -59,8 +71,10 @@ export function desktopSaveFile(): string {
   return getCustom<string>("desktop-save-file") ?? join(homedir(), ".jemacs", "desktop.json")
 }
 
+/** Most recently selected first, like the `buffer-list` order Emacs saves, so
+ *  `desktop-restore-eager` keeps the buffers that were in use. */
 function visitedFileBuffers(editor: Editor): BufferModel[] {
-  return [...editor.buffers.values()].filter(buffer => buffer.kind === "file" && !!buffer.path)
+  return editor.bufferCycleOrder().filter(buffer => buffer.kind === "file" && !!buffer.path)
 }
 
 function bufferPath(editor: Editor, bufferId: string): string | undefined {
@@ -238,6 +252,12 @@ function restoreWindowLayout(
 export async function desktopSave(editor: Editor, options: { onlyIfChanged?: boolean } = {}): Promise<void> {
   const config = editor.currentWindowConfiguration()
   const files = visitedFileBuffers(editor).flatMap(buffer => entryForBuffer(buffer) ?? [])
+  // Emacs keeps `desktop-buffer-args-list` in the saved desktop, so a save that
+  // runs before lazy restoration is done does not drop the pending buffers.
+  const saved = new Set(files.map(file => file.path))
+  for (const entry of pendingEntries.get(editor) ?? []) {
+    if (!saved.has(entry.path)) files.push(entry)
+  }
   const currentPath = bufferPath(editor, config.currentBufferId)
   const manifest: DesktopManifest = {
     version: 1,
@@ -253,31 +273,111 @@ export async function desktopSave(editor: Editor, options: { onlyIfChanged?: boo
   lastSaved.set(editor, `${file}\0${text}`)
 }
 
+function layoutPaths(node: SerializedDesktopWindow | undefined, out = new Set<string>()): Set<string> {
+  if (!node) return out
+  if (node.kind === "leaf") {
+    if (node.path) out.add(node.path)
+  } else {
+    layoutPaths(node.first, out)
+    layoutPaths(node.second, out)
+  }
+  return out
+}
+
+async function restoreEntry(editor: Editor, entry: DesktopFileEntry, select: boolean): Promise<BufferModel | null> {
+  try {
+    if (!await fileExists(entry.path)) return null
+    const buffer = await editor.openFile(entry.path, { select })
+    if (buffer.kind !== "file") return null
+    buffer.point = clampPoint(buffer, entry.point)
+    if (entry.mode && buffer.mode !== entry.mode) editor.enterMode(buffer, entry.mode)
+    return buffer
+  } catch {
+    // A desktop should be best-effort: stale entries must not block startup.
+    return null
+  }
+}
+
+/** Split entries like Emacs `desktop-restore-eager`: the first N, plus every buffer
+ *  the saved layout shows, restore now; the rest go to the lazy list. */
+function partitionEntries(manifest: DesktopManifest): { eager: DesktopFileEntry[]; lazy: DesktopFileEntry[] } {
+  const limit = getCustom<boolean | number>("desktop-restore-eager")
+  if (limit === true || typeof limit !== "number") return { eager: manifest.files, lazy: [] }
+  const visible = layoutPaths(manifest.layout)
+  if (manifest.currentBuffer) visible.add(manifest.currentBuffer)
+  const eager: DesktopFileEntry[] = []
+  const lazy: DesktopFileEntry[] = []
+  for (const [i, entry] of manifest.files.entries()) {
+    if (i < limit || visible.has(entry.path)) eager.push(entry)
+    else lazy.push(entry)
+  }
+  return { eager, lazy }
+}
+
+/** `desktop-idle-create-buffers`: restore one pending buffer per tick, without
+ *  selecting it, so input and redisplay run between files. */
+async function restoreLazily(editor: Editor, token: object): Promise<void> {
+  const delay = getCustom<number>("desktop-lazy-idle-delay") ?? 5
+  await new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, Math.max(0, delay) * 1000)
+    // Pending restoration must not keep a headless process (tests, --serve-stdio) alive.
+    ;(timer as { unref?: () => void }).unref?.()
+  })
+  let restored = 0
+  for (;;) {
+    if (lazyTokens.get(editor) !== token || !editor.running) return
+    const entry = pendingEntries.get(editor)?.shift()
+    if (!entry) break
+    if (await restoreEntry(editor, entry, false)) {
+      restoredPaths.get(editor)?.add(entry.path)
+      restored++
+    }
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  pendingEntries.delete(editor)
+  if (restored) editor.message(`Desktop: ${restored} lazily restored buffer${restored === 1 ? "" : "s"}`)
+}
+
+/** Buffers still waiting for lazy restoration. */
+export function desktopPendingCount(editor: Editor): number {
+  return pendingEntries.get(editor)?.length ?? 0
+}
+
 export async function desktopRead(editor: Editor): Promise<number> {
   const manifest = await readDesktopManifest()
   if (!manifest) return 0
 
+  const token = {}
+  lazyTokens.set(editor, token)
+  const { eager, lazy } = partitionEntries(manifest)
   const buffersByPath = new Map<string, BufferModel>()
-  for (const entry of manifest.files) {
-    try {
-      if (!await fileExists(entry.path)) continue
-      const buffer = await editor.openFile(entry.path)
-      if (buffer.kind !== "file") continue
-      buffer.point = clampPoint(buffer, entry.point)
-      if (entry.mode && buffer.mode !== entry.mode) editor.enterMode(buffer, entry.mode)
-      buffersByPath.set(entry.path, buffer)
-    } catch {
-      // A desktop should be best-effort: stale entries must not block startup.
-    }
+  // Oldest first, so each visit pushes the next more recent buffer to the front
+  // and the restored recency order matches the saved one.
+  for (const entry of [...eager].reverse()) {
+    const buffer = await restoreEntry(editor, entry, true)
+    if (buffer) buffersByPath.set(entry.path, buffer)
   }
 
+  restoredPaths.set(editor, new Set(buffersByPath.keys()))
+  if (lazy.length) {
+    pendingEntries.set(editor, lazy)
+    void restoreLazily(editor, token)
+  } else {
+    pendingEntries.delete(editor)
+  }
   if (!buffersByPath.size) return 0
   restoreWindowLayout(editor, manifest, buffersByPath)
-  restoredPaths.set(editor, new Set(buffersByPath.keys()))
   return buffersByPath.size
 }
 
+/** Stop lazy restoration and drop its pending list. */
+function cancelLazyRestore(editor: Editor): void {
+  lazyTokens.delete(editor)
+  pendingEntries.delete(editor)
+}
+
 export async function desktopClear(editor: Editor): Promise<number> {
+  cancelLazyRestore(editor)
   let paths = restoredPaths.get(editor)
   if (!paths?.size) {
     const manifest = await readDesktopManifest()
@@ -309,6 +409,8 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
     onEnable: () => setCustom("desktop-save-mode", true),
     onDisable: () => setCustom("desktop-save-mode", false),
   })
+  // A reload must stop the old module's lazy loop; the new install starts its own.
+  ctx.onDispose(() => cancelLazyRestore(editor))
 
   // Hooks are process-global; only act for the editor this install belongs to.
   ctx.hook("kill-emacs-hook", async ({ editor: ed }) => {
@@ -351,7 +453,9 @@ export async function install(editor: Editor, ctx: PluginContext = createPluginC
 
   ctx.command("desktop-read", async ({ editor }) => {
     const n = await desktopRead(editor)
-    editor.message(n ? `Restored ${n} desktop buffer${n === 1 ? "" : "s"}` : "No desktop buffers restored")
+    const pending = desktopPendingCount(editor)
+    const lazy = pending ? `; ${pending} lazy` : ""
+    editor.message(n ? `Restored ${n} desktop buffer${n === 1 ? "" : "s"}${lazy}` : "No desktop buffers restored")
   }, "Read and restore the saved Jemacs desktop.")
 
   ctx.command("desktop-clear", async ({ editor }) => {

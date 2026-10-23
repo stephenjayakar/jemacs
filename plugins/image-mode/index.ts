@@ -92,7 +92,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
     if (options.literally || isRemoteName(path) || !isImagePath(path)) {
       return previousOpenFile(path, options)
     }
-    return openImageFile(editor, path)
+    return openImageFile(editor, path, options.select)
   }
 
   ctx.onDispose(() => {
@@ -117,7 +117,7 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
 }
 
 /** Visit `path` as a picture, without reading its bytes into the buffer. */
-async function openImageFile(editor: Editor, input: string): Promise<BufferModel> {
+async function openImageFile(editor: Editor, input: string, select?: boolean): Promise<BufferModel> {
   // `visitPath` matches buffers by exact path, so resolve first, as `openFile` does.
   const path = resolve(input)
   const buffer = await editor.visitPath(path, async full => {
@@ -125,7 +125,7 @@ async function openImageFile(editor: Editor, input: string): Promise<BufferModel
     const created = new BufferModel({ name, path: full, text: "", kind: "file", mode: "image-mode" })
     created.readOnly = true
     return created
-  }, "image-mode", { skipLsp: true })
+  }, "image-mode", { skipLsp: true, select })
   await enterImageMode(editor, buffer, path)
   editor.message(`Opened ${path}`)
   return buffer
@@ -142,7 +142,7 @@ async function enterImageMode(editor: Editor, buffer: BufferModel, path: string)
   buffer.locals.set(REVERT_BUFFER_FUNCTION_KEY, "image-revert")
   // `markDirty: false` keeps this a programmatic write, so `assertWritable` allows it on
   // a read-only buffer and the buffer never looks modified.
-  buffer.setText(imageBufferText(path, size), false)
+  buffer.setText(imageBufferText(path, size), false, false)
   buffer.readOnly = true
   buffer.dirty = false
   editor.enterMode(buffer, "image-mode")

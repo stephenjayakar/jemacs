@@ -13,7 +13,7 @@ import { FACE_REMAP_KEY } from "./face-resolve"
 import type { ThemedText } from "./themed-text"
 import { TERMINAL_SURFACE_LOCAL, type TerminalSurfaceModel } from "./terminal-surface"
 import { applyRestrictionDisplayFilter, type DisplayFilterResult } from "./display-wrap"
-import { tabBarLayout, tabBarVisible } from "./tab-bar"
+import { tabBarLayout, tabBarVisible, type TabBarItem } from "./tab-bar"
 import { logicalRightMargin, type LogicalRightMargin } from "./right-margin"
 
 /** Plugin-contributed modeline segments (Emacs `mode-line-misc-info`). Each fn
@@ -112,7 +112,7 @@ export type LogicalMinibuffer = {
 export type LogicalModel = {
   windows: LogicalWindowNode
   /** Tab-bar row, drawn above the window stack. Absent when the bar is hidden. */
-  tabBar?: { text: string; spans: TextSpan[] } | null
+  tabBar?: { text: string; spans: TextSpan[]; items: TabBarItem[] } | null
   childFrames: LogicalChildFrame[]
   selectedWindowId: string
   minibuffer: LogicalMinibuffer | null
@@ -180,7 +180,7 @@ export function buildLogicalModel(editor: Editor, options: BuildLogicalOptions =
 
   return {
     windows,
-    tabBar: tabBar ? { text: tabBar.text, spans: tabBar.spans } : undefined,
+    tabBar: tabBar ? { text: tabBar.text, spans: tabBar.spans, items: tabBar.items } : undefined,
     childFrames,
     selectedWindowId,
     minibuffer,

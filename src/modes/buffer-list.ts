@@ -208,7 +208,7 @@ export function renderBufferList(editor: Editor, buffer: BufferModel, options: {
       return `${current}${mark}${readOnly}${dirty} ${editor.bufferDisplayName(b).padEnd(NAME_WIDTH)} ${b.mode}${path}`
     })
   bufferListIds.set(buffer, ids)
-  buffer.setText(lines.join("\n"), false)
+  buffer.setText(lines.join("\n"), false, false)
 }
 
 export function bufferListEntryAtPoint(buffer: BufferModel): string | undefined {

@@ -1,6 +1,7 @@
 import type { RowDecorationModel, ChildFrameModel, DisplayModel, TableSurfaceModel, WebSurfaceModel, WindowDisplayNode } from "./protocol"
 import type { TerminalSurfaceModel } from "./terminal-surface"
 import type { ThemedChunk, ThemedText } from "./themed-text"
+import type { TabBarItem } from "./tab-bar"
 
 export type SerializedThemedText = {
   chunks: Array<ThemedChunk>
@@ -8,6 +9,7 @@ export type SerializedThemedText = {
 export type SerializedDisplayModel = {
   title: SerializedThemedText
   tabBar?: SerializedThemedText
+  tabBarTabs?: TabBarItem[]
   windows: SerializedWindowNode
   childFrames: SerializedChildFrame[]
   minibufferCompletions: SerializedThemedText
@@ -71,6 +73,7 @@ export function serializeDisplayModel(model: DisplayModel): SerializedDisplayMod
   return {
     title: serializeThemedText(model.title),
     tabBar: model.tabBar ? serializeThemedText(model.tabBar) : undefined,
+    tabBarTabs: model.tabBarTabs?.map(item => ({ ...item })),
     windows: serializeWindowNode(model.windows),
     childFrames: model.childFrames.map(serializeChildFrame),
     minibufferCompletions: serializeThemedText(model.minibufferCompletions),

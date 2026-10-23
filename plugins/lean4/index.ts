@@ -96,7 +96,7 @@ function showInfoBuffer(editor: Editor, text: string): BufferModel {
     editor.addBuffer(info)
   } else {
     info.readOnly = false
-    info.setText(text, false)
+    info.setText(text, false, false)
   }
   info.point = 0
   info.readOnly = true

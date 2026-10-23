@@ -233,9 +233,9 @@ export function install(editor: Editor, ctx: PluginContext = createPluginContext
   const previousOpenDirectory = editor.openDirectory.bind(editor)
   const previousAutoSavePath = editor.autoSavePath.bind(editor)
 
-  editor.openFile = async (path: string) => {
+  editor.openFile = async (path: string, options = {}) => {
     const file = parseTrampFileName(path)
-    if (!file) return previousOpenFile(path)
+    if (!file) return previousOpenFile(path, options)
     return openTrampFile(editor, transportFor(file, transport, sudoTransport), file)
   }
 

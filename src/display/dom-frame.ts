@@ -4,6 +4,7 @@ import type { TerminalCell, TerminalSurfaceModel } from "./terminal-surface"
 import type { CanvasSurfaceModel, WebNodeModel } from "../kernel/extension-points"
 
 import { cssFontWeight } from "./font-metrics"
+import { rowExtendFills } from "./themed-text"
 import type { RowDecorationModel } from "./protocol"
 export type SerializedChunk = SerializedThemedText["chunks"][number]
 
@@ -156,6 +157,8 @@ export function renderBodyRows(
     if (isBodyRow(child)) existing.push(child)
   }
 
+  const fills = model.chunks.some(chunk => chunk.extend) ? rowExtendFills(model) : undefined
+
   // A margin note's line is pinned out of flow, so its row must be at least
   // one note line tall: a blank row is sized by the (smaller) body font, and
   // the next row's note would otherwise overlap this one's.
@@ -173,7 +176,7 @@ export function renderBodyRows(
     const parts = lines[i]!
     const decoration = options.decorations?.[i] ?? null
     const minHeight = noteRowPx(parts)
-    const signature = rowSignature(parts, options) + decorationSignature(decoration) + (minHeight ? `\u0002${minHeight}` : "")
+    const signature = rowSignature(parts, options) + decorationSignature(decoration) + (minHeight ? `\u0002${minHeight}` : "") + (fills?.[i] ?? "")
     const reusable = existing[i]
     if (reusable && rowSignatures.get(reusable) === signature) {
       rows.push(reusable)
@@ -182,6 +185,8 @@ export function renderBodyRows(
     const row = reusable ?? document.createElement("div")
     if (!reusable || decoration || row.className !== "body-row") row.className = "body-row"
     applyRowDecoration(row, decoration)
+    // Emacs `:extend`: the row's fill background covers the rest of the row.
+    row.style.backgroundColor = fills?.[i] ?? ""
     // Same element, new content: swap the spans rather than the row itself, so the
     // browser repaints one line instead of the whole body.
     row.replaceChildren()
@@ -1310,8 +1315,12 @@ export function presentDomFrame(
     renderThemedText(targets.title, model.title, { defaultFontPx: defaultPx, defaultFamily })
   }
   if (targets.tabBar) {
-    if (!prev || !sameJson(prev.model.tabBar, model.tabBar)) {
-      renderThemedText(targets.tabBar, model.tabBar ?? { chunks: [] }, { defaultFontPx: defaultPx, defaultFamily })
+    if (!prev || !sameJson(prev.model.tabBar, model.tabBar) || !sameJson(prev.model.tabBarTabs, model.tabBarTabs)) {
+      if (model.tabBar && model.tabBarTabs) renderTabBarTabs(targets.tabBar, model.tabBarTabs)
+      else {
+        targets.tabBar.classList.remove("jemacs-tab-bar-tabs")
+        renderThemedText(targets.tabBar, model.tabBar ?? { chunks: [] }, { defaultFontPx: defaultPx, defaultFamily })
+      }
     }
     targets.tabBar.style.display = model.tabBar ? "" : "none"
     // One listener for the element's lifetime, not one per frame: the bar's
@@ -1362,6 +1371,44 @@ export function presentDomFrame(
   frameMemo.set(targets.windows, { model, shape, panes, childFramesEl })
 }
 
+/**
+ * Draw the bar as real tabs. Each element keeps the column of its segment in
+ * the text bar (`data-col`), so a click still goes through the kernel's
+ * `tabBarHitTest` and the TUI and GUI share one hit map.
+ */
+function renderTabBarTabs(el: HTMLElement, items: SerializedDisplayModel["tabBarTabs"] & {}): void {
+  el.classList.add("jemacs-tab-bar-tabs")
+  el.replaceChildren()
+  for (const item of items) {
+    if (item.kind === "new") {
+      const button = document.createElement("span")
+      button.className = "jemacs-tab-new"
+      button.dataset.col = String(item.col)
+      button.title = "New tab"
+      button.textContent = "+"
+      el.appendChild(button)
+      continue
+    }
+    const tab = document.createElement("span")
+    tab.className = item.selected ? "jemacs-tab selected" : "jemacs-tab"
+    tab.dataset.col = String(item.col)
+    tab.title = item.name
+    const name = document.createElement("span")
+    name.className = "jemacs-tab-name"
+    name.textContent = item.name
+    tab.appendChild(name)
+    if (item.closeCol != null) {
+      const close = document.createElement("span")
+      close.className = "jemacs-tab-close"
+      close.dataset.col = String(item.closeCol)
+      close.title = "Close tab"
+      close.textContent = "\u00d7"
+      tab.appendChild(close)
+    }
+    el.appendChild(tab)
+  }
+}
+
 const tabBarHandlers = new WeakMap<HTMLElement, DomFrameTabBarHandler>()
 
 /** Attach the click listener once, then keep only the current handler live. */
@@ -1375,7 +1422,11 @@ function bindTabBarClicks(el: HTMLElement, onTabBar?: DomFrameTabBarHandler): vo
     const handler = tabBarHandlers.get(el)
     if (!handler) return
     event.preventDefault()
-    handler(tabBarColumnAt(el, event.clientX))
+    // Drawn tabs carry their text column; empty bar space between them is
+    // not a tab action. The text bar falls back to measuring the column.
+    const target = (event.target as Element | null)?.closest?.("[data-col]") as HTMLElement | null | undefined
+    if (target?.dataset.col != null) handler(Number(target.dataset.col))
+    else if (!el.classList.contains("jemacs-tab-bar-tabs")) handler(tabBarColumnAt(el, event.clientX))
   })
 }
 
@@ -1401,7 +1452,23 @@ function applyThemeSurfaces(targets: DomFrameTargets, model: SerializedDisplayMo
   // Default family is applied once at the cascade root; descendants inherit.
   if (defaultFamily) document.body.style.fontFamily = defaultFamily
   applyFace(targets.title, titleFace, defaultFamily)
-  if (targets.tabBar) applyFace(targets.tabBar, model.theme.faces["tab-bar"] ?? defaultFace, defaultFamily)
+  if (targets.tabBar) {
+    const barFace = model.theme.faces["tab-bar"] ?? defaultFace
+    applyFace(targets.tabBar, barFace, defaultFamily)
+    // Drawn tabs read their colours from the theme faces through variables,
+    // so the stylesheet owns the shape and the theme owns the colour.
+    const selected = themeFace(model.theme, "tab-bar-tab")
+    const inactive = themeFace(model.theme, "tab-bar-tab-inactive")
+    const vars: Record<string, string | undefined> = {
+      "--jemacs-tab-bg": defaultFace?.bg,
+      "--jemacs-tab-fg": defaultFace?.fg,
+      "--jemacs-tab-accent": selected?.bg,
+      "--jemacs-tab-inactive-fg": inactive?.fg,
+    }
+    for (const [name, value] of Object.entries(vars)) {
+      if (value) targets.tabBar.style.setProperty?.(name, value)
+    }
+  }
   if (targets.minibufferCompletions) applyFace(targets.minibufferCompletions, minibufferFace, defaultFamily)
   applyFace(targets.minibuffer, minibufferFace, defaultFamily)
   applyFace(targets.echo, minibufferFace, defaultFamily)

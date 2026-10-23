@@ -15,6 +15,11 @@ const rect = (left: number, top: number, width: number, height: number): Rect =>
 
 type Listener = (ev: unknown) => void
 
+class FakeClassList extends Set<string> {
+  remove(c: string) { this.delete(c) }
+  contains(c: string) { return this.has(c) }
+}
+
 class FakeText {
   nodeType = 3
   constructor(public data: string) {}
@@ -24,7 +29,7 @@ class FakeEl {
   nodeType = 1
   children: FakeEl[] = []
   childNodes: Array<FakeEl | FakeText> = []
-  classList = new Set<string>()
+  classList = new FakeClassList()
   dataset: Record<string, string> = {}
   style: Record<string, string> = {}
   _rect: Rect = rect(0, 0, 800, 18)
@@ -32,7 +37,7 @@ class FakeEl {
   isConnected = true
   parentNode: FakeEl | null = null
   constructor(public tagName: string) {}
-  set className(v: string) { this.classList = new Set(v.split(/\s+/).filter(Boolean)) }
+  set className(v: string) { this.classList = new FakeClassList(v.split(/\s+/).filter(Boolean)) }
   get className() { return [...this.classList].join(" ") }
   set textContent(v: string) { this.childNodes = [new FakeText(v)]; this.children = [] }
   get textContent(): string {
@@ -162,4 +167,37 @@ test("the click listener is attached once, not once per frame", async () => {
   t.tabBar._listeners.mousedown![0]!({ button: 0, clientX: 10, clientY: 4, preventDefault() {} })
   // One listener, so one report \u2014 a per-frame listener would fire three times.
   expect(cols).toHaveLength(1)
+})
+
+test("drawn tabs render one element per tab and click by their text column", async () => {
+  installDom()
+  const { presentDomFrame } = await import("../../src/display/dom-frame")
+  const t = targets()
+  const cols: number[] = []
+  const m = model(themed("|a x|bb| + "))
+  m.tabBarTabs = [
+    { kind: "tab", index: 0, name: "a", selected: true, col: 1, closeCol: 2 },
+    { kind: "tab", index: 1, name: "bb", selected: false, col: 5 },
+    { kind: "new", col: 8 },
+  ]
+  presentDomFrame(t as never, m, undefined, undefined, undefined, col => { cols.push(col) })
+  expect(t.tabBar.classList.has("jemacs-tab-bar-tabs")).toBe(true)
+  const [first, second, plus] = t.tabBar.children
+  expect(first!.className).toBe("jemacs-tab selected")
+  expect(second!.className).toBe("jemacs-tab")
+  expect(plus!.className).toBe("jemacs-tab-new")
+
+  const click = (target: FakeEl) => t.tabBar._listeners.mousedown![0]!({
+    button: 0, clientX: 0, clientY: 4, preventDefault() {},
+    target: { closest: () => target },
+  })
+  click(second!)
+  click(first!.children[1]!)
+  click(plus!)
+  expect(cols).toEqual([5, 2, 8])
+
+  // A model without drawn tabs (the TUI shape) goes back to the text row.
+  presentDomFrame(t as never, model(themed("|a x| + ")))
+  expect(t.tabBar.classList.has("jemacs-tab-bar-tabs")).toBe(false)
+  expect(t.tabBar.textContent).toBe("|a x| + ")
 })

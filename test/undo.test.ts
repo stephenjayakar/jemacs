@@ -164,3 +164,47 @@ test("undo in read-only buffer is no-op", () => {
   expect(b.point).toBe(0)
   expect(events).toEqual([])
 })
+
+test("undo-limit drops the oldest history but keeps recent changes", () => {
+  const b = new BufferModel({ name: "x", text: "" })
+  const big = "x".repeat(10000)
+  for (let i = 0; i < 100; i++) b.setText(`${i}${big}`, false)
+  // 100 redraws × ~20 KB each would be ~2 MB without a cap.
+  let depth = 0
+  for (let n = b.undoTreeSnapshot().root; n.children.length; n = n.children[0]!) depth++
+  expect(depth).toBeLessThan(20)
+  expect(depth).toBeGreaterThan(0)
+  b.undo()
+  expect(b.text).toBe(`98${big}`)
+})
+
+test("undo-limit keeps a single change larger than the limit", () => {
+  const b = new BufferModel({ name: "x", text: "" })
+  b.insert("y".repeat(500000))
+  b.undo()
+  expect(b.text).toBe("")
+})
+
+test("undo-outer-limit drops a single change that is too large", () => {
+  const b = new BufferModel({ name: "x", text: "" })
+  b.insert("y".repeat(25000000))
+  b.undo()
+  expect(b.text.length).toBe(25000000)
+})
+
+test("truncation of the saved node keeps the buffer dirty after undo", () => {
+  const b = new BufferModel({ name: "x", text: "" })
+  b.markSaved()
+  for (let i = 0; i < 40; i++) b.setText(`${i}${"z".repeat(10000)}`, true)
+  b.undo()
+  expect(b.dirty).toBe(true)
+})
+
+test("a truncated undo tree round-trips through serialization", () => {
+  const b = new BufferModel({ name: "x", text: "" })
+  for (let i = 0; i < 40; i++) b.setText(`${i}${"z".repeat(10000)}`, true)
+  const restored = new BufferModel({ name: "x", text: b.text })
+  expect(restored.undoTreeRestore(b.undoTreeSerialize())).toBe(true)
+  restored.undo()
+  expect(restored.text.startsWith("38")).toBe(true)
+})

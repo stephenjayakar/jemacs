@@ -10,7 +10,7 @@ import type { ChildFrameModel, DisplayModel, WindowDisplayNode, WindowPaneModel 
 import { bufferHighlightSpans } from "./buffer-highlights"
 import { applyTheme, type Theme } from "./theme"
 import { terminalSurfaceToThemedText, type TerminalSurfaceModel } from "./terminal-surface"
-import { CURSOR_GLYPH, CURSOR_MARKER_ZERO_WIDTH, extractCursorMarker, plainThemedText, sameChunkStyle, unitalicizeCharAt, type ThemedChunk, type ThemedText } from "./themed-text"
+import { CURSOR_GLYPH, CURSOR_MARKER_ZERO_WIDTH, extendRowBackgrounds, extractCursorMarker, plainThemedText, sameChunkStyle, unitalicizeCharAt, type ThemedChunk, type ThemedText } from "./themed-text"
 import { contentAreaLines, windowBodyLines, type ViewportSize } from "./viewport"
 import { paneWrapLayoutFor, wrapBodyRowsWithMap } from "./display-wrap"
 import { imageBox, pixelRowCounts, pixelWrapFor, rowDecoration, type DisplayImage, type PixelWrapLayout } from "./pixel-wrap"
@@ -47,6 +47,7 @@ export function layoutCharGrid(
   return {
     title: logical.title,
     tabBar: logical.tabBar ? applyTheme(logical.tabBar.text, logical.tabBar.spans, logical.theme) : undefined,
+    tabBarTabs: logical.tabBar?.items,
     windows,
     childFrames,
     minibufferCompletions: themedCompletions(logical.completion, logical.theme),
@@ -353,6 +354,9 @@ function layoutLeafPane(
       cursor = cursorIsBlock() ? { ...extracted.cursor, shape: "box" } : extracted.cursor
     }
   }
+  // `:extend` faces fill the row on a character grid. Before the right margin,
+  // which then measures a full row and adds no padding of its own.
+  if (!pixel && !hostDrawsCaret && textCols != null) body = extendRowBackgrounds(body, textCols)
   // After caret extraction, so the zero-width marker never counts as a cell.
   let marginHits: RightMarginHit[] | undefined
   if (margin && textCols != null) {

@@ -100,3 +100,20 @@ describe("window auto-balance", () => {
     expect(JSON.stringify(e.windowLayout)).toBe(before)
   })
 })
+
+describe("enlarge-window / shrink-window (C-x . / C-x ,)", () => {
+  const ratio = (e: Editor) => (e.windowLayout as Extract<WindowNode, { kind: "split" }>).firstRatio
+
+  test("C-x . grows and C-x , shrinks the selected window by 5%", async () => {
+    expect(ratio(await script().keys("C-x", "2").done())).toBeCloseTo(0.5)
+    expect(ratio(await script().keys("C-x", "2", "C-x", ".").done())).toBeCloseTo(0.55)
+    expect(ratio(await script().keys("C-x", "2", "C-x", ",").done())).toBeCloseTo(0.45)
+    // The lower window grows at the upper window's expense.
+    expect(ratio(await script().keys("C-x", "2", "C-x", "o", "C-x", ".").done())).toBeCloseTo(0.45)
+  })
+
+  test("a lone window reports instead of resizing", async () => {
+    const e = await script().keys("C-x", ".").done()
+    expect(e.windowLayout.kind).toBe("leaf")
+  })
+})

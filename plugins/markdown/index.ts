@@ -1570,7 +1570,7 @@ function markdownFontLock(buffer: BufferModel, range?: FontLockRange): TextSpan[
   if (markdownHighlightingSyntax()) {
     spans.push(...markdownDelimitedSpans(buffer.text, MARKDOWN_HIGHLIGHT_RE, "markdown-highlighting-face", range, [...bodyRegions]))
   }
-  spans = overlayMarkdownLinkFaces(buffer.text, spans, range, gfm, bodyRegions)
+  spans = overlayMarkdownLinkFaces(buffer.text, spans, range, bodyRegions)
   spans = overlayMarkdownHeaderFaces(buffer.text, spans, range)
   if (markdownPixelDisplay(buffer)) {
     spans.push(...markdownFixedPitchSpans(buffer, spans, blocks, range))
@@ -1663,7 +1663,6 @@ function overlayMarkdownLinkFaces(
   text: string,
   spans: TextSpan[],
   range?: FontLockRange,
-  includeBare = false,
   protectedRanges: ReadonlyArray<readonly [number, number]> = [],
 ): TextSpan[] {
   // Link faces do not depend on resolving reference definitions.  On a
@@ -1671,7 +1670,7 @@ function overlayMarkdownLinkFaces(
   // buffer instead of running several document-wide regexes on every page.
   const offset = range?.start ?? 0
   const source = range ? text.slice(range.start, range.end) : text
-  const linkSpans = markdownLinks(source, includeBare)
+  const linkSpans = markdownLinks(source)
     .map(link => ({ start: offset + link.start, end: offset + link.end, face: "markdown-link" as FaceName }))
     .filter(span => !spanInsideRegions(span.start, span.end, protectedRanges))
   if (!linkSpans.length) return spans
@@ -1757,7 +1756,7 @@ function markdownToggleCheckboxAtPoint(buffer: BufferModel, point: number): bool
 // the closing `)` only moves point.
 function markdownMouseClick(editor: Editor, buffer: BufferModel, point: number, deps: MarkdownDeps): boolean {
   if (markdownToggleCheckboxAtPoint(buffer, point)) return true
-  const link = linkAtPoint(buffer.text, point, markdownIsGfmMode(buffer))
+  const link = linkAtPoint(buffer.text, point)
   if (!link || point >= link.end) return false
   if (link.kind === "wiki") {
     // Not run through the command loop, so report a failed visit here.
@@ -2045,7 +2044,9 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
     }
     if (indentOnEnter === "indent-and-new-item" && markdownNonEmptyListItem(line.text)) {
       insertMarkdownListItem(buffer, null, true)
-      trimPreviousLine()
+      // Keep the marker's space on an item left empty by the split, so it
+      // stays a list item ("1. ", not "1.").
+      if (!markdownEmptyListItem(buffer.lineBoundsAt(buffer.lineBounds(lineBefore)[0]).text)) trimPreviousLine()
       editor.message("Inserted list item")
       return
     }
@@ -2609,7 +2610,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   }, "Kill markup prefix at beginning of line.")
 
   editor.command("markdown-follow-thing-at-point", async ({ buffer, editor, prefixArgument }) => {
-    const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
+    const link = linkAtPoint(buffer.text, buffer.point)
     if (!link) { editor.message("No link at point"); return }
     if (link.kind === "wiki") {
       await markdownFollowWikiLink(editor, buffer, link, deps, prefixArgument != null)
@@ -2644,7 +2645,7 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
       editor.message(result.message)
       return
     }
-    const link = linkAtPoint(buffer.text, buffer.point, markdownIsGfmMode(buffer))
+    const link = linkAtPoint(buffer.text, buffer.point)
     if (link) {
       if (link.kind === "wiki") {
         await markdownFollowWikiLink(editor, buffer, link, deps)
@@ -2665,13 +2666,13 @@ function installMarkdownCommands(editor: Editor, deps: MarkdownDeps): void {
   }, "Do what is sensible at point in Markdown.")
 
   editor.command("markdown-next-link", ({ buffer, editor }) => {
-    const next = findLink(buffer.text, buffer.point, 1, markdownIsGfmMode(buffer))
+    const next = findLink(buffer.text, buffer.point, 1)
     if (next == null) { editor.message("No next link"); return }
     buffer.point = next
   }, "Move to next Markdown link.")
 
   editor.command("markdown-previous-link", ({ buffer, editor }) => {
-    const prev = findLink(buffer.text, buffer.point, -1, markdownIsGfmMode(buffer))
+    const prev = findLink(buffer.text, buffer.point, -1)
     if (prev == null) { editor.message("No previous link"); return }
     buffer.point = prev
   }, "Move to previous Markdown link.")
@@ -2958,10 +2959,11 @@ function insertMarkdownListItem(buffer: BufferModel, prefixArgument?: number | n
   const indent = markdownAdjustedIndent(current?.indent ?? fallbackIndent, prefixArgument)
   const marker = current?.marker ?? "- "
   // RET with point inside the item text splits the item there, as `newline`
-  // at point does: the text after point moves to the new item. M-RET, and RET
-  // at the start of the text, still add an empty item after the line.
+  // at point does: the text after point moves to the new item. RET at the
+  // start of the text pushes the whole text down and leaves an empty item.
+  // M-RET still adds an empty item after the line.
   const markerEnd = line.start + (line.text.match(LIST_RE)?.[0].length ?? 0)
-  const split = splitAtPoint && line.text.trim() !== "" && buffer.point > markerEnd && buffer.point < line.end
+  const split = splitAtPoint && line.text.trim() !== "" && buffer.point >= markerEnd && buffer.point < line.end
   let insertPoint = line.text.trim() && !split ? line.end : buffer.point
   if (split) {
     // Drop the spaces around the split, as `newline` + list markup would.
@@ -3767,8 +3769,9 @@ function regionBounds(buffer: BufferModel): { start: number; end: number } {
 }
 
 function activeRegion(buffer: BufferModel): { start: number; end: number } | null {
-  if (buffer.mark == null || buffer.mark === buffer.point) return null
-  return { start: Math.min(buffer.mark, buffer.point), end: Math.max(buffer.mark, buffer.point) }
+  // Emacs `use-region-p`: a stale mark (left by isearch or an old C-SPC) is not a region.
+  if (!buffer.useRegion()) return null
+  return { start: Math.min(buffer.mark!, buffer.point), end: Math.max(buffer.mark!, buffer.point) }
 }
 
 function findParagraphBoundary(text: string, point: number, direction: 1 | -1): number {
@@ -3888,8 +3891,8 @@ function markdownBareUrlLinks(text: string, covered: Array<[number, number]>): M
   return links
 }
 
-function findLink(text: string, point: number, direction: 1 | -1, includeBare = false): number | null {
-  const matches = markdownLinks(text, includeBare).map(link => ({ index: link.start }))
+function findLink(text: string, point: number, direction: 1 | -1): number | null {
+  const matches = markdownLinks(text).map(link => ({ index: link.start }))
   if (direction === 1) {
     for (const m of matches) if (m.index > point) return m.index
     return null
@@ -3902,11 +3905,11 @@ function findLink(text: string, point: number, direction: 1 | -1, includeBare = 
   return prev
 }
 
-function linkAtPoint(text: string, point: number, includeBare = false): MarkdownLink | null {
-  return markdownLinks(text, includeBare).find(link => point >= link.start && point <= link.end) ?? null
+function linkAtPoint(text: string, point: number): MarkdownLink | null {
+  return markdownLinks(text).find(link => point >= link.start && point <= link.end) ?? null
 }
 
-function markdownLinks(text: string, includeBare = false): MarkdownLink[] {
+function markdownLinks(text: string): MarkdownLink[] {
   const definitions = referenceDefinitionMap(text)
   const links: MarkdownLink[] = []
   for (const match of text.matchAll(INLINE_OR_AUTO_LINK_RE)) {
@@ -3938,10 +3941,10 @@ function markdownLinks(text: string, includeBare = false): MarkdownLink[] {
       links.push({ start: wiki.start, end: wiki.end, kind: "wiki", url: null, target: wiki.target, anchor: wiki.anchor })
     }
   }
-  if (includeBare) {
-    const covered = links.map(link => [link.start, link.end] as [number, number])
-    links.push(...markdownBareUrlLinks(text, covered))
-  }
+  // Plain URIs are links in every Markdown flavour, as GNU markdown-mode's
+  // `markdown-match-plain-uris` fontifies them in markdown-mode too.
+  const covered = links.map(link => [link.start, link.end] as [number, number])
+  links.push(...markdownBareUrlLinks(text, covered))
   return links.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
