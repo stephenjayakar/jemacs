@@ -95,14 +95,19 @@ ensure_gui_build() {
 
 gui=0
 nobuild=0
+# The GUI detaches from the shell unless --wait is given; --smoke-gui always waits.
+wait_gui=0
 filtered=()
 for arg in "$@"; do
   if [[ "$arg" == "--nobuild" ]]; then
     nobuild=1
   elif [[ "$arg" == "--gui" ]]; then
     gui=1
+  elif [[ "$arg" == "--wait" ]]; then
+    wait_gui=1
   elif [[ "$arg" == "--smoke-gui" ]]; then
     gui=1
+    wait_gui=1
     filtered+=("$arg")
   else
     filtered+=("$arg")
@@ -119,11 +124,16 @@ if [[ "$gui" -eq 1 ]]; then
   # Bash 3.2 treats an empty array expansion as an unset variable under -u.
   # No filename is a valid GUI invocation, so relax nounset only for exec.
   set +u
-  if command -v electron >/dev/null 2>&1; then
-    exec electron dist/electron/bootstrap.mjs "${filtered[@]}"
-  else
-    exec npx electron dist/electron/bootstrap.mjs "${filtered[@]}"
+  electron_cmd=(npx electron)
+  command -v electron >/dev/null 2>&1 && electron_cmd=(electron)
+  if [[ "$wait_gui" -eq 1 ]]; then
+    exec "${electron_cmd[@]}" dist/electron/bootstrap.mjs "${filtered[@]}"
   fi
+  log="${HOME}/.jemacs/gui.log"
+  mkdir -p "$(dirname "$log")"
+  nohup "${electron_cmd[@]}" dist/electron/bootstrap.mjs "${filtered[@]}" >"$log" 2>&1 </dev/null &
+  disown
+  echo "[jemacs] GUI started in the background (pid $!, log ${log})" >&2
 else
   set +u
   if command -v bun >/dev/null 2>&1; then

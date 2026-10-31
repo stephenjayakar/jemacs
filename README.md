@@ -59,6 +59,10 @@ it exits with instructions to build once. `jemacs --nobuild` launches the termin
 editor from source and skips dependency installation. Other arguments, such as
 filenames, are passed through as usual.
 
+`jemacs --gui` detaches from the shell and logs to `~/.jemacs/gui.log`; pass
+`--wait` to keep Electron in the foreground. The terminal editor always runs in
+the foreground.
+
 ### Remote files over SSH
 
 Use Emacs TRAMP filenames with `C-x C-f` or as a command-line file. Jemacs
