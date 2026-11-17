@@ -574,3 +574,150 @@ describe("web surface image nodes", () => {
     }
   })
 })
+
+/**
+ * Kanban-style boards: `lanes`/`lane`/`card` layout plus HTML5 drag and drop.
+ *
+ * happy-dom has no DragEvent, so plain bubbling Events stand in; that is also the proof the
+ * renderer does not require `dataTransfer`.
+ */
+describe("web surface lanes and drag and drop", () => {
+  const BOARD: WebSurfaceModel = {
+    kind: "web",
+    nodes: [{
+      kind: "lanes",
+      children: [
+        {
+          kind: "lane",
+          id: "lane:0",
+          dropAction: "drop",
+          children: [
+            { kind: "card", id: "0:0", drag: "0:0", dropAction: "drop", action: "select", children: [{ kind: "text", text: "A " }] },
+            { kind: "card", id: "0:1", drag: "0:1", dropAction: "drop", children: [{ kind: "text", text: "B" }] },
+          ],
+        },
+        { kind: "lane", id: "lane:1", dropAction: "drop" },
+      ],
+    }],
+  }
+
+  function board(surface = BOARD) {
+    const dom = targets()
+    const fired: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    presentDomFrame(dom, modelWithSurface(surface), undefined, (_windowId, action, payload) => {
+      fired.push({ action, payload })
+    })
+    const node = (id: string) => dom.windows.querySelector(`[data-node-id="${id}"]`) as HTMLElement
+    const fire = (el: HTMLElement, type: string) => el.dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }) as never)
+    return { dom, fired, node, fire }
+  }
+
+  test("renders lanes, lanes, and draggable cards", () => {
+    const { dom, node } = board()
+    expect(dom.windows.querySelectorAll(".web-node-lanes")).toHaveLength(1)
+    expect(dom.windows.querySelectorAll(".web-node-lane")).toHaveLength(2)
+    expect(dom.windows.querySelectorAll(".web-node-card")).toHaveLength(2)
+    for (const id of ["0:0", "0:1"]) {
+      expect(node(id).draggable).toBe(true)
+      expect(node(id).classList.contains("web-node-draggable")).toBe(true)
+    }
+    expect(node("lane:1").classList.contains("web-node-draggable")).toBe(false)
+  })
+
+  test("dropping a card on an empty lane reports position inside", () => {
+    const { fired, node, fire } = board()
+    fire(node("0:1"), "dragstart")
+    expect(node("0:1").classList.contains("web-node-dragging")).toBe(true)
+    fire(node("lane:1"), "dragover")
+    expect(node("lane:1").classList.contains("web-node-drop-inside")).toBe(true)
+    fire(node("lane:1"), "drop")
+    expect(node("lane:1").classList.contains("web-node-drop-inside")).toBe(false)
+    expect(fired).toEqual([{ action: "drop", payload: { id: "lane:1", drag: "0:1", position: "inside" } }])
+  })
+
+  test("dropping a card on another card reports before or after, and the inner target wins", () => {
+    const { fired, node, fire } = board()
+    fire(node("0:1"), "dragstart")
+    fire(node("0:0"), "dragover")
+    fire(node("0:0"), "drop")
+    // The card stops propagation, so its lane does not also report a drop.
+    expect(fired).toHaveLength(1)
+    expect(fired[0]!.action).toBe("drop")
+    expect(fired[0]!.payload!.id).toBe("0:0")
+    expect(fired[0]!.payload!.drag).toBe("0:1")
+    expect(["before", "after"]).toContain(fired[0]!.payload!.position as string)
+  })
+
+  test("dropping a card on itself, or with no drag in flight, does nothing", () => {
+    const { fired, node, fire } = board()
+    fire(node("0:1"), "dragstart")
+    fire(node("0:1"), "drop")
+    fire(node("lane:1"), "dragover")
+    expect(node("lane:1").classList.contains("web-node-drop-inside")).toBe(false)
+    fire(node("lane:1"), "drop")
+    expect(fired).toEqual([])
+  })
+
+  test("a click on a draggable card still fires its action", () => {
+    const { fired, node } = board()
+    node("0:0").dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as never)
+    expect(fired).toEqual([{ action: "select", payload: { id: "0:0" } }])
+  })
+
+  test("a text node's children render inline inside it, after its own text", () => {
+    const { node } = board({
+      kind: "web",
+      nodes: [{
+        kind: "text",
+        id: "line",
+        text: "see ",
+        children: [{ kind: "text", id: "link", text: "docs", face: "helpLink", action: "open" }],
+      }],
+    })
+    const line = node("line")
+    const link = node("link")
+    expect(link.parentElement === line).toBe(true)
+    expect(line.textContent).toBe("see docs")
+    expect(line.firstChild!.nodeType).toBe(3)
+  })
+
+  test("scrolls the selection into view only when it changes", () => {
+    const calls: string[] = []
+    const proto = window.HTMLElement.prototype as unknown as { scrollIntoView: unknown }
+    const original = proto.scrollIntoView
+    proto.scrollIntoView = function (this: HTMLElement) { calls.push(this.dataset.nodeId ?? "") }
+    try {
+      // One editor across frames, so the pane body persists the way it does in the GUI.
+      let selectedId = "a"
+      defineMode({
+        name: MODE,
+        parent: "text",
+        webSurface: () => ({
+          kind: "web" as const,
+          nodes: ["a", "b", "c"].map(each => ({ kind: "card" as const, id: each, selected: each === selectedId })),
+        }),
+      })
+      const editor = makeEditor()
+      const buffer = editor.scratch("*board*", BODY, MODE, false)
+      editor.switchToBuffer(buffer.id)
+      const frame = (title: string) => {
+        buffer.insert(title)
+        return serializeDisplayModel(buildDisplayModel(editor, {
+          viewport: { rows: 24, cols: 100 },
+          hostCapabilities: { unit: "pixels", mouse: true, clipboard: true, osc52: false, richTables: true, webSurfaces: true },
+        }))
+      }
+      const dom = targets()
+      presentDomFrame(dom, frame("1"))
+      expect(calls).toEqual(["a"])
+      // The body text changes, so the surface is rebuilt, but the selection did not move.
+      presentDomFrame(dom, frame("2"))
+      expect(calls).toEqual(["a"])
+      selectedId = "b"
+      presentDomFrame(dom, frame("3"))
+      expect(calls).toEqual(["a", "b"])
+    } finally {
+      proto.scrollIntoView = original
+    }
+  })
+})

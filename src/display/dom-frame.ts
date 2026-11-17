@@ -1030,6 +1030,7 @@ function renderWebSurface(
   // avoids diffing logic that would have to track per-node identity.
   root.replaceChildren()
   for (const node of surface.nodes) root.appendChild(renderWebNode(node, pane, theme, onPaneAction))
+  scrollWebSelectionIntoView(el, root)
 
   if (!surface.canvas) {
     canvasEl?.remove()
@@ -1056,6 +1057,95 @@ function safeImageSrc(src: string | undefined): string | null {
   if (lower.startsWith("file:")) return src.trim()
   if (lower.startsWith("data:image/")) return src.trim()
   return null
+}
+
+/**
+ * Keep the keyboard selection visible, the way Emacs recenters when point leaves the
+ * window. Only a *changed* selection scrolls, so a view the user scrolled with the mouse is
+ * not yanked back by an unrelated redisplay.
+ */
+function scrollWebSelectionIntoView(el: HTMLElement, root: HTMLElement): void {
+  const selected = root.querySelector<HTMLElement>(".web-node-selected[data-node-id]")
+  if (!selected) {
+    delete el.dataset.webSelectedId
+    return
+  }
+  const id = selected.dataset.nodeId!
+  if (el.dataset.webSelectedId === id) return
+  el.dataset.webSelectedId = id
+  selected.scrollIntoView?.({ block: "nearest", inline: "nearest" })
+}
+
+const WEB_DRAG_TYPE = "application/x-jemacs-node"
+const WEB_DROP_CLASSES = ["web-node-drop-before", "web-node-drop-after", "web-node-drop-inside"]
+
+/**
+ * The `drag` value of the node being dragged, or null.
+ *
+ * The source of truth instead of the DOM or `dataTransfer`: the surface is rebuilt on every
+ * redisplay, so the source element may be gone by drop time, and `dataTransfer` data is
+ * unreadable during `dragover`.
+ */
+let activeWebDrag: string | null = null
+
+type WebDropPosition = "before" | "after" | "inside"
+
+function webDropPosition(el: HTMLElement, node: WebNodeModel, event: DragEvent): WebDropPosition {
+  if (node.drag == null) return "inside"
+  const rect = el.getBoundingClientRect()
+  return event.clientY < rect.top + rect.height / 2 ? "before" : "after"
+}
+
+function wireWebDrag(el: HTMLElement, drag: string): void {
+  el.draggable = true
+  el.classList.add("web-node-draggable")
+  el.addEventListener("dragstart", event => {
+    activeWebDrag = drag
+    const transfer = (event as DragEvent).dataTransfer
+    if (transfer) {
+      transfer.setData(WEB_DRAG_TYPE, drag)
+      transfer.effectAllowed = "move"
+    }
+    el.classList.add("web-node-dragging")
+  })
+  el.addEventListener("dragend", () => {
+    activeWebDrag = null
+    el.classList.remove("web-node-dragging")
+  })
+}
+
+function wireWebDrop(
+  el: HTMLElement,
+  node: WebNodeModel,
+  dropAction: string,
+  pane: SerializedPane,
+  onPaneAction?: DomFramePaneActionHandler,
+): void {
+  el.addEventListener("dragover", event => {
+    if (activeWebDrag == null) return
+    const dragEvent = event as DragEvent
+    // Innermost target wins: a card inside a lane takes the drop, not the lane.
+    event.preventDefault()
+    event.stopPropagation()
+    if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = "move"
+    el.classList.remove(...WEB_DROP_CLASSES)
+    el.classList.add(`web-node-drop-${webDropPosition(el, node, dragEvent)}`)
+  })
+  el.addEventListener("dragleave", event => {
+    const related = (event as DragEvent).relatedTarget as Node | null
+    if (related && el.contains(related)) return
+    el.classList.remove(...WEB_DROP_CLASSES)
+  })
+  el.addEventListener("drop", event => {
+    const dragEvent = event as DragEvent
+    event.preventDefault()
+    event.stopPropagation()
+    el.classList.remove(...WEB_DROP_CLASSES)
+    const drag = activeWebDrag ?? dragEvent.dataTransfer?.getData(WEB_DRAG_TYPE) ?? ""
+    activeWebDrag = null
+    if (!drag || drag === node.drag) return
+    onPaneAction?.(pane.id, dropAction, { id: node.id ?? "", drag, position: webDropPosition(el, node, dragEvent) })
+  })
 }
 
 function renderWebNode(
@@ -1110,6 +1200,8 @@ function renderWebNode(
       onPaneAction?.(pane.id, action, node.id ? { id: node.id } : {})
     })
   }
+  if (node.drag != null) wireWebDrag(el, node.drag)
+  if (node.dropAction) wireWebDrop(el, node, node.dropAction, pane, onPaneAction)
   for (const child of node.children ?? []) {
     el.appendChild(renderWebNode(child, pane, theme, onPaneAction))
   }
