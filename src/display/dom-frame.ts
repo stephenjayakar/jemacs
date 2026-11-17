@@ -684,6 +684,9 @@ export function renderWindows(
         return
       }
       if (!onMouse) return
+      // A web-surface `drag` node: `beginMouseDrag` calls preventDefault, which stops the
+      // browser from starting the HTML5 drag. The node's own click action selects it.
+      if ((event.target as HTMLElement | null)?.closest?.(".web-node-draggable")) return
       beginMouseDrag(event, pane, body, onMouse)
     })
     pane.addEventListener("mousedown", event => {

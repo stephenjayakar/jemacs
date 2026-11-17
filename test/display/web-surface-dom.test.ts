@@ -658,6 +658,18 @@ describe("web surface lanes and drag and drop", () => {
     expect(fired).toEqual([])
   })
 
+  test("a mousedown on a draggable card does not start a text-grid click", () => {
+    const dom = targets()
+    const mouse: unknown[] = []
+    presentDomFrame(dom, modelWithSurface(BOARD), (...args) => { mouse.push(args) })
+    const card = dom.windows.querySelector(`[data-node-id="0:0"]`) as HTMLElement
+    const event = new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 })
+    card.dispatchEvent(event as never)
+    // preventDefault on mousedown would stop the browser from starting the drag.
+    expect(event.defaultPrevented).toBe(false)
+    expect(mouse).toEqual([])
+  })
+
   test("a click on a draggable card still fires its action", () => {
     const { fired, node } = board()
     node("0:0").dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as never)
