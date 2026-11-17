@@ -733,3 +733,42 @@ describe("web surface lanes and drag and drop", () => {
     }
   })
 })
+
+/**
+ * `text-scale-adjust` (C-x C-+) on a surface pane. The CSS sizes surfaces in `em`, so
+ * the body's inline font size is the one number that must carry the scale.
+ */
+describe("web surface text scale", () => {
+  const surface: WebSurfaceModel = { kind: "web", nodes: [{ kind: "lanes", children: [{ kind: "lane", id: "l" }] }] }
+
+  function bodyFontPx(amount: number): number {
+    defineMode({ name: MODE, parent: "text", webSurface: () => surface })
+    const editor = makeEditor()
+    const buffer = editor.scratch("*scaled*", BODY, MODE, false)
+    editor.switchToBuffer(buffer.id)
+    if (amount) buffer.locals.set("text-scale-mode-amount", amount)
+    const dom = targets()
+    presentDomFrame(dom, serializeDisplayModel(buildDisplayModel(editor, {
+      viewport: { rows: 24, cols: 100 },
+      hostCapabilities: { unit: "pixels", mouse: true, clipboard: true, osc52: false, richTables: true, webSurfaces: true },
+    })))
+    const body = dom.windows.querySelector(".window-body.web-surface") as HTMLElement
+    expect(body.querySelector(".web-node-lane")).not.toBeNull()
+    return Number.parseFloat(body.style.fontSize)
+  }
+
+  test("surface CSS sizes text in em, so it inherits the body's scaled size", async () => {
+    const css = await Bun.file(new URL("../../src/electron/renderer.css", import.meta.url)).text()
+    const rules = css.split("\n").filter(line => /^\.(web-surface-root|web-node)/.test(line))
+    expect(rules.length).toBeGreaterThan(10)
+    for (const rule of rules) expect(rule).not.toMatch(/font-size:\s*[\d.]+px/)
+  })
+
+  test("the surface body font size follows the buffer's text scale", () => {
+    const base = bodyFontPx(0)
+    expect(base).toBeGreaterThan(0)
+    expect(bodyFontPx(2)).toBeCloseTo(base * 1.2 ** 2, 5)
+    expect(bodyFontPx(-1)).toBeCloseTo(base / 1.2, 5)
+  })
+})
+
