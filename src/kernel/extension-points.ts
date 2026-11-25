@@ -208,15 +208,21 @@ export type TableSurfaceModel = {
 export type WebNodeModel = {
   id?: string
   /**
-   * Layout role. `row`/`column` are flex containers; the rest are leaves.
+   * Layout role. `row`/`column`/`lanes`/`lane`/`card` are flex containers; the rest are
+   * leaves, except that a `text` node's `children` flow inline after its own text, so a
+   * line can hold a separately clickable or faced segment such as a link.
    *
    * `badge` is a pill-shaped label, for the short enumerated values -- a session state, a
    * variable's type, a verdict -- that read as noise inline but as structure when boxed.
    *
    * `image` draws the picture at `src`. The host accepts only `file:` and `data:` URLs,
    * so a surface cannot make the frame fetch anything over the network.
+   *
+   * `lanes` lays its children out side by side, top-aligned, and grows wider than the pane
+   * rather than squeezing them; the pane body scrolls horizontally. `lane` is a fixed-width
+   * column inside it, and `card` is a raised box -- together, a kanban board.
    */
-  kind: "row" | "column" | "text" | "bar" | "badge" | "image"
+  kind: "row" | "column" | "text" | "bar" | "badge" | "image" | "lanes" | "lane" | "card"
   text?: string
   /** Picture location for `image`. `file:` or `data:` only; other schemes are dropped. */
   src?: string
@@ -241,6 +247,20 @@ export type WebNodeModel = {
   /** Emitted as a pane action when clicked, if the host supports mouse input. */
   action?: string
   title?: string
+  /**
+   * Makes the node draggable; the value is what a drop target receives as `drag`.
+   *
+   * A plain string rather than the node itself, because the host rebuilds the DOM on every
+   * redisplay and the dragged element may no longer exist when the drop lands.
+   */
+  drag?: string
+  /**
+   * Makes the node a drop target for `drag` nodes. A drop emits this as a pane action with
+   * payload `{ id, drag, position }`: `id` is this node's id, `drag` the dragged node's
+   * `drag` value, and `position` is `"before"`/`"after"` (by pointer height) when this
+   * node is itself draggable -- an item in a list -- or `"inside"` when it is a container.
+   */
+  dropAction?: string
   children?: WebNodeModel[]
 }
 

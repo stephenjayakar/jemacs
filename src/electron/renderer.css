@@ -129,19 +129,32 @@ html, body { margin: 0; height: 100%; font-size: 14px; font-family: var(--jemacs
 
 /* Web surface: declarative HTML/canvas panes (test results, DAP session state). */
 .window-body.web-surface { padding: 0; overflow: auto; white-space: normal; font-family: var(--jemacs-sans); }
-.web-surface-root { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; font-size: 12px; line-height: 1.45; }
-.web-node-row { display: flex; flex-direction: row; align-items: baseline; gap: 8px; }
-.web-node-column { display: flex; flex-direction: column; gap: 2px; }
+/* Sizes are in em so a surface follows the pane body's font size: the default face
+   height times the buffer's text scale (C-x C-+), set inline by dom-frame.ts. */
+.web-surface-root { display: flex; flex-direction: column; gap: .17em; padding: .67em .83em; font-size: .92em; line-height: 1.45; }
+.web-node-row { display: flex; flex-direction: row; align-items: baseline; gap: .67em; }
+.web-node-column { display: flex; flex-direction: column; gap: .17em; }
 .web-node-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.web-node-clickable { cursor: pointer; border-radius: 4px; }
+.web-node-text > .web-node { display: inline; }
+/* No overflow of its own: the root is rebuilt every frame, so only the pane body keeps a scroll offset. */
+.web-node-lanes { display: flex; flex-direction: row; align-items: flex-start; gap: 1em; width: max-content; min-width: 100%; padding: .33em .17em 1em; }
+.web-node-lane { display: flex; flex-direction: column; gap: .5em; flex: 0 0 22.67em; width: 22.67em; padding: .67em; border-radius: .67em; background: rgba(127,127,127,.08); }
+.web-node-card { display: flex; flex-direction: column; gap: .33em; padding: .58em .83em; border-radius: .5em; background: rgba(127,127,127,.13); border: 1px solid rgba(127,127,127,.22); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.web-node-draggable { cursor: grab; }
+.web-node-dragging { opacity: .45; }
+.web-node-clickable { cursor: pointer; border-radius: .33em; }
 .web-node-clickable:hover { background: rgba(127,127,127,.14); }
-.web-node-bar { position: relative; flex: 1 1 auto; min-width: 6ch; height: 14px; border-radius: 3px; overflow: hidden; background: rgba(127,127,127,.14); }
+.web-node-bar { position: relative; flex: 1 1 auto; min-width: 6ch; height: 1.17em; border-radius: .25em; overflow: hidden; background: rgba(127,127,127,.14); }
 .web-node-bar-fill { position: absolute; inset: 0 auto 0 0; opacity: .38; background: currentColor; }
-.web-node-bar-label { position: relative; display: block; padding: 0 5px; font-size: 11px; }
-.web-node-badge { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, currentColor 16%, transparent); font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
+.web-node-bar-label { position: relative; display: block; padding: 0 .45em; font-size: .92em; }
+.web-node-badge { flex: 0 0 auto; padding: 0 .6em; border-radius: 999px; background: color-mix(in srgb, currentColor 16%, transparent); font-size: .83em; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; }
 .web-node-image { display: block; max-width: 100%; image-rendering: auto; }
 .web-node-selected { background: rgba(80, 133, 239, .16); box-shadow: inset 2px 0 0 currentColor; }
 .web-node-selected.web-node-clickable:hover { background: rgba(80, 133, 239, .24); }
+.web-node-card.web-node-selected { outline: 2px solid rgba(80, 133, 239, .7); outline-offset: -1px; }
+.web-node-drop-before { box-shadow: inset 0 3px 0 rgba(80, 133, 239, .9); }
+.web-node-drop-after { box-shadow: inset 0 -3px 0 rgba(80, 133, 239, .9); }
+.web-node-drop-inside { outline: 2px dashed rgba(80, 133, 239, .7); outline-offset: -2px; }
 .web-surface-canvas { display: block; width: calc(100% - 20px); max-height: calc(100vh - 120px); margin: 4px 10px 10px; border-radius: 4px; background: rgba(127,127,127,.08); }
 .xterm-pane { width: 100%; height: 100%; overflow: hidden; }
 .xterm-pane .xterm { height: 100%; padding: 0; }
